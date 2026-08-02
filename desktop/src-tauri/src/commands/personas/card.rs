@@ -468,6 +468,9 @@ pub fn card_mint_save_openai_key(
         return Err("API key cannot be empty.".to_string());
     }
 
+    let _mutation_lease = state
+        .managed_agent_update_leases
+        .try_acquire_global_mutation("global-config-card-key")?;
     let _store_guard = state
         .managed_agents_store_lock
         .lock()

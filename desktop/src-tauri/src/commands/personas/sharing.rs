@@ -33,6 +33,9 @@ pub async fn set_persona_shared(
     shared: bool,
     app: AppHandle,
 ) -> Result<SetPersonaSharedResult, String> {
+    let state = app.state::<AppState>();
+    let _mutation_lease =
+        super::acquire_persona_mutation_lease(&app, &state, &id, "persona-publish")?;
     let prepared = tokio::task::spawn_blocking({
         let app = app.clone();
         move || {
@@ -77,6 +80,9 @@ pub async fn update_persona_and_publish(
     input: crate::managed_agents::UpdatePersonaRequest,
     app: AppHandle,
 ) -> Result<SetPersonaSharedResult, String> {
+    let state = app.state::<AppState>();
+    let _mutation_lease =
+        super::acquire_persona_mutation_lease(&app, &state, &input.id, "persona-publish")?;
     let (_, prepared) =
         super::update::update_persona_with(input, app.clone(), |app, state, persona| {
             // Strict path: this command's contract is to report the publication

@@ -793,6 +793,11 @@ pub async fn update_managed_agent(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<UpdateManagedAgentResponse, String> {
+    let mutation_lease = state
+        .managed_agent_update_leases
+        .try_acquire_mutation("agent-edit", [input.pubkey.as_str()])?
+        .ok_or_else(|| "agent edit requires an agent".to_string())?;
+
     // Phase 1: local save (synchronous, under lock)
     let (summary, sync_params, rollback) = {
         let _store_guard = state
@@ -930,7 +935,11 @@ pub async fn update_managed_agent(
         )?;
         record.updated_at = now_iso();
 
-        save_managed_agents(&app, &records)?;
+        crate::managed_agents::save_managed_agents_for_operation(
+            &app,
+            &records,
+            mutation_lease.operation_id(),
+        )?;
 
         let record = records
             .iter()
@@ -1000,7 +1009,13 @@ pub async fn update_managed_agent(
             let rollback = rollback.ok_or_else(|| {
                 "missing local rollback state after relay profile sync failure".to_string()
             })?;
-            rollback_failed_agent_update(&app, &state, &summary.pubkey, rollback)?;
+            rollback_failed_agent_update(
+                &app,
+                &state,
+                &summary.pubkey,
+                rollback,
+                mutation_lease.operation_id(),
+            )?;
             return Err(format!(
                 "Agent rename failed because its relay profile could not be updated. No changes were saved: {sync_error}"
             ));

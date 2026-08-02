@@ -11,7 +11,7 @@
 //! at spawn time and cannot be mutated in place.
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::{
     app_state::AppState,
@@ -64,6 +64,14 @@ pub async fn set_global_agent_config(
     config: GlobalAgentConfig,
     app: AppHandle,
 ) -> Result<GlobalAgentConfigSaveResult, String> {
+    let global_mutation = {
+        let state = app.state::<AppState>();
+        state
+            .managed_agent_update_leases
+            .try_acquire_global_mutation("global-config")?
+    };
+    let authorized_operation_id = Some(global_mutation.operation_id());
+
     // ── Phase 1: disk write (sync, spawn_blocking) ────────────────────────
     //
     // Validate, snapshot old config, write new config, collect pre-filter
@@ -113,6 +121,7 @@ pub async fn set_global_agent_config(
                 &old_global,
                 &new_global,
                 &personas_snapshot,
+                authorized_operation_id,
             )
             .await;
             match outcome {
@@ -250,6 +259,7 @@ async fn restart_local_agent_on_config_change(
     old_global: &GlobalAgentConfig,
     new_global: &GlobalAgentConfig,
     personas_snapshot: &[crate::managed_agents::AgentDefinition],
+    authorized_operation_id: Option<&str>,
 ) -> RestartOutcome {
     // ── Step 1: stop under lock, re-verifying eligibility ─────────────────
     let app_for_stop = app.clone();
@@ -257,6 +267,7 @@ async fn restart_local_agent_on_config_change(
     let old_global_clone = old_global.clone();
     let new_global_clone = new_global.clone();
     let personas_owned = personas_snapshot.to_vec();
+    let stop_operation_id = authorized_operation_id.map(str::to_string);
 
     let stop_result = tokio::task::spawn_blocking(move || {
         use tauri::Manager;
@@ -280,7 +291,11 @@ async fn restart_local_agent_on_config_change(
             &current_instance_id(&app_for_stop),
         );
         if sync_changed {
-            save_managed_agents(&app_for_stop, &records)?;
+            save_managed_agents_with_authorization(
+                &app_for_stop,
+                &records,
+                stop_operation_id.as_deref(),
+            )?;
         }
 
         // Re-check eligibility under lock with current record state.
@@ -325,7 +340,11 @@ async fn restart_local_agent_on_config_change(
         // Stop the process.
         let record_mut = find_managed_agent_mut(&mut records, &pubkey_owned)?;
         stop_managed_agent_process(&app_for_stop, record_mut, &mut runtimes)?;
-        save_managed_agents(&app_for_stop, &records)?;
+        save_managed_agents_with_authorization(
+            &app_for_stop,
+            &records,
+            stop_operation_id.as_deref(),
+        )?;
 
         Ok(runtime_keys)
     })
@@ -348,9 +367,23 @@ async fn restart_local_agent_on_config_change(
     let relay_urls: Vec<_> = runtime_keys.into_iter().map(|key| key.relay_url).collect();
     use tauri::Manager;
     let state = app.state::<AppState>();
-    match super::agents::start_local_agent_pairs_with_preflight(app, &state, pubkey, &relay_urls)
-        .await
-    {
+    let start_result = match authorized_operation_id {
+        Some(operation_id) => {
+            super::agents::start_local_agent_pairs_with_preflight_for_operation(
+                app,
+                &state,
+                pubkey,
+                &relay_urls,
+                operation_id,
+            )
+            .await
+        }
+        None => {
+            super::agents::start_local_agent_pairs_with_preflight(app, &state, pubkey, &relay_urls)
+                .await
+        }
+    };
+    match start_result {
         Ok(_) => {
             eprintln!(
                 "buzz-desktop: set_global_agent_config: restarted agent {pubkey} with updated config"
@@ -361,7 +394,7 @@ async fn restart_local_agent_on_config_change(
             eprintln!(
                 "buzz-desktop: set_global_agent_config: failed to start {pubkey} after restart: {e}"
             );
-            if let Err(save_err) = persist_last_error(app, pubkey, &e) {
+            if let Err(save_err) = persist_last_error(app, pubkey, &e, authorized_operation_id) {
                 eprintln!(
                     "buzz-desktop: set_global_agent_config: failed to persist last_error for {pubkey}: {save_err}"
                 );
@@ -375,7 +408,12 @@ async fn restart_local_agent_on_config_change(
 ///
 /// Best-effort: called only after a failed restart to leave the record
 /// in a diagnosable state rather than a silent "stopped with no error" state.
-fn persist_last_error(app: &AppHandle, pubkey: &str, error: &str) -> Result<(), String> {
+fn persist_last_error(
+    app: &AppHandle,
+    pubkey: &str,
+    error: &str,
+    authorized_operation_id: Option<&str>,
+) -> Result<(), String> {
     use tauri::Manager;
     let state = app.state::<AppState>();
     let _store_guard = state
@@ -386,7 +424,20 @@ fn persist_last_error(app: &AppHandle, pubkey: &str, error: &str) -> Result<(), 
     let record = find_managed_agent_mut(&mut records, pubkey)?;
     record.last_error = Some(error.to_string());
     record.updated_at = crate::util::now_iso();
-    save_managed_agents(app, &records)
+    save_managed_agents_with_authorization(app, &records, authorized_operation_id)
+}
+
+fn save_managed_agents_with_authorization(
+    app: &AppHandle,
+    records: &[crate::managed_agents::ManagedAgentRecord],
+    authorized_operation_id: Option<&str>,
+) -> Result<(), String> {
+    match authorized_operation_id {
+        Some(operation_id) => {
+            crate::managed_agents::save_managed_agents_for_operation(app, records, operation_id)
+        }
+        None => save_managed_agents(app, records),
+    }
 }
 
 /// Pure predicate: should an agent be restarted given resolved readiness and

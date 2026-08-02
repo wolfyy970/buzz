@@ -562,6 +562,12 @@ pub async fn publish_agent_template_version(
     app: AppHandle,
 ) -> Result<PublishAgentTemplateVersionResponse, String> {
     let state = app.state::<AppState>();
+    let _mutation_lease = super::personas::acquire_persona_mutation_lease(
+        &app,
+        &state,
+        &input.persona_id,
+        "persona-version-publish",
+    )?;
     let (persona, previous_version) = {
         let _store = state
             .managed_agents_store_lock

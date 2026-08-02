@@ -42,6 +42,7 @@ mod team_repair;
 mod teams;
 pub(crate) mod template_skills;
 mod types;
+mod update_lease;
 
 // Shared guard for tests that mutate or read process-global PATH.
 #[cfg(test)]
@@ -97,6 +98,7 @@ pub use template_skills::{
     materialize_isolated_agent_runtime, validate_agent_skills,
 };
 pub use types::*;
+pub(crate) use update_lease::{ManagedAgentUpdateLease, ManagedAgentUpdateLeaseRegistry};
 
 /// Returns the Buzz nest directory (`~/.buzz`) if it exists as a real
 /// directory (not a symlink), falling back to the user's home directory.

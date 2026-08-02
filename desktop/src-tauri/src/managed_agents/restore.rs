@@ -198,6 +198,28 @@ pub async fn restore_managed_agents_on_launch(
         return Ok(());
     }
 
+    let (restore_lease, busy_pubkeys) = state
+        .managed_agent_update_leases
+        .try_acquire_available_mutation(
+            "launch-restore",
+            agents_to_start.iter().map(|record| record.pubkey.as_str()),
+        )?;
+    for pubkey in &busy_pubkeys {
+        eprintln!("buzz-desktop: launch restore skipped agent {pubkey} because an update owns it");
+    }
+    let Some(restore_lease) = restore_lease else {
+        return Ok(());
+    };
+    let leased_pubkeys: std::collections::HashSet<&str> =
+        restore_lease.pubkeys().iter().map(String::as_str).collect();
+    let mut agents_to_start: Vec<_> = agents_to_start
+        .into_iter()
+        .filter(|record| leased_pubkeys.contains(record.pubkey.as_str()))
+        .collect();
+    if agents_to_start.is_empty() {
+        return Ok(());
+    }
+
     // Snapshot the workspace owner pubkey once for the legacy auth_tag fallback.
     // Read outside the per-agent spawn loop so all parallel spawns see the same
     // value and we don't lock `state.keys` repeatedly.
@@ -209,7 +231,7 @@ pub async fn restore_managed_agents_on_launch(
         .map(|k| k.public_key().to_hex());
 
     #[cfg(feature = "mesh-llm")]
-    let agents_to_start = {
+    let mut agents_to_start = {
         // Preflight against the same pinned-record resolution spawn uses.
         let personas = load_personas(app).unwrap_or_default();
         let global = super::load_global_agent_config(app).unwrap_or_default();
@@ -228,7 +250,13 @@ pub async fn restore_managed_agents_on_launch(
                 crate::commands::ensure_relay_mesh_for_record(app, mesh_model_id.as_deref(), false)
                     .await
             {
-                persist_restore_error(app, &state, &record.pubkey, error)?;
+                persist_restore_error(
+                    app,
+                    &state,
+                    &record.pubkey,
+                    error,
+                    restore_lease.operation_id(),
+                )?;
                 mesh_preflight_failures.insert(record.pubkey.clone());
             }
         }
@@ -250,6 +278,32 @@ pub async fn restore_managed_agents_on_launch(
         .lock()
         .map_err(|error| error.to_string())?;
     if shutdown_started.load(Ordering::SeqCst) {
+        return Ok(());
+    }
+
+    // Phase A intentionally releases the store lock before async preflight.
+    // Reload after owning the pubkeys and taking the transition lock; never
+    // spawn a stale clone if an edit committed in that window.
+    {
+        let _store_guard = state
+            .managed_agents_store_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let current = load_managed_agents(app)?;
+        agents_to_start.retain(|snapshot| {
+            let unchanged = current
+                .iter()
+                .any(|record| restore_snapshot_is_current(snapshot, record));
+            if !unchanged {
+                eprintln!(
+                    "buzz-desktop: launch restore skipped stale agent snapshot {}",
+                    snapshot.pubkey
+                );
+            }
+            unchanged
+        });
+    }
+    if agents_to_start.is_empty() {
         return Ok(());
     }
 
@@ -411,7 +465,7 @@ pub async fn restore_managed_agents_on_launch(
             })
             .collect();
 
-    save_managed_agents(app, &records)?;
+    super::save_managed_agents_for_operation(app, &records, restore_lease.operation_id())?;
     drop(runtimes);
     drop(_store_guard);
     drop(restore_transition);
@@ -435,12 +489,23 @@ pub async fn restore_managed_agents_on_launch(
     Ok(())
 }
 
+fn restore_snapshot_is_current(
+    snapshot: &super::ManagedAgentRecord,
+    current: &super::ManagedAgentRecord,
+) -> bool {
+    current.pubkey == snapshot.pubkey
+        && current == snapshot
+        && current.start_on_app_launch
+        && current.backend == BackendKind::Local
+}
+
 #[cfg(feature = "mesh-llm")]
 fn persist_restore_error(
     app: &tauri::AppHandle,
     state: &AppState,
     pubkey: &str,
     error: String,
+    operation_id: &str,
 ) -> Result<(), String> {
     let _store_guard = state
         .managed_agents_store_lock
@@ -450,5 +515,50 @@ fn persist_restore_error(
     let record = find_managed_agent_mut(&mut records, pubkey)?;
     record.updated_at = util::now_iso();
     record.last_error = Some(error);
-    save_managed_agents(app, &records)
+    super::save_managed_agents_for_operation(app, &records, operation_id)
+}
+
+#[cfg(test)]
+mod update_lease_tests {
+    use super::*;
+
+    fn record() -> super::super::ManagedAgentRecord {
+        serde_json::from_str(&format!(
+            r#"{{
+                "pubkey": "{}",
+                "name": "restore-test",
+                "private_key_nsec": "nsec1test",
+                "relay_url": "wss://relay.example",
+                "acp_command": "buzz-acp",
+                "agent_command": "goose",
+                "agent_args": [],
+                "mcp_command": "",
+                "turn_timeout_seconds": 320,
+                "start_on_app_launch": true,
+                "created_at": "2026-01-01T00:00:00Z",
+                "updated_at": "2026-01-01T00:00:00Z"
+            }}"#,
+            "aa".repeat(32)
+        ))
+        .expect("record")
+    }
+
+    #[test]
+    fn restore_rejects_a_stale_phase_a_snapshot() {
+        let snapshot = record();
+        let mut edited = snapshot.clone();
+        edited.system_prompt = Some("new instructions".to_string());
+        edited.updated_at = "2026-01-02T00:00:00Z".to_string();
+
+        assert!(!restore_snapshot_is_current(&snapshot, &edited));
+        assert!(restore_snapshot_is_current(&snapshot, &snapshot));
+    }
+
+    #[test]
+    fn restore_rechecks_launch_eligibility() {
+        let snapshot = record();
+        let mut disabled = snapshot.clone();
+        disabled.start_on_app_launch = false;
+        assert!(!restore_snapshot_is_current(&snapshot, &disabled));
+    }
 }

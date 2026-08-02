@@ -2,9 +2,7 @@ use tauri::AppHandle;
 
 use crate::{
     app_state::AppState,
-    managed_agents::{
-        load_managed_agents, save_managed_agents, try_regenerate_nest, ManagedAgentRecord,
-    },
+    managed_agents::{load_managed_agents, try_regenerate_nest, ManagedAgentRecord},
 };
 
 #[derive(Debug)]
@@ -77,6 +75,7 @@ pub(super) fn rollback_failed_agent_update(
     state: &AppState,
     pubkey: &str,
     rollback: AgentUpdateRollback,
+    operation_id: &str,
 ) -> Result<(), String> {
     {
         let _store_guard = state
@@ -85,7 +84,7 @@ pub(super) fn rollback_failed_agent_update(
             .map_err(|error| error.to_string())?;
         let mut records = load_managed_agents(app)?;
         restore_agent_update(&mut records, pubkey, rollback)?;
-        save_managed_agents(app, &records)?;
+        crate::managed_agents::save_managed_agents_for_operation(app, &records, operation_id)?;
         let restored = records
             .iter()
             .find(|record| record.pubkey == pubkey)

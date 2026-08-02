@@ -5,8 +5,7 @@ use crate::{
     app_state::AppState,
     managed_agents::{
         build_managed_agent_summary, current_instance_id, find_managed_agent_mut,
-        load_managed_agents, load_personas, save_managed_agents, sync_managed_agent_processes,
-        ManagedAgentSummary,
+        load_managed_agents, load_personas, sync_managed_agent_processes, ManagedAgentSummary,
     },
     util::now_iso,
 };
@@ -26,6 +25,10 @@ pub async fn set_managed_agent_start_on_app_launch(
 ) -> Result<ManagedAgentSummary, String> {
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let mutation_lease = state
+            .managed_agent_update_leases
+            .try_acquire_mutation("agent-launch-setting", [pubkey.as_str()])?
+            .ok_or_else(|| "agent setting requires an agent".to_string())?;
         let _store_guard = state
             .managed_agents_store_lock
             .lock()
@@ -39,7 +42,11 @@ pub async fn set_managed_agent_start_on_app_launch(
         let (sync_changed, exited_pubkeys) =
             sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
         if sync_changed {
-            save_managed_agents(&app, &records)?;
+            crate::managed_agents::save_managed_agents_for_operation(
+                &app,
+                &records,
+                mutation_lease.operation_id(),
+            )?;
         }
         for pubkey in &exited_pubkeys {
             state.clear_agent_session_caches(pubkey);
@@ -51,7 +58,11 @@ pub async fn set_managed_agent_start_on_app_launch(
             record.updated_at = now_iso();
         }
 
-        save_managed_agents(&app, &records)?;
+        crate::managed_agents::save_managed_agents_for_operation(
+            &app,
+            &records,
+            mutation_lease.operation_id(),
+        )?;
         let record = records
             .iter()
             .find(|record| record.pubkey == pubkey)
@@ -77,6 +88,10 @@ pub async fn set_managed_agent_auto_restart(
 ) -> Result<ManagedAgentSummary, String> {
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let mutation_lease = state
+            .managed_agent_update_leases
+            .try_acquire_mutation("agent-restart-setting", [pubkey.as_str()])?
+            .ok_or_else(|| "agent setting requires an agent".to_string())?;
         let _store_guard = state
             .managed_agents_store_lock
             .lock()
@@ -90,7 +105,11 @@ pub async fn set_managed_agent_auto_restart(
         let (sync_changed, exited_pubkeys) =
             sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
         if sync_changed {
-            save_managed_agents(&app, &records)?;
+            crate::managed_agents::save_managed_agents_for_operation(
+                &app,
+                &records,
+                mutation_lease.operation_id(),
+            )?;
         }
         for pubkey in &exited_pubkeys {
             state.clear_agent_session_caches(pubkey);
@@ -102,7 +121,11 @@ pub async fn set_managed_agent_auto_restart(
             record.updated_at = now_iso();
         }
 
-        save_managed_agents(&app, &records)?;
+        crate::managed_agents::save_managed_agents_for_operation(
+            &app,
+            &records,
+            mutation_lease.operation_id(),
+        )?;
         let record = records
             .iter()
             .find(|record| record.pubkey == pubkey)

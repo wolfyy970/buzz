@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs::{self, File, OpenOptions},
     io::{Read as _, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
@@ -361,6 +361,34 @@ fn hydrate_keys_with(store: &impl KeyStore, records: &mut [ManagedAgentRecord]) 
 /// before the wholesale rewrite so a definition is never dropped by an
 /// instance-side save (and vice versa via [`save_agent_definitions`]).
 pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> Result<(), String> {
+    save_managed_agents_inner(app, records, None)
+}
+
+/// Save managed-agent instances on behalf of an operation, allowing its owned
+/// pubkeys and unleased incidental changes while still rejecting another
+/// operation's leased pubkeys.
+pub(crate) fn save_managed_agents_for_operation(
+    app: &AppHandle,
+    records: &[ManagedAgentRecord],
+    operation_id: &str,
+) -> Result<(), String> {
+    save_managed_agents_inner(app, records, Some(operation_id))
+}
+
+fn save_managed_agents_inner(
+    app: &AppHandle,
+    records: &[ManagedAgentRecord],
+    operation_id: Option<&str>,
+) -> Result<(), String> {
+    let current = load_managed_agents(app)?;
+    let changed_pubkeys = changed_managed_agent_pubkeys(&current, records);
+    let state = app
+        .try_state::<crate::app_state::AppState>()
+        .ok_or_else(|| "managed-agent state is unavailable".to_string())?;
+    let _write_guard = state
+        .managed_agent_update_leases
+        .acquire_store_write_guard(operation_id, changed_pubkeys.iter().map(String::as_str))?;
+
     let definitions = load_agent_definitions(app).unwrap_or_default();
     let mut sorted = records.to_vec();
     // A caller-supplied key-less record would collide with the definition
@@ -379,6 +407,33 @@ pub fn save_managed_agents(app: &AppHandle, records: &[ManagedAgentRecord]) -> R
     persist_agent_keys(&mut sorted);
 
     write_agent_store(app, definitions, sorted)
+}
+
+fn changed_managed_agent_pubkeys(
+    current: &[ManagedAgentRecord],
+    proposed: &[ManagedAgentRecord],
+) -> Vec<String> {
+    fn keyed_records(records: &[ManagedAgentRecord]) -> BTreeMap<String, Vec<&ManagedAgentRecord>> {
+        let mut keyed = BTreeMap::<String, Vec<&ManagedAgentRecord>>::new();
+        for record in records.iter().filter(|record| !record.pubkey.is_empty()) {
+            keyed
+                .entry(record.pubkey.to_ascii_lowercase())
+                .or_default()
+                .push(record);
+        }
+        keyed
+    }
+
+    let current = keyed_records(current);
+    let proposed = keyed_records(proposed);
+    current
+        .keys()
+        .chain(proposed.keys())
+        .cloned()
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .filter(|pubkey| current.get(pubkey) != proposed.get(pubkey))
+        .collect()
 }
 
 /// Save the key-less agent *definitions*, preserving the keyed instances —

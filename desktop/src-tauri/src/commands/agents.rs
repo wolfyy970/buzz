@@ -270,6 +270,33 @@ pub(super) async fn start_local_agent_pairs_with_preflight(
     pubkey: &str,
     relay_urls: &[String],
 ) -> Result<ManagedAgentSummary, String> {
+    start_local_agent_pairs_with_preflight_inner(app, state, pubkey, relay_urls, None).await
+}
+
+pub(super) async fn start_local_agent_pairs_with_preflight_for_operation(
+    app: &AppHandle,
+    state: &AppState,
+    pubkey: &str,
+    relay_urls: &[String],
+    operation_id: &str,
+) -> Result<ManagedAgentSummary, String> {
+    start_local_agent_pairs_with_preflight_inner(app, state, pubkey, relay_urls, Some(operation_id))
+        .await
+}
+
+async fn start_local_agent_pairs_with_preflight_inner(
+    app: &AppHandle,
+    state: &AppState,
+    pubkey: &str,
+    relay_urls: &[String],
+    authorized_operation_id: Option<&str>,
+) -> Result<ManagedAgentSummary, String> {
+    let operation = authorize_agent_mutation(
+        state,
+        pubkey,
+        "managed-agent-pair-start",
+        authorized_operation_id,
+    )?;
     let record_snapshot = {
         let _store_guard = state
             .managed_agents_store_lock
@@ -296,9 +323,11 @@ pub(super) async fn start_local_agent_pairs_with_preflight(
 
     let mut errors = Vec::new();
     for relay_url in relay_urls {
-        if let Err(error) = crate::managed_agents::start_managed_agent_runtime_pair_lazy(
+        if let Err(error) = crate::managed_agents::start_managed_agent_runtime_pair_authorized(
             pubkey.to_string(),
             relay_url.clone(),
+            true,
+            operation.operation_id(),
             app.clone(),
         ) {
             errors.push(format!("{relay_url}: {error}"));
@@ -341,6 +370,50 @@ pub(super) async fn start_local_agent_with_preflight(
     owner_hex: &str,
     allow_fresh_create_start: bool,
 ) -> Result<ManagedAgentSummary, String> {
+    start_local_agent_with_preflight_inner(
+        app,
+        state,
+        pubkey,
+        owner_hex,
+        allow_fresh_create_start,
+        None,
+    )
+    .await
+}
+
+pub(super) async fn start_local_agent_with_preflight_for_operation(
+    app: &AppHandle,
+    state: &AppState,
+    pubkey: &str,
+    owner_hex: &str,
+    allow_fresh_create_start: bool,
+    operation_id: &str,
+) -> Result<ManagedAgentSummary, String> {
+    start_local_agent_with_preflight_inner(
+        app,
+        state,
+        pubkey,
+        owner_hex,
+        allow_fresh_create_start,
+        Some(operation_id),
+    )
+    .await
+}
+
+async fn start_local_agent_with_preflight_inner(
+    app: &AppHandle,
+    state: &AppState,
+    pubkey: &str,
+    owner_hex: &str,
+    allow_fresh_create_start: bool,
+    authorized_operation_id: Option<&str>,
+) -> Result<ManagedAgentSummary, String> {
+    let operation = authorize_agent_mutation(
+        state,
+        pubkey,
+        "managed-agent-start",
+        authorized_operation_id,
+    )?;
     let record_snapshot = {
         let _store_guard = state
             .managed_agents_store_lock
@@ -394,7 +467,11 @@ pub(super) async fn start_local_agent_with_preflight(
         }
     }
     start_managed_agent_process(app, record, &mut runtimes, Some(owner_hex))?;
-    save_managed_agents(app, &records)?;
+    crate::managed_agents::save_managed_agents_for_operation(
+        app,
+        &records,
+        operation.operation_id(),
+    )?;
     if let Some(saved_record) = records.iter().find(|r| r.pubkey == pubkey) {
         retain_managed_agent_pending(app, state, saved_record);
     }
@@ -411,6 +488,44 @@ pub(super) async fn start_local_agent_with_preflight(
     )
 }
 
+struct AuthorizedAgentMutation {
+    _lease: Option<crate::managed_agents::ManagedAgentUpdateLease>,
+    operation_id: String,
+}
+
+impl AuthorizedAgentMutation {
+    fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+}
+
+fn authorize_agent_mutation(
+    state: &AppState,
+    pubkey: &str,
+    label: &str,
+    authorized_operation_id: Option<&str>,
+) -> Result<AuthorizedAgentMutation, String> {
+    if let Some(operation_id) = authorized_operation_id {
+        state
+            .managed_agent_update_leases
+            .ensure_owned(operation_id, [pubkey])?;
+        return Ok(AuthorizedAgentMutation {
+            _lease: None,
+            operation_id: operation_id.to_string(),
+        });
+    }
+
+    let lease = state
+        .managed_agent_update_leases
+        .try_acquire_mutation(label, [pubkey])?
+        .ok_or_else(|| format!("{label} requires an agent"))?;
+    let operation_id = lease.operation_id().to_string();
+    Ok(AuthorizedAgentMutation {
+        _lease: Some(lease),
+        operation_id,
+    })
+}
+
 /// Deploy an agent to a provider backend. Resolves the binary, calls deploy via
 /// spawn_blocking, and persists the result (backend_agent_id or last_error).
 ///
@@ -420,30 +535,40 @@ pub(super) async fn start_local_agent_with_preflight(
 ///
 /// Returns Ok(()) on success, Err(message) on failure. Either way the record is
 /// updated and saved before returning.
+struct ProviderDeployRequest<'a> {
+    provider_id: &'a str,
+    config: &'a serde_json::Value,
+    agent_json: serde_json::Value,
+    cached_binary_path: Option<&'a str>,
+}
+
 async fn deploy_to_provider(
     app: &AppHandle,
     state: &AppState,
     pubkey: &str,
-    provider_id: &str,
-    config: &serde_json::Value,
-    agent_json: serde_json::Value,
-    cached_binary_path: Option<&str>,
+    request: ProviderDeployRequest<'_>,
+    authorized_operation_id: Option<&str>,
 ) -> Result<(), String> {
+    let operation =
+        authorize_agent_mutation(state, pubkey, "provider-deploy", authorized_operation_id)?;
+
     // Resolve via discovered candidates only. Cached path must match BOTH
     // "is a discovered candidate" AND "belongs to this provider_id". A tampered
     // record cannot redirect deploys to a different provider's binary.
-    let bin_path = cached_binary_path
+    let bin_path = request
+        .cached_binary_path
         .map(std::path::PathBuf::from)
         .filter(|p| p.exists())
         .map(|p| p.canonicalize().unwrap_or(p))
         .filter(|canonical| {
             discover_provider_candidates().iter().any(|(id, cp)| {
-                id == provider_id && cp.canonicalize().ok().as_ref() == Some(canonical)
+                id == request.provider_id && cp.canonicalize().ok().as_ref() == Some(canonical)
             })
         })
-        .map_or_else(|| resolve_provider_binary(provider_id), Ok)?;
+        .map_or_else(|| resolve_provider_binary(request.provider_id), Ok)?;
 
-    let config_clone = config.clone();
+    let config_clone = request.config.clone();
+    let agent_json = request.agent_json;
     let deploy_result =
         tokio::task::spawn_blocking(move || provider_deploy(&bin_path, &agent_json, &config_clone))
             .await
@@ -470,11 +595,19 @@ async fn deploy_to_provider(
         Err(ref e) => {
             rec.last_error = Some(e.clone());
             rec.updated_at = now_iso();
-            save_managed_agents(app, &records)?;
+            crate::managed_agents::save_managed_agents_for_operation(
+                app,
+                &records,
+                operation.operation_id(),
+            )?;
             return Err(e.clone());
         }
     }
-    save_managed_agents(app, &records)?;
+    crate::managed_agents::save_managed_agents_for_operation(
+        app,
+        &records,
+        operation.operation_id(),
+    )?;
     Ok(())
 }
 
@@ -1006,7 +1139,20 @@ pub async fn create_managed_agent(
                     .ok_or_else(|| "agent disappeared".to_string())?;
                 build_deploy_payload(&app, &state, rec)?
             };
-            match deploy_to_provider(&app, &state, &pubkey, id, config, agent_json, None).await {
+            match deploy_to_provider(
+                &app,
+                &state,
+                &pubkey,
+                ProviderDeployRequest {
+                    provider_id: id,
+                    config,
+                    agent_json,
+                    cached_binary_path: None,
+                },
+                None,
+            )
+            .await
+            {
                 Ok(()) => spawn_error,
                 Err(e) => Some(e),
             }
@@ -1059,6 +1205,7 @@ pub async fn start_managed_agent(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<ManagedAgentSummary, String> {
+    let operation = authorize_agent_mutation(&state, &pubkey, "managed-agent-start", None)?;
     // Snapshot the workspace owner pubkey for the legacy auth_tag fallback.
     // Read outside the records lock to keep lock ordering simple.
     let owner_hex = workspace_owner_hex(&state)?;
@@ -1087,7 +1234,11 @@ pub async fn start_managed_agent(
         let (sync_changed, exited_pubkeys) =
             sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
         if sync_changed {
-            save_managed_agents(&app, &records)?;
+            crate::managed_agents::save_managed_agents_for_operation(
+                &app,
+                &records,
+                operation.operation_id(),
+            )?;
         }
         for pubkey in &exited_pubkeys {
             state.clear_agent_session_caches(pubkey);
@@ -1128,7 +1279,15 @@ pub async fn start_managed_agent(
 
     let result = match target {
         StartTarget::Local => {
-            start_local_agent_with_preflight(&app, &state, &pubkey, &owner_hex, false).await
+            start_local_agent_with_preflight_for_operation(
+                &app,
+                &state,
+                &pubkey,
+                &owner_hex,
+                false,
+                operation.operation_id(),
+            )
+            .await
         }
         StartTarget::Provider {
             backend: BackendKind::Provider { id, config },
@@ -1139,10 +1298,13 @@ pub async fn start_managed_agent(
                 &app,
                 &state,
                 &pubkey,
-                &id,
-                &config,
-                agent_json,
-                cached_binary_path.as_deref(),
+                ProviderDeployRequest {
+                    provider_id: &id,
+                    config: &config,
+                    agent_json,
+                    cached_binary_path: cached_binary_path.as_deref(),
+                },
+                Some(operation.operation_id()),
             )
             .await?;
 
@@ -1211,6 +1373,7 @@ pub async fn stop_managed_agent(
     use tauri::Manager;
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let operation = authorize_agent_mutation(&state, &pubkey, "managed-agent-stop", None)?;
         let _store_guard = state
             .managed_agents_store_lock
             .lock()
@@ -1224,7 +1387,11 @@ pub async fn stop_managed_agent(
         let (sync_changed, exited_pubkeys) =
             sync_managed_agent_processes(&mut records, &mut runtimes, &current_instance_id(&app));
         if sync_changed {
-            save_managed_agents(&app, &records)?;
+            crate::managed_agents::save_managed_agents_for_operation(
+                &app,
+                &records,
+                operation.operation_id(),
+            )?;
         }
         for pubkey in &exited_pubkeys {
             state.clear_agent_session_caches(pubkey);
@@ -1243,7 +1410,11 @@ pub async fn stop_managed_agent(
             // the config-restart flows still drain every pair.
             stop_managed_agent_workspace_pair(&app, record, &mut runtimes)?;
         }
-        save_managed_agents(&app, &records)?;
+        crate::managed_agents::save_managed_agents_for_operation(
+            &app,
+            &records,
+            operation.operation_id(),
+        )?;
         let record = records
             .iter()
             .find(|record| record.pubkey == pubkey)
@@ -1272,6 +1443,10 @@ pub async fn delete_managed_agent(
     use tauri::Manager;
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let mutation_lease = state
+            .managed_agent_update_leases
+            .try_acquire_mutation("agent-delete", [pubkey.as_str()])?
+            .ok_or_else(|| "agent delete requires an agent".to_string())?;
         {
             let _store_guard = state
                 .managed_agents_store_lock
@@ -1289,7 +1464,11 @@ pub async fn delete_managed_agent(
                 &current_instance_id(&app),
             );
             if sync_changed {
-                save_managed_agents(&app, &records)?;
+                crate::managed_agents::save_managed_agents_for_operation(
+                    &app,
+                    &records,
+                    mutation_lease.operation_id(),
+                )?;
             }
             for pubkey in &exited_pubkeys {
                 state.clear_agent_session_caches(pubkey);
@@ -1321,7 +1500,11 @@ pub async fn delete_managed_agent(
             if records.len() == initial_len {
                 return Err(format!("agent {pubkey} not found"));
             }
-            save_managed_agents(&app, &records)?;
+            crate::managed_agents::save_managed_agents_for_operation(
+                &app,
+                &records,
+                mutation_lease.operation_id(),
+            )?;
             // Remove the agent's nsec from the keyring after the record is gone.
             crate::managed_agents::delete_agent_key(&pubkey);
             // Tombstone-after-validation: only reached past the deployed-remote

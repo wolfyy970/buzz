@@ -75,6 +75,30 @@ fn collect_cascade_pubkeys(agents: &[ManagedAgentRecord], persona_id: &str) -> V
         .collect()
 }
 
+/// Reserve every current instance of a persona for the duration of a persona
+/// mutation. The store lock makes the instance snapshot and lease acquisition
+/// one ordered boundary with agent edits; the returned RAII guard keeps later
+/// edits and safe updates fenced until the caller finishes.
+pub(super) fn acquire_persona_mutation_lease(
+    app: &AppHandle,
+    state: &AppState,
+    persona_id: &str,
+    label: &str,
+) -> Result<Option<crate::managed_agents::ManagedAgentUpdateLease>, String> {
+    let _store_guard = state
+        .managed_agents_store_lock
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let agents = load_managed_agents(app)?;
+    state.managed_agent_update_leases.try_acquire_mutation(
+        label,
+        agents
+            .iter()
+            .filter(|agent| agent.persona_id.as_deref() == Some(persona_id))
+            .map(|agent| agent.pubkey.as_str()),
+    )
+}
+
 /// Names of cascade agents that are provider-deployed: non-local backend with
 /// a live `backend_agent_id`.
 ///
@@ -172,6 +196,9 @@ pub async fn delete_persona(id: String, app: AppHandle) -> Result<(), String> {
             // Build the cascade set. HashSet for O(1) membership in Phase 3.
             let cascade: std::collections::HashSet<String> =
                 collect_cascade_pubkeys(&agents, &id).into_iter().collect();
+            let mutation_lease = state
+                .managed_agent_update_leases
+                .try_acquire_mutation("persona-delete", cascade.iter().map(String::as_str))?;
 
             // Remote-agent pre-flight: refuse the cascade before any destructive
             // work while any target is provider-deployed. Nothing in
@@ -222,8 +249,16 @@ pub async fn delete_persona(id: String, app: AppHandle) -> Result<(), String> {
             //                        finds an empty cascade and proceeds cleanly
             // Keys and tombstones are enqueued only after their records leave disk.
             if !cascade.is_empty() {
+                let operation_id = mutation_lease
+                    .as_ref()
+                    .ok_or_else(|| "persona cascade lost its agent lease".to_string())?
+                    .operation_id();
                 commit_cascade_agents(&mut agents, &cascade, |recs| {
-                    save_managed_agents(&app, recs)
+                    crate::managed_agents::save_managed_agents_for_operation(
+                        &app,
+                        recs,
+                        operation_id,
+                    )
                 })?;
             }
 
@@ -264,6 +299,8 @@ pub async fn set_persona_active(
     use tauri::Manager;
     tokio::task::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let _mutation_lease =
+            acquire_persona_mutation_lease(&app, &state, &id, "persona-activation")?;
         let _store_guard = state
             .managed_agents_store_lock
             .lock()

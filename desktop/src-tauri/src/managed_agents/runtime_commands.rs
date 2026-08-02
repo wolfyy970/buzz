@@ -10,7 +10,8 @@ use super::{
     resolve_effective_agent_env, save_managed_agents, spawn_agent_child, terminate_process,
     terminate_untracked_pair_runtime, write_agent_runtime_receipt, AgentReadiness, BackendKind,
     ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
-    ManagedAgentRuntimeReceipt, ManagedAgentRuntimeStatus, NormalRuntimeStartDisposition,
+    ManagedAgentRuntimeReceipt, ManagedAgentRuntimeStatus, ManagedAgentUpdateLease,
+    NormalRuntimeStartDisposition,
 };
 use crate::app_state::AppState;
 
@@ -76,6 +77,59 @@ fn status_for_with(
 
 fn emit_status(app: &AppHandle, status: &ManagedAgentRuntimeStatus) {
     let _ = app.emit(STATUS_EVENT, status);
+}
+
+/// Wait until an ordinary lazy runtime pair is available to receive work.
+///
+/// This deliberately accepts `Listening`: unlike safe-update candidate
+/// activation, an ordinary lazy restart has not initialized its inner agent
+/// yet and listening is its healthy idle state.
+pub(crate) async fn wait_for_managed_agent_runtime_started(
+    app: &AppHandle,
+    pubkey: &str,
+    relay_url: &str,
+) -> Result<(), String> {
+    let key = ManagedAgentRuntimeKey::new(pubkey.to_string(), relay_url)?;
+    let started = std::time::Instant::now();
+    loop {
+        {
+            let state = app.state::<AppState>();
+            let mut runtimes = state
+                .managed_agent_processes
+                .lock()
+                .map_err(|error| error.to_string())?;
+            let runtime = runtimes
+                .get_mut(&key)
+                .ok_or_else(|| "The agent stopped before it became available.".to_string())?;
+            if let Some(status) = runtime
+                .child
+                .try_wait()
+                .map_err(|error| format!("Could not check the agent: {error}"))?
+            {
+                return Err(format!(
+                    "The agent exited before it became available ({status})."
+                ));
+            }
+            match runtime.lifecycle {
+                ManagedAgentRuntimeLifecycle::Listening | ManagedAgentRuntimeLifecycle::Ready => {
+                    return Ok(());
+                }
+                ManagedAgentRuntimeLifecycle::Failed => {
+                    return Err(runtime
+                        .error
+                        .clone()
+                        .unwrap_or_else(|| "The agent failed its startup check.".to_string()));
+                }
+                ManagedAgentRuntimeLifecycle::Starting
+                | ManagedAgentRuntimeLifecycle::Waking
+                | ManagedAgentRuntimeLifecycle::Stopped => {}
+            }
+        }
+        if started.elapsed() >= std::time::Duration::from_secs(30) {
+            return Err("The agent did not become available within 30 seconds.".to_string());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
 }
 
 fn observer_lifecycle_key(
@@ -230,7 +284,23 @@ pub(crate) fn start_managed_agent_runtime_pair_lazy(
     relay_url: String,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
-    start_pair(pubkey, relay_url, true, None, app)
+    start_pair(pubkey, relay_url, true, None, None, app)
+}
+
+/// Start a runtime pair as part of the pubkey-owning update operation.
+///
+/// The caller must keep its [`ManagedAgentUpdateLease`] alive for the entire
+/// update. This function verifies ownership instead of acquiring a second
+/// lease, so an update can activate its candidate while normal starts and
+/// reconciles remain fenced out.
+pub(crate) fn start_managed_agent_runtime_pair_authorized(
+    pubkey: String,
+    relay_url: String,
+    lazy: bool,
+    operation_id: &str,
+    app: AppHandle,
+) -> Result<ManagedAgentRuntimeStatus, String> {
+    start_pair(pubkey, relay_url, lazy, None, Some(operation_id), app)
 }
 
 #[tauri::command]
@@ -247,9 +317,12 @@ fn start_pair(
     relay_url: String,
     lazy: bool,
     expected_updated_at: Option<&str>,
+    authorized_operation_id: Option<&str>,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
     let state = app.state::<AppState>();
+    let start_authorization =
+        authorize_runtime_operation(&state, &pubkey, "runtime-start", authorized_operation_id)?;
     let _transition = state
         .managed_agent_runtime_transition
         .lock()
@@ -312,7 +385,7 @@ fn start_pair(
     runtimes.insert(key.clone(), ManagedAgentPairRuntime::starting(process));
     let status = status_for(&app, record, &key, runtimes.get(&key), None);
     drop(runtimes);
-    save_managed_agents(&app, &records)?;
+    super::save_managed_agents_for_operation(&app, &records, start_authorization.operation_id())?;
     emit_status(&app, &status);
     Ok(status)
 }
@@ -323,7 +396,18 @@ pub fn stop_managed_agent_runtime(
     relay_url: String,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
+    stop_pair(pubkey, relay_url, None, app)
+}
+
+fn stop_pair(
+    pubkey: String,
+    relay_url: String,
+    authorized_operation_id: Option<&str>,
+    app: AppHandle,
+) -> Result<ManagedAgentRuntimeStatus, String> {
     let state = app.state::<AppState>();
+    let stop_authorization =
+        authorize_runtime_operation(&state, &pubkey, "runtime-stop", authorized_operation_id)?;
     let _transition = state
         .managed_agent_runtime_transition
         .lock()
@@ -380,7 +464,7 @@ pub fn stop_managed_agent_runtime(
     record.last_stopped_at = Some(record.updated_at.clone());
     let status = status_for(&app, record, &key, None, None);
     drop(runtimes);
-    save_managed_agents(&app, &records)?;
+    super::save_managed_agents_for_operation(&app, &records, stop_authorization.operation_id())?;
     emit_status(&app, &status);
     Ok(status)
 }
@@ -391,8 +475,22 @@ pub fn restart_managed_agent_runtime(
     relay_url: String,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
-    stop_managed_agent_runtime(pubkey.clone(), relay_url.clone(), app.clone())?;
-    start_pair(pubkey, relay_url, true, None, app)
+    let state = app.state::<AppState>();
+    let operation = authorize_runtime_operation(&state, &pubkey, "runtime-restart", None)?;
+    stop_pair(
+        pubkey.clone(),
+        relay_url.clone(),
+        Some(operation.operation_id()),
+        app.clone(),
+    )?;
+    start_pair(
+        pubkey,
+        relay_url,
+        true,
+        None,
+        Some(operation.operation_id()),
+        app,
+    )
 }
 
 /// Probe whether this agent can operate on `requested_relay_url`.
@@ -516,6 +614,7 @@ pub async fn reconcile_managed_agent_runtimes(
                         key.relay_url.clone(),
                         true,
                         Some(&record.updated_at),
+                        None,
                         app.clone(),
                     ) {
                         Ok(mut status) => {
@@ -575,6 +674,45 @@ pub async fn reconcile_managed_agent_runtimes(
     })
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))
+}
+
+#[derive(Debug)]
+struct AuthorizedRuntimeStart {
+    _lease: Option<ManagedAgentUpdateLease>,
+    operation_id: String,
+}
+
+impl AuthorizedRuntimeStart {
+    fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+}
+
+fn authorize_runtime_operation(
+    state: &AppState,
+    pubkey: &str,
+    label: &str,
+    authorized_operation_id: Option<&str>,
+) -> Result<AuthorizedRuntimeStart, String> {
+    if let Some(operation_id) = authorized_operation_id {
+        state
+            .managed_agent_update_leases
+            .ensure_owned(operation_id, [pubkey])?;
+        return Ok(AuthorizedRuntimeStart {
+            _lease: None,
+            operation_id: operation_id.to_string(),
+        });
+    }
+
+    let lease = state
+        .managed_agent_update_leases
+        .try_acquire_mutation(label, [pubkey])?
+        .ok_or_else(|| format!("{label} requires an agent"))?;
+    let operation_id = lease.operation_id().to_string();
+    Ok(AuthorizedRuntimeStart {
+        _lease: Some(lease),
+        operation_id,
+    })
 }
 
 #[cfg(test)]
@@ -721,5 +859,34 @@ mod tests {
             Some("unexpected"),
         );
         assert!(observer_lifecycle_key(&ready_with_error.pubkey, &ready_with_error).is_err());
+    }
+
+    #[test]
+    fn normal_start_and_reconcile_are_fenced_by_an_update_lease() {
+        let state = crate::app_state::build_app_state();
+        let pubkey = "aa".repeat(32);
+        let _lease = state
+            .managed_agent_update_leases
+            .try_acquire("safe-update", [pubkey.as_str()])
+            .expect("update lease");
+
+        let error = authorize_runtime_operation(&state, &pubkey, "runtime-start", None)
+            .expect_err("ordinary start must not overlap an update");
+        assert!(error.contains("being updated"));
+    }
+
+    #[test]
+    fn matching_operation_can_use_the_authorized_start_path() {
+        let state = crate::app_state::build_app_state();
+        let pubkey = "aa".repeat(32);
+        let _lease = state
+            .managed_agent_update_leases
+            .try_acquire("safe-update", [pubkey.as_str()])
+            .expect("update lease");
+
+        let authorization =
+            authorize_runtime_operation(&state, &pubkey, "runtime-start", Some("safe-update"))
+                .expect("owning operation is authorized");
+        assert_eq!(authorization.operation_id(), "safe-update");
     }
 }

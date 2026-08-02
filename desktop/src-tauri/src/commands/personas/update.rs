@@ -2,7 +2,7 @@
 //! and the `update_persona_with` seam that `update_persona_and_publish` reuses
 //! to await relay acceptance for the same save.
 
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::{
     app_state::AppState,
@@ -29,6 +29,9 @@ pub async fn update_persona(
     input: UpdatePersonaRequest,
     app: AppHandle,
 ) -> Result<UpdatePersonaResult, String> {
+    let state = app.state::<AppState>();
+    let _mutation_lease =
+        super::acquire_persona_mutation_lease(&app, &state, &input.id, "persona-update")?;
     let (persona, ()) = update_persona_with(input, app, |app, state, persona| {
         retain_persona_pending(app, state, persona);
         Ok(())

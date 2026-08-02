@@ -10,7 +10,8 @@ use crate::{
             self, CreateProjectConnectionRequest, ProjectConnection, ProjectConnectionImpact,
             UpdateProjectConnectionRequest,
         },
-        save_managed_agents, stop_managed_agent_process, AgentProjectScope,
+        save_managed_agents_for_operation, start_managed_agent_runtime_pair_authorized,
+        stop_managed_agent_process, wait_for_managed_agent_runtime_started, AgentProjectScope,
     },
 };
 
@@ -27,6 +28,10 @@ pub fn create_project_connection(
     app: AppHandle,
     input: CreateProjectConnectionRequest,
 ) -> Result<ProjectConnection, String> {
+    let state = app.state::<AppState>();
+    let _mutation_lease = state
+        .managed_agent_update_leases
+        .try_acquire_global_mutation("project-connection-create")?;
     project_connections::create_project_connection(&app, input)
 }
 
@@ -36,6 +41,10 @@ pub async fn update_project_connection(
     input: UpdateProjectConnectionRequest,
 ) -> Result<ProjectConnection, String> {
     let state = app.state::<AppState>();
+    let mutation_lease = state
+        .managed_agent_update_leases
+        .try_acquire_global_mutation("project-connection-update")?;
+    let operation_id = mutation_lease.operation_id();
     let connection_id = input.id.clone();
     let rollback = project_connections::snapshot_project_connection(&app, &connection_id)?;
     let impact = project_connections::project_connection_impact(&app, &connection_id)?;
@@ -72,13 +81,13 @@ pub async fn update_project_connection(
                 break;
             }
         }
-        save_managed_agents(&app, &records)?;
+        save_managed_agents_for_operation(&app, &records, operation_id)?;
         (original_relays, stop_error)
     };
 
     if let Some(error) = stop_error {
         let restart_errors =
-            super::agent_template_updates::restart_original_pairs(&app, &original_relays).await;
+            restart_original_pairs_for_operation(&app, &original_relays, operation_id).await;
         if restart_errors.is_empty() {
             return Err(error);
         }
@@ -96,7 +105,7 @@ pub async fn update_project_connection(
         Ok(updated) => updated,
         Err(error) => {
             let restart_errors =
-                super::agent_template_updates::restart_original_pairs(&app, &original_relays).await;
+                restart_original_pairs_for_operation(&app, &original_relays, operation_id).await;
             if restart_errors.is_empty() {
                 return Err(error);
             }
@@ -112,7 +121,7 @@ pub async fn update_project_connection(
     };
 
     let restart_errors =
-        super::agent_template_updates::restart_original_pairs(&app, &original_relays).await;
+        restart_original_pairs_for_operation(&app, &original_relays, operation_id).await;
     if restart_errors.is_empty() {
         project_connections::finalize_project_connection_update(&rollback);
         return Ok(updated);
@@ -136,13 +145,13 @@ pub async fn update_project_connection(
             let record = find_managed_agent_mut(&mut records, &agent.pubkey)?;
             stop_managed_agent_process(&app, record, &mut runtimes)?;
         }
-        save_managed_agents(&app, &records)
+        save_managed_agents_for_operation(&app, &records, operation_id)
     })()
     .err();
     let restore_error =
         project_connections::restore_project_connection(&app, &rollback, updated.generation).err();
     let recovery_restarts = if restore_error.is_none() {
-        super::agent_template_updates::restart_original_pairs(&app, &original_relays).await
+        restart_original_pairs_for_operation(&app, &original_relays, operation_id).await
     } else {
         Vec::new()
     };
@@ -180,6 +189,10 @@ pub fn test_project_connection(
     app: AppHandle,
     connection_id: String,
 ) -> Result<ProjectConnection, String> {
+    let state = app.state::<AppState>();
+    let _mutation_lease = state
+        .managed_agent_update_leases
+        .try_acquire_global_mutation("project-connection-test")?;
     project_connections::test_project_connection(&app, &connection_id)
 }
 
@@ -193,5 +206,41 @@ pub fn get_project_connection_impact(
 
 #[tauri::command]
 pub fn delete_project_connection(app: AppHandle, connection_id: String) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let _mutation_lease = state
+        .managed_agent_update_leases
+        .try_acquire_global_mutation("project-connection-delete")?;
     project_connections::delete_project_connection(&app, &connection_id)
+}
+
+async fn restart_original_pairs_for_operation(
+    app: &AppHandle,
+    original_relays: &BTreeMap<String, Vec<String>>,
+    operation_id: &str,
+) -> Vec<(String, String)> {
+    // Keep the unleased compatibility helper reachable for its existing
+    // non-transaction callers while this path uses the operation-aware form.
+    let _unleased_restart = super::agent_template_updates::restart_original_pairs;
+    let mut errors = Vec::new();
+    for (pubkey, relays) in original_relays {
+        for relay in relays {
+            match start_managed_agent_runtime_pair_authorized(
+                pubkey.clone(),
+                relay.clone(),
+                true,
+                operation_id,
+                app.clone(),
+            ) {
+                Ok(_) => {
+                    if let Err(error) =
+                        wait_for_managed_agent_runtime_started(app, pubkey, relay).await
+                    {
+                        errors.push((pubkey.clone(), error));
+                    }
+                }
+                Err(error) => errors.push((pubkey.clone(), error)),
+            }
+        }
+    }
+    errors
 }

@@ -8,13 +8,15 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write as _;
 use std::path::Path;
+use std::sync::Arc;
 
 use tempfile::NamedTempFile;
 
 use super::{
-    agent_keyring_name, hydrate_keys_with, migrate_inline_key, persist_agent_keys_with,
-    KeyMigration, KeyStore, KeyringProbe, ManagedAgentRecord,
+    agent_keyring_name, changed_managed_agent_pubkeys, hydrate_keys_with, migrate_inline_key,
+    persist_agent_keys_with, KeyMigration, KeyStore, KeyringProbe, ManagedAgentRecord,
 };
+use crate::managed_agents::ManagedAgentUpdateLeaseRegistry;
 
 /// In-memory [`KeyStore`] for testing the migrate decision without the OS
 /// keyring. `reachable=false` simulates a backend outage; `fail_verify`
@@ -141,6 +143,113 @@ fn record_with_pubkey_and_key(pubkey: &str, nsec: &str) -> ManagedAgentRecord {
         }}"#
     ))
     .expect("sample record")
+}
+
+#[test]
+fn leased_changed_record_is_rejected_by_default_save_policy() {
+    let pubkey = "aa".repeat(32);
+    let current = vec![record_with_pubkey_and_key(&pubkey, "nsec1key")];
+    let mut proposed = current.clone();
+    proposed[0].name = "changed".to_string();
+    let changed = changed_managed_agent_pubkeys(&current, &proposed);
+    assert_eq!(changed, vec![pubkey.clone()]);
+
+    let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+    let _lease = registry
+        .try_acquire("safe-update", [pubkey.as_str()])
+        .expect("lease");
+    assert!(registry
+        .acquire_store_write_guard(None, changed.iter().map(String::as_str))
+        .is_err());
+}
+
+#[test]
+fn leased_deleted_record_is_rejected_by_default_save_policy() {
+    let pubkey = "aa".repeat(32);
+    let current = vec![record_with_pubkey_and_key(&pubkey, "nsec1key")];
+    let changed = changed_managed_agent_pubkeys(&current, &[]);
+    assert_eq!(changed, vec![pubkey.clone()]);
+
+    let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+    let _lease = registry
+        .try_acquire("safe-update", [pubkey.as_str()])
+        .expect("lease");
+    assert!(registry
+        .acquire_store_write_guard(None, changed.iter().map(String::as_str))
+        .is_err());
+}
+
+#[test]
+fn leased_duplicate_record_is_detected_as_a_change() {
+    let pubkey = "aa".repeat(32);
+    let current = vec![record_with_pubkey_and_key(&pubkey, "nsec1key")];
+    let mut proposed = current.clone();
+    proposed.push(current[0].clone());
+    let changed = changed_managed_agent_pubkeys(&current, &proposed);
+    assert_eq!(changed, vec![pubkey.clone()]);
+
+    let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+    let _lease = registry
+        .try_acquire("safe-update", [pubkey.as_str()])
+        .expect("lease");
+    assert!(registry
+        .acquire_store_write_guard(None, changed.iter().map(String::as_str))
+        .is_err());
+}
+
+#[test]
+fn unchanged_leased_record_is_allowed_by_default_save_policy() {
+    let pubkey = "aa".repeat(32);
+    let current = vec![record_with_pubkey_and_key(&pubkey, "nsec1key")];
+    let changed = changed_managed_agent_pubkeys(&current, &current);
+    assert!(changed.is_empty());
+
+    let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+    let _lease = registry
+        .try_acquire("safe-update", [pubkey.as_str()])
+        .expect("lease");
+    let _write_guard = registry
+        .acquire_store_write_guard(None, changed.iter().map(String::as_str))
+        .expect("unchanged records do not cross the mutation boundary");
+}
+
+#[test]
+fn owning_operation_can_save_its_changed_record() {
+    let pubkey = "aa".repeat(32);
+    let current = vec![record_with_pubkey_and_key(&pubkey, "nsec1key")];
+    let mut proposed = current.clone();
+    proposed[0].name = "changed".to_string();
+    let changed = changed_managed_agent_pubkeys(&current, &proposed);
+
+    let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+    let _lease = registry
+        .try_acquire("safe-update", [pubkey.as_str()])
+        .expect("lease");
+    let _write_guard = registry
+        .acquire_store_write_guard(Some("safe-update"), changed.iter().map(String::as_str))
+        .expect("owning operation is authorized");
+}
+
+#[test]
+fn unrelated_leased_record_does_not_block_another_record_save() {
+    let leased_pubkey = "aa".repeat(32);
+    let changed_pubkey = "bb".repeat(32);
+    let current = vec![
+        record_with_pubkey_and_key(&leased_pubkey, "nsec1a"),
+        record_with_pubkey_and_key(&changed_pubkey, "nsec1b"),
+    ];
+    let mut proposed = current.clone();
+    proposed[1].name = "changed".to_string();
+    let changed = changed_managed_agent_pubkeys(&current, &proposed);
+    assert_eq!(changed, vec![changed_pubkey]);
+
+    let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+    let _lease = registry
+        .try_acquire("safe-update", [leased_pubkey.as_str()])
+        .expect("lease");
+    let _write_guard = registry
+        .acquire_store_write_guard(None, changed.iter().map(String::as_str))
+        .expect("unrelated record remains writable");
 }
 
 #[test]

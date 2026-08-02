@@ -15,7 +15,9 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::huddle::HuddleState;
 pub(crate) use crate::identity_storage::{IdentityStorage, RecoveryState, ResolvedIdentity};
 use crate::managed_agents::config_bridge::SessionConfigCache;
-use crate::managed_agents::{ManagedAgentPairRuntime, ManagedAgentRuntimeKey};
+use crate::managed_agents::{
+    ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentUpdateLeaseRegistry,
+};
 
 pub struct AppState {
     pub keys: Mutex<Keys>,
@@ -50,6 +52,9 @@ pub struct AppState {
     /// Never perform network I/O while holding this lock.
     pub managed_agent_runtime_transition: Mutex<()>,
     pub managed_agents_store_lock: Mutex<()>,
+    /// Pubkey-level ownership for safe updates and conflicting agent
+    /// mutations. Unlike runtime-pair claims, these leases survive drain.
+    pub managed_agent_update_leases: Arc<ManagedAgentUpdateLeaseRegistry>,
     pub channel_templates_store_lock: Mutex<()>,
     pub managed_agent_processes: Mutex<HashMap<ManagedAgentRuntimeKey, ManagedAgentPairRuntime>>,
     pub huddle_state: Mutex<HuddleState>,
@@ -213,6 +218,7 @@ pub fn build_app_state() -> AppState {
         managed_agent_runtime_transition: Mutex::new(()),
         identity_mutation: Mutex::new(()),
         managed_agents_store_lock: Mutex::new(()),
+        managed_agent_update_leases: Arc::new(ManagedAgentUpdateLeaseRegistry::default()),
         channel_templates_store_lock: Mutex::new(()),
         managed_agent_processes: Mutex::new(HashMap::new()),
         session_config_cache: Mutex::new(HashMap::new()),
