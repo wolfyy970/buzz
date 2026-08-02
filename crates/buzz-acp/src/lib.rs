@@ -1767,9 +1767,11 @@ async fn tokio_main() -> Result<()> {
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         interval
     });
+    let mut handoff_request_error_reported = false;
     let mut shutdown_mode = ShutdownMode::Normal;
     let mut planned_cutover_time = None;
-    let mut planned_update_deferred = false;
+    let mut planned_checkpoint_identity = None;
+    let mut planned_update_deferred = None;
 
     // Track the newest membership notification timestamp per channel.
     // On reconnect the relay replays events newest-first, so the first event
@@ -1859,7 +1861,10 @@ async fn tokio_main() -> Result<()> {
                 );
             }
         }
-        if planned_update_deferred && pending_handoff.is_none() {
+        if let Some(checkpoint_identity) = planned_update_deferred
+            .clone()
+            .filter(|_| pending_handoff.is_none())
+        {
             let cutover_time = unix_now_secs();
             match write_pre_quiesce_checkpoint(
                 &config,
@@ -1867,10 +1872,12 @@ async fn tokio_main() -> Result<()> {
                 &pubkey_hex,
                 &subscribed_channel_ids,
                 cutover_time,
+                &checkpoint_identity,
             ) {
                 Ok(()) => {
                     shutdown_mode = ShutdownMode::PlannedUpdate;
                     planned_cutover_time = Some(cutover_time);
+                    planned_checkpoint_identity = planned_update_deferred.take();
                     tracing::info!("deferred planned update checkpoint committed");
                     break;
                 }
@@ -2016,8 +2023,26 @@ async fn tokio_main() -> Result<()> {
                     let _ = result_rx;
                     if let Some(mode) = requested_mode {
                         if mode == ShutdownMode::PlannedUpdate {
+                            let checkpoint_identity =
+                                match handoff::CheckpointIdentity::for_bare_signal(
+                                    &runtime_start_nonce,
+                                ) {
+                                    Ok(Some(identity)) => identity,
+                                    Ok(None) => {
+                                        tracing::info!(
+                                            "managed planned-update signal awaits its control-file request"
+                                        );
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            "managed planned-update signal refused: {error}"
+                                        );
+                                        continue;
+                                    }
+                                };
                             if pending_handoff.is_some() {
-                                planned_update_deferred = true;
+                                planned_update_deferred = Some(checkpoint_identity);
                                 tracing::warn!(
                                     "planned update deferred until the active handoff replay commits"
                                 );
@@ -2030,6 +2055,7 @@ async fn tokio_main() -> Result<()> {
                                 &pubkey_hex,
                                 &subscribed_channel_ids,
                                 cutover_time,
+                                &checkpoint_identity,
                             ) {
                                 tracing::error!(
                                     "planned update refused because its checkpoint was not durable: {error}"
@@ -2038,6 +2064,7 @@ async fn tokio_main() -> Result<()> {
                             }
                             shutdown_mode = mode;
                             planned_cutover_time = Some(cutover_time);
+                            planned_checkpoint_identity = Some(checkpoint_identity);
                             tracing::info!("planned update checkpoint committed");
                         } else {
                             shutdown_mode = mode;
@@ -2054,8 +2081,9 @@ async fn tokio_main() -> Result<()> {
                 } => {
                     let _ = result_rx;
                     if let Some(path) = config.handoff_request_path.as_deref() {
-                        match poll_planned_update_request(path) {
+                        match poll_planned_update_request(path, &runtime_start_nonce) {
                             Ok(Some(request)) => {
+                                handoff_request_error_reported = false;
                                 if pending_handoff.is_some() {
                                     tracing::debug!(
                                         "planned-update request retained until active handoff replay commits"
@@ -2063,12 +2091,14 @@ async fn tokio_main() -> Result<()> {
                                     continue;
                                 }
                                 let cutover_time = unix_now_secs();
+                                let checkpoint_identity = request.checkpoint_identity().clone();
                                 if let Err(error) = write_pre_quiesce_checkpoint(
                                     &config,
                                     &handoff_tracker,
                                     &pubkey_hex,
                                     &subscribed_channel_ids,
                                     cutover_time,
+                                    &checkpoint_identity,
                                 ) {
                                     tracing::error!(
                                         "planned-update request retained because its checkpoint was not durable: {error}"
@@ -2083,15 +2113,20 @@ async fn tokio_main() -> Result<()> {
                                 }
                                 shutdown_mode = ShutdownMode::PlannedUpdate;
                                 planned_cutover_time = Some(cutover_time);
+                                planned_checkpoint_identity = Some(checkpoint_identity);
                                 tracing::info!(
                                     "planned update checkpoint committed through control file"
                                 );
                                 break;
                             }
-                            Ok(None) => {}
+                            Ok(None) => {
+                                handoff_request_error_reported = false;
+                            }
                             Err(error) => {
-                                tracing::error!("invalid planned-update request: {error}");
-                                handoff_request_poll = None;
+                                if !handoff_request_error_reported {
+                                    tracing::error!("invalid planned-update request: {error}");
+                                    handoff_request_error_reported = true;
+                                }
                             }
                         }
                     }
@@ -3036,12 +3071,16 @@ async fn tokio_main() -> Result<()> {
 
     let handoff_write_error: Option<anyhow::Error> = if shutdown_mode == ShutdownMode::PlannedUpdate
     {
-        match config.handoff_checkpoint_path.as_deref() {
-            Some(path) => {
+        match (
+            config.handoff_checkpoint_path.as_deref(),
+            planned_checkpoint_identity.as_ref(),
+        ) {
+            (Some(path), Some(checkpoint_identity)) => {
                 let cutover_time = planned_cutover_time.unwrap_or_else(unix_now_secs);
                 handoff_tracker
                     .write_checkpoint(handoff::CheckpointWriteParams {
                         path,
+                        identity: checkpoint_identity,
                         agent_pubkey: &pubkey_hex,
                         relay_url: &config.relay_url,
                         subscribed_channels: &subscribed_channel_ids,
@@ -3053,8 +3092,11 @@ async fn tokio_main() -> Result<()> {
                     .err()
                     .map(anyhow::Error::from)
             }
-            None => Some(anyhow::anyhow!(
+            (None, _) => Some(anyhow::anyhow!(
                 "planned update requested without a handoff checkpoint path"
+            )),
+            (Some(_), None) => Some(anyhow::anyhow!(
+                "planned update requested without a handoff transaction identity"
             )),
         }
     } else {
@@ -3141,8 +3183,9 @@ fn unix_now_secs() -> u64 {
 
 fn poll_planned_update_request(
     path: &std::path::Path,
+    runtime_start_nonce: &str,
 ) -> Result<Option<handoff::LoadedUpdateRequest>> {
-    handoff::load_update_request(path)
+    handoff::load_update_request(path, runtime_start_nonce)
         .map_err(|error| anyhow::anyhow!("planned-update request error: {error}"))
 }
 
@@ -3152,6 +3195,7 @@ fn write_pre_quiesce_checkpoint(
     agent_pubkey: &str,
     subscribed_channels: &HashSet<Uuid>,
     cutover_time: u64,
+    checkpoint_identity: &handoff::CheckpointIdentity,
 ) -> Result<()> {
     let path = config
         .handoff_checkpoint_path
@@ -3160,6 +3204,7 @@ fn write_pre_quiesce_checkpoint(
     tracker
         .write_checkpoint(handoff::CheckpointWriteParams {
             path,
+            identity: checkpoint_identity,
             agent_pubkey,
             relay_url: &config.relay_url,
             subscribed_channels,
@@ -3205,14 +3250,63 @@ mod handoff_shutdown_tests {
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
 
-        let request = poll_planned_update_request(&path).unwrap().unwrap();
+        let request = poll_planned_update_request(&path, "").unwrap().unwrap();
         assert!(
             path.exists(),
             "request must remain until checkpoint durability is known"
         );
         request.consume().unwrap();
         assert!(!path.exists());
-        assert!(poll_planned_update_request(&path).unwrap().is_none());
+        assert!(poll_planned_update_request(&path, "").unwrap().is_none());
+        let _ = std::fs::remove_dir(&directory);
+    }
+
+    #[test]
+    fn managed_signal_cannot_bypass_an_already_pending_v2_request() {
+        let directory =
+            std::env::temp_dir().join(format!("buzz-acp-signal-race-test-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = directory.join("update.request");
+        let handoff_id = Uuid::new_v4();
+        let start_nonce = "ab".repeat(16);
+        std::fs::write(
+            &path,
+            serde_json::to_vec(&serde_json::json!({
+                "version": 2,
+                "kind": "buzz-acp-planned-update-request",
+                "handoff_id": handoff_id.hyphenated().to_string(),
+                "expected_start_nonce": start_nonce.clone(),
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        assert_eq!(
+            handoff::CheckpointIdentity::for_bare_signal(&start_nonce).unwrap(),
+            None,
+            "managed signal must leave the control-file transaction authoritative"
+        );
+        let request = poll_planned_update_request(&path, &start_nonce)
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            request.checkpoint_identity(),
+            &handoff::CheckpointIdentity::V2 {
+                handoff_id,
+                start_nonce,
+            }
+        );
+        request.consume().unwrap();
         let _ = std::fs::remove_dir(&directory);
     }
 
