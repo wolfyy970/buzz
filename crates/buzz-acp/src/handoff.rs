@@ -31,6 +31,13 @@ const MAX_COMPLETED_IDS_PER_CHANNEL: usize = 512;
 const MAX_COMPLETED_IDS_TOTAL: usize = 2048;
 const MAX_FUTURE_SKEW_SECS: u64 = 300;
 pub(crate) const REPLAY_SKEW_SECS: u64 = 5;
+/// Buzz accepts events within ±900 seconds of relay time, while its deferred
+/// commit-time floor allows 960 seconds for validation and lock delay. Starting
+/// every planned-handoff replay at least this far before cutover therefore
+/// covers an event that commits after old intake stops with the oldest
+/// `created_at` Buzz can persist. Keep this aligned with
+/// `buzz_db::replica_fence::CREATED_AT_FLOOR_SECS`.
+const HANDOFF_REPLAY_HORIZON_SECS: u64 = 960;
 
 #[derive(Debug, Error)]
 pub(crate) enum HandoffError {
@@ -165,19 +172,22 @@ struct FileIdentity {
     device: u64,
     #[cfg(unix)]
     inode: u64,
-    #[cfg(not(unix))]
     length: u64,
-    #[cfg(not(unix))]
     modified: Option<std::time::SystemTime>,
+    content_sha256: [u8; 32],
 }
 
-fn file_identity(metadata: &Metadata) -> FileIdentity {
+fn file_identity(metadata: &Metadata, bytes: &[u8]) -> FileIdentity {
+    let content_sha256 = Sha256::digest(bytes).into();
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
         FileIdentity {
             device: metadata.dev(),
             inode: metadata.ino(),
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+            content_sha256,
         }
     }
     #[cfg(not(unix))]
@@ -185,6 +195,7 @@ fn file_identity(metadata: &Metadata) -> FileIdentity {
         FileIdentity {
             length: metadata.len(),
             modified: metadata.modified().ok(),
+            content_sha256,
         }
     }
 }
@@ -236,7 +247,6 @@ fn read_secure_file(path: &Path, max_bytes: u64) -> Result<Option<SecureBytes>, 
         )));
     }
 
-    let identity = file_identity(&metadata);
     let mut bytes = Vec::with_capacity((metadata.len().min(max_bytes)) as usize);
     file.take(max_bytes + 1)
         .read_to_end(&mut bytes)
@@ -248,23 +258,34 @@ fn read_secure_file(path: &Path, max_bytes: u64) -> Result<Option<SecureBytes>, 
             max_bytes
         )));
     }
+    let identity = file_identity(&metadata, &bytes);
     Ok(Some(SecureBytes { bytes, identity }))
 }
 
 fn remove_if_unchanged(path: &Path, identity: &FileIdentity) -> Result<(), HandoffError> {
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|error| io_error("reinspect", path, error))?;
-    if metadata.file_type().is_symlink()
-        || !metadata.is_file()
-        || file_identity(&metadata) != *identity
-    {
+    let current = read_secure_file(path, identity.length.max(1))?.ok_or_else(|| {
+        HandoffError::Invalid(format!(
+            "handoff file disappeared before it could be consumed: {}",
+            path.display()
+        ))
+    })?;
+    if current.identity != *identity {
         return Err(HandoffError::Invalid(format!(
             "handoff file changed before it could be consumed: {}",
             path.display()
         )));
     }
-    validate_file_security(path, &metadata)?;
-    std::fs::remove_file(path).map_err(|error| io_error("remove", path, error))
+    std::fs::remove_file(path).map_err(|error| io_error("remove", path, error))?;
+    sync_parent(path)
+}
+
+fn sync_parent(path: &Path) -> Result<(), HandoffError> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| HandoffError::Invalid("handoff path has no parent".into()))?;
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| io_error("sync parent for", path, error))
 }
 
 fn validate_existing_target(path: &Path) -> Result<(), HandoffError> {
@@ -324,9 +345,7 @@ fn atomic_write_secure(path: &Path, bytes: &[u8], max_bytes: u64) -> Result<(), 
     temp_path_guard
         .persist(path)
         .map_err(|error| io_error("replace", path, error.error))?;
-    File::open(parent)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|error| io_error("sync parent for", path, error))?;
+    sync_parent(path)?;
     Ok(())
 }
 
@@ -718,12 +737,15 @@ impl HandoffTracker {
     ) -> Result<(), HandoffError> {
         if self.channel_overflow || params.subscribed_channels.len() > MAX_CHANNELS {
             return Err(HandoffError::Invalid(format!(
-                "cannot create lossless handoff for more than {MAX_CHANNELS} channels"
+                "cannot create a bounded-replay handoff for more than {MAX_CHANNELS} channels"
             )));
         }
         let mut channel_ids: Vec<Uuid> = params.subscribed_channels.iter().copied().collect();
         channel_ids.sort_unstable();
         let mut channels = Vec::with_capacity(channel_ids.len());
+        let cutover_floor = params
+            .cutover_time
+            .saturating_sub(HANDOFF_REPLAY_HORIZON_SECS);
         for channel_id in channel_ids {
             let state = self.channels.get(&channel_id);
             let replay_from = state
@@ -731,9 +753,9 @@ impl HandoffTracker {
                 .into_iter()
                 .chain(params.relay_channel_floors.get(&channel_id).copied())
                 .chain(params.relay_fallback_floor)
-                .chain(std::iter::once(params.cutover_time))
+                .chain(std::iter::once(cutover_floor))
                 .min()
-                .unwrap_or(params.cutover_time);
+                .unwrap_or(cutover_floor);
             let overlap_floor = replay_from.saturating_sub(REPLAY_SKEW_SECS);
             let completed_event_ids = state
                 .into_iter()
@@ -755,8 +777,8 @@ impl HandoffTracker {
             written_at_unix_secs: unix_now_secs(),
             membership_replay_from: params
                 .membership_relay_floor
-                .unwrap_or(params.cutover_time)
-                .min(params.cutover_time),
+                .unwrap_or(cutover_floor)
+                .min(cutover_floor),
             channels,
         };
         document.validate(params.agent_pubkey, params.relay_url)?;
@@ -900,15 +922,15 @@ mod tests {
         let mut subscribed = HashSet::new();
         subscribed.insert(channel);
         let mut tracker = HandoffTracker::default();
-        tracker.record_pending(channel, id(9), 90);
+        tracker.record_pending(channel, id(9), 1_090);
         tracker
             .write_checkpoint(CheckpointWriteParams {
                 path: &path,
                 agent_pubkey: &pubkey(),
                 relay_url: "wss://relay.example",
                 subscribed_channels: &subscribed,
-                cutover_time: 100,
-                membership_relay_floor: Some(95),
+                cutover_time: 2_000,
+                membership_relay_floor: Some(1_900),
                 relay_channel_floors: &HashMap::new(),
                 relay_fallback_floor: None,
             })
@@ -918,8 +940,8 @@ mod tests {
             .unwrap()
             .unwrap();
         let recovery = loaded.recovery();
-        assert_eq!(recovery.channel_floor(&channel), Some(90));
-        assert_eq!(recovery.membership_floor(), Some(95));
+        assert_eq!(recovery.channel_floor(&channel), Some(1_040));
+        assert_eq!(recovery.membership_floor(), Some(1_040));
         loaded.consume().unwrap();
         assert!(!path.exists());
     }
@@ -990,6 +1012,27 @@ mod tests {
         request.consume().unwrap();
         assert!(!path.exists());
         assert!(load_update_request(&path).unwrap().is_none());
+    }
+
+    #[test]
+    fn update_request_in_place_rewrite_is_not_consumed() {
+        let temp = TempDir::new();
+        let path = temp.0.join("request.json");
+        let bytes = serde_json::to_vec(&UpdateRequest {
+            version: REQUEST_VERSION,
+            kind: REQUEST_KIND.into(),
+        })
+        .unwrap();
+        atomic_write_secure(&path, &bytes, REQUEST_MAX_BYTES).unwrap();
+        let request = load_update_request(&path).unwrap().unwrap();
+
+        let mut changed = bytes;
+        let last = changed.last_mut().expect("request JSON is non-empty");
+        *last = if *last == b'}' { b' ' } else { b'}' };
+        std::fs::write(&path, &changed).unwrap();
+
+        assert!(request.consume().is_err());
+        assert!(path.exists(), "changed request must remain for inspection");
     }
 
     #[test]

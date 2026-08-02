@@ -1769,6 +1769,7 @@ async fn tokio_main() -> Result<()> {
     });
     let mut shutdown_mode = ShutdownMode::Normal;
     let mut planned_cutover_time = None;
+    let mut planned_update_deferred = false;
 
     // Track the newest membership notification timestamp per channel.
     // On reconnect the relay replays events newest-first, so the first event
@@ -1856,6 +1857,28 @@ async fn tokio_main() -> Result<()> {
                     "listening",
                     None,
                 );
+            }
+        }
+        if planned_update_deferred && pending_handoff.is_none() {
+            let cutover_time = unix_now_secs();
+            match write_pre_quiesce_checkpoint(
+                &config,
+                &handoff_tracker,
+                &pubkey_hex,
+                &subscribed_channel_ids,
+                cutover_time,
+            ) {
+                Ok(()) => {
+                    shutdown_mode = ShutdownMode::PlannedUpdate;
+                    planned_cutover_time = Some(cutover_time);
+                    tracing::info!("deferred planned update checkpoint committed");
+                    break;
+                }
+                Err(error) => {
+                    tracing::error!(
+                        "deferred planned update still waiting for checkpoint durability: {error}"
+                    );
+                }
             }
         }
 
@@ -1994,6 +2017,7 @@ async fn tokio_main() -> Result<()> {
                     if let Some(mode) = requested_mode {
                         if mode == ShutdownMode::PlannedUpdate {
                             if pending_handoff.is_some() {
+                                planned_update_deferred = true;
                                 tracing::warn!(
                                     "planned update deferred until the active handoff replay commits"
                                 );

@@ -456,6 +456,7 @@ struct BufferedDelivery {
 
 struct ReplayAttempt {
     subscription_id: String,
+    superseded_subscription_id: Option<String>,
     connection_generation: u64,
     covered_drop_epoch: u64,
 }
@@ -500,12 +501,18 @@ impl DeliveryProgress {
         self.membership_attempt = None;
     }
 
-    fn begin_channel_attempt(&mut self, channel_id: Uuid, subscription_id: String) {
+    fn begin_channel_attempt(
+        &mut self,
+        channel_id: Uuid,
+        subscription_id: String,
+        superseded_subscription_id: Option<String>,
+    ) {
         self.ready_channels.remove(&channel_id);
         self.channel_attempts.insert(
             channel_id,
             ReplayAttempt {
                 subscription_id,
+                superseded_subscription_id,
                 connection_generation: self.connection_generation,
                 covered_drop_epoch: self
                     .channel_drop_epochs
@@ -516,10 +523,15 @@ impl DeliveryProgress {
         );
     }
 
-    fn begin_membership_attempt(&mut self, subscription_id: String) {
+    fn begin_membership_attempt(
+        &mut self,
+        subscription_id: String,
+        superseded_subscription_id: Option<String>,
+    ) {
         self.membership_ready = false;
         self.membership_attempt = Some(ReplayAttempt {
             subscription_id,
+            superseded_subscription_id,
             connection_generation: self.connection_generation,
             covered_drop_epoch: self.membership_drop_epoch,
         });
@@ -529,51 +541,60 @@ impl DeliveryProgress {
         &mut self,
         channel_id: Uuid,
         subscription_id: &str,
-    ) -> ReplayCompletion {
+    ) -> (ReplayCompletion, Option<String>) {
         let Some(attempt) = self.channel_attempts.get(&channel_id) else {
-            return ReplayCompletion::Stale;
+            return (ReplayCompletion::Stale, None);
         };
         if !self.connected
             || attempt.subscription_id != subscription_id
             || attempt.connection_generation != self.connection_generation
         {
-            return ReplayCompletion::Stale;
+            return (ReplayCompletion::Stale, None);
         }
         let covered_drop_epoch = attempt.covered_drop_epoch;
-        self.channel_attempts.remove(&channel_id);
+        let superseded = self
+            .channel_attempts
+            .remove(&channel_id)
+            .and_then(|attempt| attempt.superseded_subscription_id);
         let current_drop_epoch = self
             .channel_drop_epochs
             .get(&channel_id)
             .copied()
             .unwrap_or(0);
         if current_drop_epoch != covered_drop_epoch {
-            return ReplayCompletion::DebtAdvanced;
+            return (ReplayCompletion::DebtAdvanced, superseded);
         }
         self.dropped_channel_floors.remove(&channel_id);
         self.channel_drop_epochs.remove(&channel_id);
         self.ready_channels.insert(channel_id);
-        ReplayCompletion::Ready
+        (ReplayCompletion::Ready, superseded)
     }
 
-    fn complete_membership_attempt(&mut self, subscription_id: &str) -> ReplayCompletion {
+    fn complete_membership_attempt(
+        &mut self,
+        subscription_id: &str,
+    ) -> (ReplayCompletion, Option<String>) {
         let Some(attempt) = self.membership_attempt.as_ref() else {
-            return ReplayCompletion::Stale;
+            return (ReplayCompletion::Stale, None);
         };
         if !self.connected
             || attempt.subscription_id != subscription_id
             || attempt.connection_generation != self.connection_generation
         {
-            return ReplayCompletion::Stale;
+            return (ReplayCompletion::Stale, None);
         }
         let covered_drop_epoch = attempt.covered_drop_epoch;
-        self.membership_attempt = None;
+        let superseded = self
+            .membership_attempt
+            .take()
+            .and_then(|attempt| attempt.superseded_subscription_id);
         if self.membership_drop_epoch != covered_drop_epoch {
-            return ReplayCompletion::DebtAdvanced;
+            return (ReplayCompletion::DebtAdvanced, superseded);
         }
         self.dropped_membership_floor = None;
         self.membership_drop_epoch = 0;
         self.membership_ready = true;
-        ReplayCompletion::Ready
+        (ReplayCompletion::Ready, superseded)
     }
 
     fn record_channel_floor(&mut self, channel_id: Uuid, created_at: u64) {
@@ -641,9 +662,14 @@ impl DeliveryProgress {
         channel_id: Uuid,
         created_at: u64,
         membership: bool,
-    ) {
+    ) -> bool {
         self.buffered.remove(event_id);
         self.track_dropped(channel_id, created_at, membership);
+        if membership {
+            self.membership_attempt.is_none()
+        } else {
+            !self.channel_attempts.contains_key(&channel_id)
+        }
     }
 
     fn remove_channel(&mut self, channel_id: Uuid) {
@@ -1309,10 +1335,12 @@ struct BgState {
     active_subscriptions: HashMap<Uuid, String>,
     /// Monotonic connection generation used to reject stale replay EOSE.
     connection_generation: u64,
-    /// Per-channel wire-attempt counters used to make every REQ ID unique.
-    channel_attempts: HashMap<Uuid, u64>,
+    /// Monotonic wire-attempt counter used to make every channel REQ ID unique.
+    channel_attempt: u64,
     /// Wire-attempt counter for the global membership subscription.
     membership_attempt: u64,
+    /// Current membership wire subscription ID on this socket generation.
+    membership_subscription_id: Option<String>,
     /// Most recent `created_at` timestamp seen per channel (for `since` filter).
     last_seen: HashMap<Uuid, u64>,
     /// Two-generation dedup set of event IDs seen.
@@ -1408,8 +1436,9 @@ impl BgState {
         Self {
             active_subscriptions: HashMap::new(),
             connection_generation: 0,
-            channel_attempts: HashMap::new(),
+            channel_attempt: 0,
             membership_attempt: 0,
+            membership_subscription_id: None,
             last_seen: HashMap::new(),
             seen_ids: TwoGenDedup::new(SEEN_ID_LIMIT),
             active_filters: HashMap::new(),
@@ -1436,6 +1465,7 @@ impl BgState {
 
     fn begin_connection(&mut self) {
         self.connection_generation = self.connection_generation.saturating_add(1);
+        self.membership_subscription_id = None;
         if let Ok(mut progress) = self.delivery_progress.lock() {
             progress.begin_connection(self.connection_generation);
         }
@@ -1448,17 +1478,13 @@ impl BgState {
     }
 
     fn next_channel_subscription_id(&mut self, channel_id: Uuid) -> String {
-        let attempt = self
-            .channel_attempts
-            .entry(channel_id)
-            .and_modify(|attempt| *attempt = attempt.saturating_add(1))
-            .or_insert(1);
-        if *attempt == 1 {
+        self.channel_attempt = self.channel_attempt.saturating_add(1);
+        if self.channel_attempt == 1 {
             channel_sub_id(channel_id)
         } else {
             format!(
                 "ch-{channel_id}-g{}-a{}",
-                self.connection_generation, *attempt
+                self.connection_generation, self.channel_attempt
             )
         }
     }
@@ -1523,7 +1549,6 @@ impl BgState {
         self.last_seen.remove(channel_id);
         self.subscribe_since.remove(channel_id);
         self.channel_dropped_since.remove(channel_id);
-        self.channel_attempts.remove(channel_id);
         self.active_filters.remove(channel_id);
         self.rate_limited_pending.remove(channel_id);
         self.resubscribe_retry.remove(channel_id);
@@ -2530,15 +2555,21 @@ async fn handle_ws_message(
                                 // replay starts early enough to re-deliver it.
                                 state.membership_dropped_since =
                                     Some(state.membership_dropped_since.map_or(ts, |d| d.min(ts)));
-                                if let Ok(mut progress) = state.delivery_progress.lock() {
-                                    progress.mark_dropped(&event_id_hex, channel_uuid, ts, true);
-                                }
-                                // Proactively trigger resubscribe without waiting for a disconnect.
-                                state.proactive_resubscribe_needed = true;
+                                let replay_now = state
+                                    .delivery_progress
+                                    .lock()
+                                    .map(|mut progress| {
+                                        progress.mark_dropped(&event_id_hex, channel_uuid, ts, true)
+                                    })
+                                    .unwrap_or(false);
+                                // Drops inside an active replay wait for its
+                                // EOSE. Starting another REQ here would leave
+                                // superseded subscriptions live on the socket.
+                                state.proactive_resubscribe_needed |= replay_now;
                                 warn!(
                                     channel_id = %channel_uuid,
                                     ts,
-                                    "membership notification dropped (backpressure) — proactive resubscribe queued"
+                                    "membership notification dropped (backpressure) — replay recovery required"
                                 );
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -2585,15 +2616,25 @@ async fn handle_ws_message(
                                         .entry(channel_id)
                                         .and_modify(|d| *d = (*d).min(ts))
                                         .or_insert(ts);
-                                    if let Ok(mut progress) = state.delivery_progress.lock() {
-                                        progress.mark_dropped(&event_id_hex, channel_id, ts, false);
-                                    }
-                                    // Proactively trigger resubscribe without waiting for a disconnect.
-                                    state.proactive_resubscribe_needed = true;
+                                    let replay_now = state
+                                        .delivery_progress
+                                        .lock()
+                                        .map(|mut progress| {
+                                            progress.mark_dropped(
+                                                &event_id_hex,
+                                                channel_id,
+                                                ts,
+                                                false,
+                                            )
+                                        })
+                                        .unwrap_or(false);
+                                    // Active replay debt waits for that attempt's
+                                    // EOSE; live drops start a replacement now.
+                                    state.proactive_resubscribe_needed |= replay_now;
                                     warn!(
                                         channel_id = %channel_id,
                                         ts,
-                                        "event channel full — dropping event for channel {channel_id} — proactive resubscribe queued"
+                                        "event channel full — dropping event for channel {channel_id} — replay recovery required"
                                     );
                                 }
                                 Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -2615,27 +2656,34 @@ async fn handle_ws_message(
                     debug!("EOSE for subscription {subscription_id}");
                     let completion = state.delivery_progress.lock().ok().map(|mut progress| {
                         if is_membership_sub_id(&subscription_id) {
-                            (None, progress.complete_membership_attempt(&subscription_id))
+                            let (completion, superseded) =
+                                progress.complete_membership_attempt(&subscription_id);
+                            (None, completion, superseded)
                         } else if let Some(channel_id) = channel_id_from_sub_id(&subscription_id) {
-                            (
-                                Some(channel_id),
-                                progress.complete_channel_attempt(channel_id, &subscription_id),
-                            )
+                            let (completion, superseded) =
+                                progress.complete_channel_attempt(channel_id, &subscription_id);
+                            (Some(channel_id), completion, superseded)
                         } else {
-                            (None, ReplayCompletion::Stale)
+                            (None, ReplayCompletion::Stale, None)
                         }
                     });
-                    match completion {
+                    match completion
+                        .as_ref()
+                        .map(|(channel, status, _)| (channel, status))
+                    {
                         Some((None, ReplayCompletion::Ready)) => {
                             state.membership_dropped_since = None;
                         }
                         Some((Some(channel_id), ReplayCompletion::Ready)) => {
-                            state.channel_dropped_since.remove(&channel_id);
+                            state.channel_dropped_since.remove(channel_id);
                         }
                         Some((_, ReplayCompletion::DebtAdvanced)) => {
                             state.proactive_resubscribe_needed = true;
                         }
                         Some((_, ReplayCompletion::Stale)) | None => {}
+                    }
+                    if let Some(superseded) = completion.and_then(|(_, _, superseded)| superseded) {
+                        send_close_subscription(ws, &superseded).await;
                     }
                 }
                 RelayMessage::Notice { message } => {
@@ -2670,6 +2718,17 @@ async fn handle_ws_message(
                             );
                             return true;
                         }
+                    }
+                    if is_membership_sub_id(&subscription_id)
+                        && state
+                            .membership_subscription_id
+                            .as_ref()
+                            .is_some_and(|current| current != &subscription_id)
+                    {
+                        debug!(
+                            "ignoring CLOSED for stale membership subscription {subscription_id}"
+                        );
+                        return true;
                     }
                     // A per-channel membership denial means THIS channel is
                     // forbidden, not the whole connection. Drop just this
@@ -3604,6 +3663,18 @@ async fn wait_for_reconnect(
     }
 }
 
+async fn send_close_subscription(ws: &mut WsStream, subscription_id: &str) {
+    let message = json!(["CLOSE", subscription_id]);
+    let Ok(text) = serde_json::to_string(&message) else {
+        warn!("failed to serialize CLOSE for subscription {subscription_id}");
+        return;
+    };
+    if let Err(error) = ws_send_timeout(ws, Message::Text(text.into()), WS_SEND_TIMEOUT_SECS).await
+    {
+        warn!("failed to close superseded subscription {subscription_id}: {error}");
+    }
+}
+
 /// Send a NIP-01 REQ for a channel, built from a [`ChannelFilter`].
 ///
 /// - `kinds` is included only when `filter.kinds` is `Some`; `None` = wildcard.
@@ -3655,11 +3726,12 @@ async fn send_subscribe(
         Ok(text) => {
             match ws_send_timeout(ws, Message::Text(text.into()), WS_SEND_TIMEOUT_SECS).await {
                 Ok(()) => {
-                    state
+                    let superseded = state
                         .active_subscriptions
-                        .insert(channel_id, sub_id.clone());
+                        .insert(channel_id, sub_id.clone())
+                        .filter(|previous| previous != &sub_id);
                     if let Ok(mut progress) = state.delivery_progress.lock() {
-                        progress.begin_channel_attempt(channel_id, sub_id);
+                        progress.begin_channel_attempt(channel_id, sub_id, superseded);
                     }
                     debug!(
                         "subscribed to channel {channel_id}{}",
@@ -3717,8 +3789,12 @@ async fn send_membership_subscribe(
         Ok(text) => {
             match ws_send_timeout(ws, Message::Text(text.into()), WS_SEND_TIMEOUT_SECS).await {
                 Ok(()) => {
+                    let superseded = state
+                        .membership_subscription_id
+                        .replace(sub_id.clone())
+                        .filter(|previous| previous != &sub_id);
                     if let Ok(mut progress) = state.delivery_progress.lock() {
-                        progress.begin_membership_attempt(sub_id);
+                        progress.begin_membership_attempt(sub_id, superseded);
                     }
                     debug!("subscribed to membership notifications (since={since_ts})");
                     true
@@ -4945,7 +5021,10 @@ mod tests {
 
         let deferred = next_test_frame(&mut server).await;
         assert_eq!(deferred[0], "REQ");
-        assert_eq!(deferred[1], channel_sub_id(deferred_channel));
+        assert_eq!(
+            deferred[1].as_str().and_then(channel_id_from_sub_id),
+            Some(deferred_channel)
+        );
         let (result, state) = task.await.expect("join resubscribe task");
         assert!(matches!(result, ResubscribeResult::Ok));
         assert!(state.active_subscriptions.contains_key(&deferred_channel));
@@ -6728,16 +6807,16 @@ mod tests {
         let channel_id = Uuid::new_v4();
         let mut progress = DeliveryProgress::default();
         progress.begin_connection(1);
-        progress.begin_membership_attempt(MEMBERSHIP_NOTIF_SUB_ID.into());
+        progress.begin_membership_attempt(MEMBERSHIP_NOTIF_SUB_ID.into(), None);
         assert!(matches!(
             progress.complete_membership_attempt(MEMBERSHIP_NOTIF_SUB_ID),
-            ReplayCompletion::Ready
+            (ReplayCompletion::Ready, _)
         ));
         let sub_id = channel_sub_id(channel_id);
-        progress.begin_channel_attempt(channel_id, sub_id.clone());
+        progress.begin_channel_attempt(channel_id, sub_id.clone(), None);
         assert!(matches!(
             progress.complete_channel_attempt(channel_id, &sub_id),
-            ReplayCompletion::Ready
+            (ReplayCompletion::Ready, _)
         ));
         progress.track_buffered("aa".repeat(32), channel_id, 100, false);
 
@@ -6758,15 +6837,15 @@ mod tests {
         let channel_id = Uuid::new_v4();
         let mut progress = DeliveryProgress::default();
         progress.begin_connection(1);
-        progress.begin_membership_attempt(MEMBERSHIP_NOTIF_SUB_ID.into());
-        progress.begin_channel_attempt(channel_id, channel_sub_id(channel_id));
+        progress.begin_membership_attempt(MEMBERSHIP_NOTIF_SUB_ID.into(), None);
+        progress.begin_channel_attempt(channel_id, channel_sub_id(channel_id), None);
         assert!(matches!(
             progress.complete_membership_attempt(MEMBERSHIP_NOTIF_SUB_ID),
-            ReplayCompletion::Ready
+            (ReplayCompletion::Ready, _)
         ));
         assert!(matches!(
             progress.complete_channel_attempt(channel_id, &channel_sub_id(channel_id)),
-            ReplayCompletion::Ready
+            (ReplayCompletion::Ready, _)
         ));
         assert!(progress.connected && progress.membership_ready);
         assert!(progress.ready_channels.contains(&channel_id));
@@ -6777,10 +6856,10 @@ mod tests {
         assert!(!progress.ready_channels.contains(&channel_id));
 
         progress.begin_connection(2);
-        progress.begin_membership_attempt("membership-notifications-g2-a2".into());
+        progress.begin_membership_attempt("membership-notifications-g2-a2".into(), None);
         assert!(matches!(
             progress.complete_membership_attempt("membership-notifications-g2-a2"),
-            ReplayCompletion::Ready
+            (ReplayCompletion::Ready, _)
         ));
         assert!(!progress.ready_channels.contains(&channel_id));
     }
@@ -6791,20 +6870,19 @@ mod tests {
         let mut progress = DeliveryProgress::default();
         progress.begin_connection(1);
         progress.track_dropped(channel_id, 100, false);
-        progress.begin_channel_attempt(channel_id, "attempt-1".into());
-        progress.begin_channel_attempt(channel_id, "attempt-2".into());
+        progress.begin_channel_attempt(channel_id, "attempt-1".into(), None);
+        progress.begin_channel_attempt(channel_id, "attempt-2".into(), Some("attempt-1".into()));
 
         assert!(matches!(
             progress.complete_channel_attempt(channel_id, "attempt-1"),
-            ReplayCompletion::Stale
+            (ReplayCompletion::Stale, _)
         ));
         assert_eq!(progress.dropped_channel_floors[&channel_id], 100);
         assert!(!progress.ready_channels.contains(&channel_id));
 
-        assert!(matches!(
-            progress.complete_channel_attempt(channel_id, "attempt-2"),
-            ReplayCompletion::Ready
-        ));
+        let completion = progress.complete_channel_attempt(channel_id, "attempt-2");
+        assert!(matches!(completion.0, ReplayCompletion::Ready));
+        assert_eq!(completion.1.as_deref(), Some("attempt-1"));
         assert!(!progress.dropped_channel_floors.contains_key(&channel_id));
         assert!(progress.ready_channels.contains(&channel_id));
     }
@@ -6815,20 +6893,23 @@ mod tests {
         let mut progress = DeliveryProgress::default();
         progress.begin_connection(1);
         progress.track_dropped(channel_id, 100, false);
-        progress.begin_channel_attempt(channel_id, "attempt-1".into());
-        progress.track_dropped(channel_id, 90, false);
+        progress.begin_channel_attempt(channel_id, "attempt-1".into(), None);
+        assert!(
+            !progress.mark_dropped("missing-buffer-id", channel_id, 90, false),
+            "an active replay must wait for EOSE before scheduling another REQ"
+        );
 
         assert!(matches!(
             progress.complete_channel_attempt(channel_id, "attempt-1"),
-            ReplayCompletion::DebtAdvanced
+            (ReplayCompletion::DebtAdvanced, _)
         ));
         assert_eq!(progress.dropped_channel_floors[&channel_id], 90);
         assert!(!progress.ready_channels.contains(&channel_id));
 
-        progress.begin_channel_attempt(channel_id, "attempt-2".into());
+        progress.begin_channel_attempt(channel_id, "attempt-2".into(), None);
         assert!(matches!(
             progress.complete_channel_attempt(channel_id, "attempt-2"),
-            ReplayCompletion::Ready
+            (ReplayCompletion::Ready, _)
         ));
         assert!(!progress.dropped_channel_floors.contains_key(&channel_id));
     }
@@ -6838,20 +6919,20 @@ mod tests {
         let mut progress = DeliveryProgress::default();
         progress.begin_connection(1);
         progress.track_dropped(Uuid::new_v4(), 100, true);
-        progress.begin_membership_attempt("membership-1".into());
+        progress.begin_membership_attempt("membership-1".into(), None);
         progress.track_dropped(Uuid::new_v4(), 80, true);
 
         assert!(matches!(
             progress.complete_membership_attempt("membership-1"),
-            ReplayCompletion::DebtAdvanced
+            (ReplayCompletion::DebtAdvanced, _)
         ));
         assert_eq!(progress.dropped_membership_floor, Some(80));
         assert!(!progress.membership_ready);
 
-        progress.begin_membership_attempt("membership-2".into());
+        progress.begin_membership_attempt("membership-2".into(), None);
         assert!(matches!(
             progress.complete_membership_attempt("membership-2"),
-            ReplayCompletion::Ready
+            (ReplayCompletion::Ready, _)
         ));
         assert_eq!(progress.dropped_membership_floor, None);
         assert!(progress.membership_ready);
