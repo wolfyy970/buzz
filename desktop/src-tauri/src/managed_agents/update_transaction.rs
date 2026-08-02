@@ -14,7 +14,7 @@ use std::{
 };
 
 use serde::{Deserialize, Serialize};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager as _};
 
 use super::{
     managed_agents_base_dir, AgentTemplateVersionRef, ManagedAgentRecord, ManagedAgentRuntimeKey,
@@ -65,7 +65,7 @@ pub(crate) struct JournalRuntimeGeneration {
 /// of work or the selected agent configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub(crate) enum UpdateTransactionStage {
+pub enum UpdateTransactionStage {
     Prepared,
     BeforeOriginalHandoff,
     AfterOriginalHandoff,
@@ -117,6 +117,10 @@ impl UpdateTransactionStage {
                 | (S::BeforeCandidateLaunch, S::BeforeCandidateHandoff)
                 | (S::AfterCandidateReady, S::BeforeCandidateHandoff)
                 | (S::BeforeCandidateHandoff, S::AfterCandidateHandoff)
+                | (S::BeforeOriginalHandoff, S::BeforeOriginalRestart)
+                | (S::AfterOriginalHandoff, S::BeforeOriginalRestart)
+                | (S::BeforeCandidateCommit, S::BeforeOriginalRestore)
+                | (S::AfterCandidateCommit, S::BeforeOriginalRestore)
                 | (S::AfterCandidateHandoff, S::BeforeOriginalRestore)
                 | (S::BeforeOriginalRestore, S::AfterOriginalRestore)
                 | (S::AfterOriginalRestore, S::BeforeOriginalRestart)
@@ -207,21 +211,18 @@ impl UpdateTransaction {
             validate_pubkey(pubkey)?;
             if records.original.pubkey != *pubkey || records.attempted.pubkey != *pubkey {
                 return Err(
-                    "The update transaction record snapshots do not match their agent."
-                        .to_string(),
+                    "The update transaction record snapshots do not match their agent.".to_string(),
                 );
             }
             if records.original.private_key_nsec != records.attempted.private_key_nsec
                 || records.original.auth_tag != records.attempted.auth_tag
             {
                 return Err(
-                    "An update transaction cannot change an agent identity credential."
-                        .to_string(),
+                    "An update transaction cannot change an agent identity credential.".to_string(),
                 );
             }
             if records.original.persona_id.as_deref() != Some(self.target.persona_id.as_str())
-                || records.attempted.persona_id.as_deref()
-                    != Some(self.target.persona_id.as_str())
+                || records.attempted.persona_id.as_deref() != Some(self.target.persona_id.as_str())
                 || records.attempted.persona_source_version.as_deref() != Some(&target_token)
             {
                 return Err(
@@ -342,12 +343,51 @@ pub(crate) enum RecoveryDecision {
 }
 
 impl RecoveryDecision {
+    #[cfg(test)]
     pub(crate) fn allows_automatic_candidate_rollback(self) -> bool {
         matches!(
             self,
             Self::RestoreOriginals | Self::RestoreOriginalsAfterCandidateQuiesced
         )
     }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::DiscardUnstarted => "discard_unstarted",
+            Self::RestoreOriginals => "restore_originals",
+            Self::QuarantineCandidateMayHaveAcceptedWork => "candidate_may_have_accepted_work",
+            Self::RestoreOriginalsAfterCandidateQuiesced => {
+                "restore_originals_after_candidate_quiesced"
+            }
+            Self::RestartOriginals => "restart_originals",
+            Self::FinishRollback => "finish_rollback",
+            Self::DeleteCompleted => "delete_completed",
+            Self::QuarantineInvalidJournal => "invalid_journal",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateUpdateRecoveryAgent {
+    pub pubkey: String,
+    pub name: String,
+}
+
+/// Sanitized interrupted-update state for the recovery UI.
+///
+/// Record snapshots, environment values, credentials, runtime nonces, and
+/// handoff identities deliberately remain private to the backend journal.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateUpdateRecoveryStatus {
+    pub transaction_id: Option<String>,
+    pub template_id: Option<String>,
+    pub stage: Option<UpdateTransactionStage>,
+    pub recovery: String,
+    pub agents: Vec<AgentTemplateUpdateRecoveryAgent>,
+    pub requires_attention: bool,
+    pub detail: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -410,6 +450,7 @@ impl UpdateTransactionJournal {
         self.load_path(&path)
     }
 
+    #[cfg(test)]
     pub(crate) fn list(&self) -> Result<Vec<UpdateTransaction>, String> {
         self.verify_dirs()?;
         let mut transactions = Vec::new();
@@ -458,9 +499,7 @@ impl UpdateTransactionJournal {
     ) -> Result<(), String> {
         let transaction = self.load(transaction_id)?;
         if transaction.revision != expected_revision {
-            return Err(
-                "The update transaction changed before it could be removed.".to_string(),
-            );
+            return Err("The update transaction changed before it could be removed.".to_string());
         }
         if !matches!(
             transaction.stage,
@@ -521,6 +560,7 @@ impl UpdateTransactionJournal {
     }
 
     /// Move one invalid active entry aside without following it.
+    #[cfg(test)]
     pub(crate) fn quarantine(&self, source_name: &str) -> Result<PathBuf, String> {
         self.verify_dirs()?;
         validate_leaf_name(source_name)?;
@@ -568,6 +608,134 @@ impl UpdateTransactionJournal {
     }
 }
 
+fn recovery_status(entry: &RecoveryJournalEntry) -> AgentTemplateUpdateRecoveryStatus {
+    match entry {
+        RecoveryJournalEntry::Transaction(transaction, decision) => {
+            let agents = transaction
+                .selected
+                .iter()
+                .map(|(pubkey, records)| AgentTemplateUpdateRecoveryAgent {
+                    pubkey: pubkey.clone(),
+                    name: records.original.name.clone(),
+                })
+                .collect();
+            AgentTemplateUpdateRecoveryStatus {
+                transaction_id: Some(transaction.transaction_id.clone()),
+                template_id: Some(transaction.target.persona_id.clone()),
+                stage: Some(transaction.stage),
+                recovery: decision.label().to_string(),
+                agents,
+                requires_attention: !matches!(
+                    decision,
+                    RecoveryDecision::DiscardUnstarted | RecoveryDecision::DeleteCompleted
+                ),
+                detail: match decision {
+                    RecoveryDecision::QuarantineCandidateMayHaveAcceptedWork => {
+                        "An updated agent may have accepted work. Buzz blocked the affected agents instead of guessing which version owns that work."
+                    }
+                    RecoveryDecision::RestoreOriginalsAfterCandidateQuiesced
+                    | RecoveryDecision::RestoreOriginals
+                    | RecoveryDecision::RestartOriginals
+                    | RecoveryDecision::FinishRollback => {
+                        "Buzz found an interrupted update and blocked the affected agents until recovery finishes."
+                    }
+                    RecoveryDecision::DiscardUnstarted | RecoveryDecision::DeleteCompleted => {
+                        "This journal can be cleared without changing a running agent."
+                    }
+                    RecoveryDecision::QuarantineInvalidJournal => {
+                        "The update journal is invalid and its agent scope cannot be trusted."
+                    }
+                }
+                .to_string(),
+            }
+        }
+        RecoveryJournalEntry::Quarantine(quarantined, decision) => {
+            AgentTemplateUpdateRecoveryStatus {
+                transaction_id: None,
+                template_id: None,
+                stage: None,
+                recovery: decision.label().to_string(),
+                agents: Vec::new(),
+                requires_attention: true,
+                detail: format!(
+                    "Buzz could not verify update journal entry {} ({:?}). Agent changes and starts are blocked until it is reviewed.",
+                    quarantined.source_name, quarantined.reason
+                ),
+            }
+        }
+    }
+}
+
+pub(crate) fn list_agent_template_update_recoveries(
+    app: &AppHandle,
+) -> Result<Vec<AgentTemplateUpdateRecoveryStatus>, String> {
+    let journal = UpdateTransactionJournal::for_app(app)?;
+    journal
+        .recovery_entries()
+        .map(|entries| entries.iter().map(recovery_status).collect())
+}
+
+/// Reconstruct fail-closed ownership before any startup record mutation or
+/// process sweep. Safe no-op and terminal journals are removed; every
+/// unresolved identity remains durable and fenced for the recovery UI.
+pub(crate) fn initialize_agent_template_update_recovery(
+    app: &AppHandle,
+) -> Result<Vec<AgentTemplateUpdateRecoveryStatus>, String> {
+    const GLOBAL_RECOVERY_OWNER: &str = "recovery-global";
+
+    let state = app.state::<crate::app_state::AppState>();
+    let journal = match UpdateTransactionJournal::for_app(app) {
+        Ok(journal) => journal,
+        Err(error) => {
+            state
+                .managed_agent_update_leases
+                .block_all_for_recovery(GLOBAL_RECOVERY_OWNER)?;
+            return Err(error);
+        }
+    };
+    let entries = match journal.recovery_entries() {
+        Ok(entries) => entries,
+        Err(error) => {
+            state
+                .managed_agent_update_leases
+                .block_all_for_recovery(GLOBAL_RECOVERY_OWNER)?;
+            return Err(error);
+        }
+    };
+    let mut unresolved = Vec::new();
+    for entry in entries {
+        match &entry {
+            RecoveryJournalEntry::Transaction(
+                transaction,
+                RecoveryDecision::DiscardUnstarted | RecoveryDecision::DeleteCompleted,
+            ) => {
+                journal.delete(&transaction.transaction_id, transaction.revision)?;
+            }
+            RecoveryJournalEntry::Transaction(transaction, _) => {
+                state
+                    .managed_agent_update_leases
+                    .block_for_recovery(
+                        &transaction.transaction_id,
+                        transaction.selected.keys().map(String::as_str),
+                    )
+                    .inspect_err(|_| {
+                        let _ = state
+                            .managed_agent_update_leases
+                            .block_all_for_recovery(GLOBAL_RECOVERY_OWNER);
+                    })?;
+                unresolved.push(recovery_status(&entry));
+            }
+            RecoveryJournalEntry::Quarantine(_, _) => {
+                state
+                    .managed_agent_update_leases
+                    .block_all_for_recovery(GLOBAL_RECOVERY_OWNER)?;
+                unresolved.push(recovery_status(&entry));
+            }
+        }
+    }
+    Ok(unresolved)
+}
+
 fn serialize_transaction(transaction: &UpdateTransaction) -> Result<Vec<u8>, String> {
     let bytes = serde_json::to_vec(transaction)
         .map_err(|_| "The update transaction could not be serialized.".to_string())?;
@@ -591,12 +759,7 @@ fn stage_requires_candidate_plan(stage: UpdateTransactionStage) -> bool {
             | UpdateTransactionStage::AfterCandidateReady
             | UpdateTransactionStage::BeforeCandidateHandoff
             | UpdateTransactionStage::AfterCandidateHandoff
-            | UpdateTransactionStage::BeforeOriginalRestore
-            | UpdateTransactionStage::AfterOriginalRestore
-            | UpdateTransactionStage::BeforeOriginalRestart
-            | UpdateTransactionStage::AfterOriginalRestart
             | UpdateTransactionStage::UpdateCompleted
-            | UpdateTransactionStage::RollbackCompleted
     )
 }
 
@@ -679,6 +842,7 @@ fn transaction_id_from_filename(name: &str) -> Result<String, String> {
     Ok(id.to_string())
 }
 
+#[cfg(test)]
 fn validate_leaf_name(name: &str) -> Result<(), String> {
     if name.is_empty()
         || name == "."
@@ -833,9 +997,7 @@ fn read_owner_file(path: &Path, max_bytes: u64) -> Result<Vec<u8>, String> {
             .metadata()
             .map_err(|error| format!("Could not verify the update transaction owner: {error}"))?
             .uid();
-        if metadata.uid() != expected_uid
-            || metadata.permissions().mode() & 0o777 != 0o600
-        {
+        if metadata.uid() != expected_uid || metadata.permissions().mode() & 0o777 != 0o600 {
             return Err("The update transaction file is not owner-only.".to_string());
         }
     }
@@ -866,30 +1028,45 @@ fn atomic_write_owner_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
             ));
         }
     }
-    let temporary = parent.join(format!(".write-{}.tmp", uuid::Uuid::new_v4()));
-    let result = (|| {
-        let mut options = OpenOptions::new();
-        options.write(true).create_new(true);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::OpenOptionsExt as _;
-            options.mode(0o600);
-        }
-        let mut file = options
-            .open(&temporary)
+    #[cfg(windows)]
+    {
+        use atomic_write_file::AtomicWriteFile;
+
+        let mut file = AtomicWriteFile::open(path)
             .map_err(|error| format!("Could not create the update transaction write: {error}"))?;
         file.write_all(bytes)
             .map_err(|error| format!("Could not write the update transaction: {error}"))?;
-        file.sync_all()
-            .map_err(|error| format!("Could not sync the update transaction: {error}"))?;
-        fs::rename(&temporary, path)
+        file.commit()
             .map_err(|error| format!("Could not commit the update transaction: {error}"))?;
         sync_directory(parent)
-    })();
-    if result.is_err() {
-        let _ = fs::remove_file(&temporary);
     }
-    result
+    #[cfg(not(windows))]
+    {
+        let temporary = parent.join(format!(".write-{}.tmp", uuid::Uuid::new_v4()));
+        let result = (|| {
+            let mut options = OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt as _;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&temporary).map_err(|error| {
+                format!("Could not create the update transaction write: {error}")
+            })?;
+            file.write_all(bytes)
+                .map_err(|error| format!("Could not write the update transaction: {error}"))?;
+            file.sync_all()
+                .map_err(|error| format!("Could not sync the update transaction: {error}"))?;
+            fs::rename(&temporary, path)
+                .map_err(|error| format!("Could not commit the update transaction: {error}"))?;
+            sync_directory(parent)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result
+    }
 }
 
 fn atomic_create_owner_file(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -971,9 +1148,7 @@ fn classify_invalid_path(path: &Path) -> QuarantineReason {
             .parent()
             .and_then(|parent| parent.metadata().ok())
             .map(|parent| parent.uid());
-        if expected_uid != Some(metadata.uid())
-            || metadata.permissions().mode() & 0o777 != 0o600
-        {
+        if expected_uid != Some(metadata.uid()) || metadata.permissions().mode() & 0o777 != 0o600 {
             return QuarantineReason::InvalidPermissions;
         }
     }

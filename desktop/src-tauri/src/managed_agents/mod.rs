@@ -43,10 +43,6 @@ mod teams;
 pub(crate) mod template_skills;
 mod types;
 mod update_lease;
-#[allow(
-    dead_code,
-    reason = "durable journal core is wired by the follow-up update/startup integration"
-)]
 pub(crate) mod update_transaction;
 
 // Shared guard for tests that mutate or read process-global PATH.

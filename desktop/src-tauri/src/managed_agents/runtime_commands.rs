@@ -7,11 +7,11 @@ use super::{
     ensure_managed_agent_runtime_pairs_unclaimed, find_managed_agent_mut, load_global_agent_config,
     load_managed_agents, load_personas, managed_agent_runtime_log_path,
     normal_runtime_start_disposition, process_is_running, record_agent_command,
-    resolve_effective_agent_env, save_managed_agents, spawn_agent_child, terminate_process,
-    terminate_untracked_pair_runtime, write_agent_runtime_receipt, AgentReadiness, BackendKind,
-    ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
-    ManagedAgentRuntimeReceipt, ManagedAgentRuntimeStatus, ManagedAgentUpdateLease,
-    NormalRuntimeStartDisposition,
+    resolve_effective_agent_env, save_managed_agents, spawn_agent_child,
+    spawn_agent_child_with_start_nonce, terminate_process, terminate_untracked_pair_runtime,
+    write_agent_runtime_receipt, AgentReadiness, BackendKind, ManagedAgentPairRuntime,
+    ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle, ManagedAgentRuntimeReceipt,
+    ManagedAgentRuntimeStatus, ManagedAgentUpdateLease, NormalRuntimeStartDisposition,
 };
 use crate::app_state::AppState;
 
@@ -284,7 +284,7 @@ pub(crate) fn start_managed_agent_runtime_pair_lazy(
     relay_url: String,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
-    start_pair(pubkey, relay_url, true, None, None, app)
+    start_pair(pubkey, relay_url, true, None, None, None, app)
 }
 
 /// Start a runtime pair as part of the pubkey-owning update operation.
@@ -300,7 +300,28 @@ pub(crate) fn start_managed_agent_runtime_pair_authorized(
     operation_id: &str,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
-    start_pair(pubkey, relay_url, lazy, None, Some(operation_id), app)
+    start_pair(pubkey, relay_url, lazy, None, Some(operation_id), None, app)
+}
+
+/// Start an update candidate with the exact generation identity already
+/// committed to the durable transaction journal.
+pub(crate) fn start_managed_agent_runtime_pair_authorized_with_nonce(
+    pubkey: String,
+    relay_url: String,
+    lazy: bool,
+    operation_id: &str,
+    start_nonce: &str,
+    app: AppHandle,
+) -> Result<ManagedAgentRuntimeStatus, String> {
+    start_pair(
+        pubkey,
+        relay_url,
+        lazy,
+        None,
+        Some(operation_id),
+        Some(start_nonce),
+        app,
+    )
 }
 
 #[tauri::command]
@@ -318,6 +339,7 @@ fn start_pair(
     lazy: bool,
     expected_updated_at: Option<&str>,
     authorized_operation_id: Option<&str>,
+    planned_start_nonce: Option<&str>,
     app: AppHandle,
 ) -> Result<ManagedAgentRuntimeStatus, String> {
     let state = app.state::<AppState>();
@@ -350,6 +372,12 @@ fn start_pair(
     if let Some(runtime) = runtimes.get_mut(&key) {
         match normal_runtime_start_disposition(runtime)? {
             NormalRuntimeStartDisposition::AlreadyRunning => {
+                if planned_start_nonce.is_some_and(|nonce| runtime.start_nonce != nonce) {
+                    return Err(
+                        "A different managed-agent process generation is already running."
+                            .to_string(),
+                    );
+                }
                 let status = status_for(&app, record, &key, runtimes.get(&key), None);
                 return Ok(status);
             }
@@ -364,7 +392,18 @@ fn start_pair(
         .lock()
         .ok()
         .map(|keys| keys.public_key().to_hex());
-    let mut process = spawn_agent_child(&app, record, &key.relay_url, lazy, owner.as_deref())?;
+    let mut process = if planned_start_nonce.is_some() {
+        spawn_agent_child_with_start_nonce(
+            &app,
+            record,
+            &key.relay_url,
+            lazy,
+            owner.as_deref(),
+            planned_start_nonce,
+        )?
+    } else {
+        spawn_agent_child(&app, record, &key.relay_url, lazy, owner.as_deref())?
+    };
     let now = crate::util::now_iso();
     let receipt = ManagedAgentRuntimeReceipt {
         key: key.clone(),
@@ -489,6 +528,7 @@ pub fn restart_managed_agent_runtime(
         true,
         None,
         Some(operation.operation_id()),
+        None,
         app,
     )
 }
@@ -614,6 +654,7 @@ pub async fn reconcile_managed_agent_runtimes(
                         key.relay_url.clone(),
                         true,
                         Some(&record.updated_at),
+                        None,
                         None,
                         app.clone(),
                     ) {

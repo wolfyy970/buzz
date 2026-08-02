@@ -18,6 +18,8 @@ pub struct ManagedAgentUpdateLeaseRegistry {
 struct ManagedAgentLeaseState {
     owners: HashMap<String, String>,
     global_owner: Option<String>,
+    recovery_owners: HashMap<String, String>,
+    recovery_global_owner: Option<String>,
 }
 
 /// RAII ownership of one atomic set of managed-agent pubkeys.
@@ -66,6 +68,11 @@ impl ManagedAgentUpdateLeaseRegistry {
         }
 
         let mut state = self.lock_state();
+        if state.recovery_global_owner.is_some() {
+            return Err(
+                "Agent updates are blocked until an interrupted update is recovered.".to_string(),
+            );
+        }
         if let Some(owner) = state.global_owner.as_deref() {
             eprintln!("buzz-desktop: managed-agent lease conflict with global owner {owner}");
             return Err(
@@ -79,6 +86,14 @@ impl ManagedAgentUpdateLeaseRegistry {
             eprintln!("buzz-desktop: managed-agent lease conflict for {pubkey} (owner {owner})");
             return Err(
                 "This agent is being updated. Try again when the update finishes.".to_string(),
+            );
+        }
+        if pubkeys
+            .iter()
+            .any(|pubkey| state.recovery_owners.contains_key(pubkey))
+        {
+            return Err(
+                "This agent is blocked until its interrupted update is recovered.".to_string(),
             );
         }
         for pubkey in &pubkeys {
@@ -134,7 +149,11 @@ impl ManagedAgentUpdateLeaseRegistry {
         let operation_id = format!("mutation-global:{label}:{}", uuid::Uuid::new_v4());
         validate_operation_id(&operation_id)?;
         let mut state = self.lock_state();
-        if state.global_owner.is_some() || !state.owners.is_empty() {
+        if state.global_owner.is_some()
+            || !state.owners.is_empty()
+            || state.recovery_global_owner.is_some()
+            || !state.recovery_owners.is_empty()
+        {
             return Err(
                 "Agent settings are being updated. Try again when the update finishes.".to_string(),
             );
@@ -171,13 +190,13 @@ impl ManagedAgentUpdateLeaseRegistry {
         let operation_id = format!("mutation:{label}:{}", uuid::Uuid::new_v4());
         validate_operation_id(&operation_id)?;
         let mut state = self.lock_state();
-        if state.global_owner.is_some() {
+        if state.global_owner.is_some() || state.recovery_global_owner.is_some() {
             return Ok((None, pubkeys));
         }
 
-        let (busy, available): (Vec<_>, Vec<_>) = pubkeys
-            .into_iter()
-            .partition(|pubkey| state.owners.contains_key(pubkey));
+        let (busy, available): (Vec<_>, Vec<_>) = pubkeys.into_iter().partition(|pubkey| {
+            state.owners.contains_key(pubkey) || state.recovery_owners.contains_key(pubkey)
+        });
         if available.is_empty() {
             return Ok((None, busy));
         }
@@ -208,6 +227,17 @@ impl ManagedAgentUpdateLeaseRegistry {
         let pubkeys = canonical_pubkey_set(pubkeys)?;
         let state = self.lock_state();
         for pubkey in pubkeys {
+            if state.recovery_global_owner.as_deref() == Some(operation_id) {
+                continue;
+            }
+            if let Some(owner) = state.recovery_owners.get(&pubkey) {
+                if owner == operation_id {
+                    continue;
+                }
+                return Err(
+                    "The managed-agent update is blocked by interrupted recovery.".to_string(),
+                );
+            }
             if state.global_owner.as_deref() == Some(operation_id) {
                 continue;
             }
@@ -255,6 +285,94 @@ impl ManagedAgentUpdateLeaseRegistry {
         Ok(ManagedAgentStoreWriteGuard { _state: state })
     }
 
+    /// Keep selected agents fenced after an interrupted transaction outlives
+    /// its stack-local lease. Re-registering the same journal is idempotent.
+    pub(crate) fn block_for_recovery<I, S>(
+        &self,
+        operation_id: &str,
+        pubkeys: I,
+    ) -> Result<(), String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        validate_operation_id(operation_id)?;
+        let pubkeys = canonical_pubkey_set(pubkeys)?;
+        if pubkeys.is_empty() {
+            return Err("managed-agent recovery requires at least one agent".to_string());
+        }
+        let mut state = self.lock_state();
+        if state
+            .recovery_global_owner
+            .as_deref()
+            .is_some_and(|owner| owner != operation_id)
+        {
+            return Err("A global interrupted-update recovery block is active.".to_string());
+        }
+        for pubkey in &pubkeys {
+            if state
+                .recovery_owners
+                .get(pubkey)
+                .is_some_and(|owner| owner != operation_id)
+            {
+                return Err("Overlapping interrupted updates require global recovery.".to_string());
+            }
+        }
+        for pubkey in pubkeys {
+            state
+                .recovery_owners
+                .insert(pubkey, operation_id.to_string());
+        }
+        Ok(())
+    }
+
+    /// Fail closed across the managed-agent namespace when journal scope is
+    /// invalid or unreadable and affected identities cannot be trusted.
+    pub(crate) fn block_all_for_recovery(&self, operation_id: &str) -> Result<(), String> {
+        validate_operation_id(operation_id)?;
+        let mut state = self.lock_state();
+        match state.recovery_global_owner.as_deref() {
+            Some(owner) if owner != operation_id => {
+                Err("A different global interrupted-update recovery block is active.".to_string())
+            }
+            _ => {
+                state.recovery_global_owner = Some(operation_id.to_string());
+                Ok(())
+            }
+        }
+    }
+
+    /// Release only the transaction-specific recovery ownership that was
+    /// durably resolved and removed from the journal.
+    pub(crate) fn clear_recovery<I, S>(&self, operation_id: &str, pubkeys: I) -> Result<(), String>
+    where
+        I: IntoIterator<Item = S>,
+        S: AsRef<str>,
+    {
+        validate_operation_id(operation_id)?;
+        let pubkeys = canonical_pubkey_set(pubkeys)?;
+        let mut state = self.lock_state();
+        for pubkey in &pubkeys {
+            match state.recovery_owners.get(pubkey) {
+                Some(owner) if owner == operation_id => {}
+                Some(_) => {
+                    return Err(
+                        "A different interrupted update owns this agent recovery.".to_string()
+                    );
+                }
+                None => {
+                    return Err(
+                        "The interrupted update no longer owns this agent recovery.".to_string()
+                    );
+                }
+            }
+        }
+        for pubkey in pubkeys {
+            state.recovery_owners.remove(&pubkey);
+        }
+        Ok(())
+    }
+
     #[cfg(test)]
     fn owner_for(&self, pubkey: &str) -> Option<String> {
         self.lock_state()
@@ -270,6 +388,21 @@ fn check_store_write_allowed(
     changed_pubkeys: Vec<String>,
 ) -> Result<(), String> {
     for pubkey in changed_pubkeys {
+        if let Some(owner) = state.recovery_global_owner.as_deref() {
+            if operation_id != Some(owner) {
+                return Err(
+                    "Agent updates are blocked until an interrupted update is recovered."
+                        .to_string(),
+                );
+            }
+        }
+        if let Some(owner) = state.recovery_owners.get(&pubkey) {
+            if operation_id != Some(owner.as_str()) {
+                return Err(
+                    "This agent is blocked until its interrupted update is recovered.".to_string(),
+                );
+            }
+        }
         if let Some(global_owner) = state.global_owner.as_deref() {
             if operation_id == Some(global_owner) {
                 continue;
@@ -481,6 +614,72 @@ mod tests {
             .try_acquire("safe-update", [pubkey.as_str()])
             .is_err());
         drop(global);
+    }
+
+    #[test]
+    fn interrupted_recovery_block_survives_the_live_lease_drop() {
+        let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+        let pubkey = "aa".repeat(32);
+        let lease = registry
+            .try_acquire("update-one", [pubkey.as_str()])
+            .expect("live update lease");
+        registry
+            .block_for_recovery("update-one", [pubkey.as_str()])
+            .expect("durable recovery ownership");
+        drop(lease);
+
+        assert!(registry
+            .try_acquire("update-two", [pubkey.as_str()])
+            .expect_err("recovery must remain fenced")
+            .contains("recovered"));
+        registry
+            .ensure_owned("update-one", [pubkey.as_str()])
+            .expect("the recovery operation remains authorized");
+        let write_guard = registry
+            .acquire_store_write_guard(Some("update-one"), [pubkey.as_str()])
+            .expect("recovery may finish its own store write");
+        drop(write_guard);
+        registry
+            .clear_recovery("update-one", [pubkey.as_str()])
+            .expect("terminal recovery clears its fence");
+        let _next = registry
+            .try_acquire("update-two", [pubkey.as_str()])
+            .expect("resolved agent may be updated again");
+    }
+
+    #[test]
+    fn invalid_journal_global_block_fences_known_and_future_agents() {
+        let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+        registry
+            .block_all_for_recovery("recovery-global")
+            .expect("global recovery block");
+
+        for pubkey in ["aa".repeat(32), "bb".repeat(32)] {
+            assert!(registry
+                .try_acquire("ordinary-start", [pubkey.as_str()])
+                .is_err());
+            assert!(registry
+                .acquire_store_write_guard(None, [pubkey.as_str()])
+                .is_err());
+        }
+        assert!(registry
+            .try_acquire_global_mutation("global-config")
+            .is_err());
+    }
+
+    #[test]
+    fn overlapping_recovery_journals_fail_before_partial_ownership() {
+        let registry = Arc::new(ManagedAgentUpdateLeaseRegistry::default());
+        let first = "aa".repeat(32);
+        let second = "bb".repeat(32);
+        registry
+            .block_for_recovery("update-one", [first.as_str()])
+            .expect("first recovery");
+
+        assert!(registry
+            .block_for_recovery("update-two", [first.as_str(), second.as_str()])
+            .is_err());
+        assert!(!registry.lock_state().recovery_owners.contains_key(&second));
     }
 
     #[test]

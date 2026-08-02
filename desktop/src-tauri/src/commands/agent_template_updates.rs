@@ -5,6 +5,10 @@ use futures_util::future::join_all;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::managed_agents::update_transaction::{
+    ImmutableUpdateTarget, JournalHandoffIdentity, JournalRuntimeGeneration, SelectedAgentRecords,
+    UpdateTransaction, UpdateTransactionJournal, UpdateTransactionStage,
+};
 use crate::{
     app_state::AppState,
     managed_agents::{
@@ -12,9 +16,11 @@ use crate::{
         clear_managed_agent_runtime_pair_claims, drain_managed_agent_pair_for_update,
         find_managed_agent_mut, known_acp_runtime, load_global_agent_config, load_managed_agents,
         load_personas, managed_agent_runtime_keys, resolve_effective_agent_env,
-        save_managed_agents, start_managed_agent_runtime_pair_lazy, AgentReadiness,
+        save_managed_agents_for_operation, start_managed_agent_runtime_pair_authorized,
+        start_managed_agent_runtime_pair_authorized_with_nonce,
+        start_managed_agent_runtime_pair_lazy, terminate_untracked_pair_runtime, AgentReadiness,
         AgentTemplateVersionRef, BackendKind, ManagedAgentRecord, ManagedAgentRuntimeKey,
-        ManagedAgentRuntimeLifecycle, ManagedAgentUpdateDrainError,
+        ManagedAgentRuntimeLifecycle, ManagedAgentUpdateDrainError, PlannedUpdateIdentity,
     },
 };
 
@@ -279,11 +285,225 @@ mod support;
 pub use support::preview_agent_template_update;
 use support::*;
 
+/// Return only sanitized interrupted-update metadata for the recovery UI.
+#[tauri::command]
+pub fn list_agent_template_update_recoveries(
+    app: AppHandle,
+) -> Result<Vec<crate::managed_agents::update_transaction::AgentTemplateUpdateRecoveryStatus>, String>
+{
+    crate::managed_agents::update_transaction::list_agent_template_update_recoveries(&app)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RestoreInterruptedAgentTemplateUpdateRequest {
+    pub transaction_id: String,
+    /// Confirms that Buzz may stop every journaled pair before restoring the
+    /// previous records. This is mandatory because a candidate may have
+    /// accepted work immediately before Desktop crashed.
+    pub confirm_stop_buzz_owned_agents: bool,
+}
+
+/// Explicit, fail-closed recovery for an interrupted template update.
+///
+/// Recovery is intentionally available only after relaunch, when no selected
+/// runtime is tracked by this Desktop process. The user must confirm that Buzz
+/// may stop the exact journaled pairs. The command resumes durable rollback
+/// stages and never guesses that an uncertain candidate is safe.
+#[tauri::command]
+pub async fn restore_interrupted_agent_template_update(
+    input: RestoreInterruptedAgentTemplateUpdateRequest,
+    app: AppHandle,
+) -> Result<(), String> {
+    if !input.confirm_stop_buzz_owned_agents {
+        return Err(
+            "Confirm that Buzz may stop the affected agents before restoring their previous version."
+                .to_string(),
+        );
+    }
+    let state = app.state::<AppState>();
+    let journal = UpdateTransactionJournal::for_app(&app)?;
+    let mut transaction = journal.load(&input.transaction_id)?;
+    let selected = transaction.selected.keys().cloned().collect::<Vec<_>>();
+    state
+        .managed_agent_update_leases
+        .ensure_owned(
+            &transaction.transaction_id,
+            selected.iter().map(String::as_str),
+        )
+        .map_err(|_| {
+            "Restart Buzz before recovering this interrupted update so its durable ownership can be verified."
+                .to_string()
+        })?;
+    {
+        let runtimes = state
+            .managed_agent_processes
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if !runtime_keys_for_selected(&runtimes, &selected).is_empty() {
+            return Err(
+                "Restart Buzz before recovery. An affected agent is still tracked by this Desktop session."
+                    .to_string(),
+            );
+        }
+    }
+    let original_keys = transaction
+        .original_generations
+        .iter()
+        .map(|generation| generation.key.clone())
+        .collect::<Vec<_>>();
+    let originals = transaction
+        .selected
+        .iter()
+        .map(|(pubkey, records)| (pubkey.clone(), records.original.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let attempted = transaction
+        .selected
+        .iter()
+        .map(|(pubkey, records)| (pubkey.clone(), records.attempted.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let candidates = transaction.candidate_generations.clone();
+
+    match transaction.stage {
+        UpdateTransactionStage::Prepared
+        | UpdateTransactionStage::UpdateCompleted
+        | UpdateTransactionStage::RollbackCompleted => {
+            journal.delete(&transaction.transaction_id, transaction.revision)?;
+            state.managed_agent_update_leases.clear_recovery(
+                &transaction.transaction_id,
+                selected.iter().map(String::as_str),
+            )?;
+            return Ok(());
+        }
+        UpdateTransactionStage::BeforeCandidateLaunch
+        | UpdateTransactionStage::AfterCandidateReady => {
+            advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::BeforeCandidateHandoff,
+                candidates.clone(),
+            )?;
+        }
+        _ => {}
+    }
+
+    for key in &original_keys {
+        terminate_untracked_pair_runtime(&app, key).map_err(|error| {
+            format!(
+                "Buzz could not stop the affected agent on {}. Recovery remains blocked: {error}",
+                key.relay_url
+            )
+        })?;
+    }
+
+    if transaction.stage == UpdateTransactionStage::BeforeCandidateHandoff {
+        advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::AfterCandidateHandoff,
+            candidates.clone(),
+        )?;
+    }
+
+    match transaction.stage {
+        UpdateTransactionStage::BeforeOriginalHandoff
+        | UpdateTransactionStage::AfterOriginalHandoff => {
+            advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::BeforeOriginalRestart,
+                candidates.clone(),
+            )?;
+        }
+        UpdateTransactionStage::BeforeCandidateCommit
+        | UpdateTransactionStage::AfterCandidateCommit
+        | UpdateTransactionStage::AfterCandidateHandoff => {
+            advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::BeforeOriginalRestore,
+                candidates.clone(),
+            )?;
+        }
+        _ => {}
+    }
+
+    if transaction.stage == UpdateTransactionStage::BeforeOriginalRestore {
+        restore_original_records(
+            &app,
+            &selected,
+            &originals,
+            &attempted,
+            &transaction.transaction_id,
+        )?;
+        advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::AfterOriginalRestore,
+            candidates.clone(),
+        )?;
+    }
+    if transaction.stage == UpdateTransactionStage::AfterOriginalRestore {
+        advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::BeforeOriginalRestart,
+            candidates.clone(),
+        )?;
+    }
+    if transaction.stage == UpdateTransactionStage::BeforeOriginalRestart {
+        let restart_errors =
+            restart_runtime_keys(&app, &original_keys, &transaction.transaction_id).await;
+        if !restart_errors.is_empty() {
+            return Err(format!(
+                "The previous version was restored, but one or more agents could not restart: {}",
+                restart_errors
+                    .into_iter()
+                    .map(|(key, error)| format!("{} on {}: {error}", key.pubkey, key.relay_url))
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+        advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::AfterOriginalRestart,
+            candidates.clone(),
+        )?;
+    }
+    if transaction.stage == UpdateTransactionStage::AfterOriginalRestart {
+        advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::RollbackCompleted,
+            candidates,
+        )?;
+    }
+    if transaction.stage != UpdateTransactionStage::RollbackCompleted {
+        return Err(
+            "This interrupted update is in a recovery state Buzz cannot resolve automatically."
+                .to_string(),
+        );
+    }
+    journal.delete(&transaction.transaction_id, transaction.revision)?;
+    state.managed_agent_update_leases.clear_recovery(
+        &transaction.transaction_id,
+        selected.iter().map(String::as_str),
+    )?;
+    emit_update_progress(
+        &app,
+        &transaction.request_id,
+        AgentTemplateUpdateProgressStage::UpdateRolledBack,
+    );
+    Ok(())
+}
+
 fn restore_original_records(
     app: &AppHandle,
     selected: &[String],
     originals: &BTreeMap<String, ManagedAgentRecord>,
     attempted: &BTreeMap<String, ManagedAgentRecord>,
+    operation_id: &str,
 ) -> Result<(), String> {
     let state = app.state::<AppState>();
     let _transition = state
@@ -332,7 +552,7 @@ fn restore_original_records(
         let current = find_managed_agent_mut(&mut records, pubkey)?;
         restore_config_preserving_runtime_state(current, original);
     }
-    save_managed_agents(app, &records)
+    save_managed_agents_for_operation(app, &records, operation_id)
 }
 
 fn normalize_runtime_state(record: &mut ManagedAgentRecord) {
@@ -423,17 +643,23 @@ fn runtime_keys_for_selected(
 
 async fn drain_claimed_runtime_keys(
     app: &AppHandle,
-    keys: &[ManagedAgentRuntimeKey],
+    generations: &[JournalRuntimeGeneration],
     operation_id: &str,
 ) -> Vec<(
     ManagedAgentRuntimeKey,
     Result<crate::managed_agents::DrainedManagedAgentPair, ManagedAgentUpdateDrainError>,
 )> {
-    join_all(keys.iter().cloned().map(|key| {
+    join_all(generations.iter().cloned().map(|generation| {
         let app = app.clone();
         let operation_id = operation_id.to_string();
         async move {
-            let result = drain_managed_agent_pair_for_update(&app, &key, &operation_id).await;
+            let identity = PlannedUpdateIdentity {
+                handoff_id: generation.handoff.handoff_id,
+                start_nonce: generation.handoff.start_nonce,
+            };
+            let key = generation.key;
+            let result =
+                drain_managed_agent_pair_for_update(&app, &key, &operation_id, &identity).await;
             (key, result)
         }
     }))
@@ -471,6 +697,26 @@ fn clear_rollback_safe_claims(
         .lock()
         .map_err(|error| error.to_string())?;
     clear_managed_agent_runtime_pair_claims(&mut runtimes, &keys, operation_id)
+}
+
+fn clear_runtime_claims(
+    app: &AppHandle,
+    keys: &[ManagedAgentRuntimeKey],
+    operation_id: &str,
+) -> Result<(), String> {
+    if keys.is_empty() {
+        return Ok(());
+    }
+    let state = app.state::<AppState>();
+    let _transition = state
+        .managed_agent_runtime_transition
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let mut runtimes = state
+        .managed_agent_processes
+        .lock()
+        .map_err(|error| error.to_string())?;
+    clear_managed_agent_runtime_pair_claims(&mut runtimes, keys, operation_id)
 }
 
 fn absent_drained_runtime_keys(
@@ -536,12 +782,15 @@ fn rollback_safe_failure_lost_runtime(
 async fn restart_runtime_keys(
     app: &AppHandle,
     keys: &[ManagedAgentRuntimeKey],
+    operation_id: &str,
 ) -> Vec<(ManagedAgentRuntimeKey, String)> {
     let mut errors = Vec::new();
     for key in keys {
-        match start_managed_agent_runtime_pair_lazy(
+        match start_managed_agent_runtime_pair_authorized(
             key.pubkey.clone(),
             key.relay_url.clone(),
+            true,
+            operation_id,
             app.clone(),
         ) {
             Ok(_) => {
@@ -608,6 +857,68 @@ fn describe_drain_errors(
         .join("; ")
 }
 
+fn advance_update_transaction(
+    journal: &UpdateTransactionJournal,
+    transaction: &mut UpdateTransaction,
+    stage: UpdateTransactionStage,
+    candidate_generations: Vec<JournalRuntimeGeneration>,
+) -> Result<(), String> {
+    *transaction = journal.update(
+        &transaction.transaction_id,
+        transaction.revision,
+        stage,
+        candidate_generations,
+    )?;
+    Ok(())
+}
+
+fn retain_interrupted_update_block(
+    state: &AppState,
+    transaction: &UpdateTransaction,
+) -> Result<(), String> {
+    state
+        .managed_agent_update_leases
+        .block_for_recovery(
+            &transaction.transaction_id,
+            transaction.selected.keys().map(String::as_str),
+        )
+        .or_else(|error| {
+            state
+                .managed_agent_update_leases
+                .block_all_for_recovery("recovery-global")
+                .map_err(|global_error| {
+                    format!("{error} Global recovery fencing also failed: {global_error}")
+                })
+        })
+}
+
+fn cleanup_unstarted_update_journal(
+    state: &AppState,
+    journal: &UpdateTransactionJournal,
+    transaction_id: &str,
+) {
+    match journal.load(transaction_id) {
+        Ok(transaction) if transaction.stage == UpdateTransactionStage::Prepared => {
+            if journal
+                .delete(&transaction.transaction_id, transaction.revision)
+                .is_err()
+            {
+                let _ = state
+                    .managed_agent_update_leases
+                    .block_all_for_recovery("recovery-global");
+            }
+        }
+        Ok(transaction) => {
+            let _ = retain_interrupted_update_block(state, &transaction);
+        }
+        Err(_) => {
+            let _ = state
+                .managed_agent_update_leases
+                .block_all_for_recovery("recovery-global");
+        }
+    }
+}
+
 #[tauri::command]
 pub async fn apply_agent_template_update(
     input: ApplyAgentTemplateUpdateRequest,
@@ -643,12 +954,19 @@ pub async fn apply_agent_template_update(
     .await
     .map_err(|error| format!("Template version task failed: {error}"))??;
     let target_version_token = target_version.authority_token()?;
-    let operation_id = uuid::Uuid::new_v4().simple().to_string();
+    let operation_id = uuid::Uuid::new_v4().hyphenated().to_string();
+    let _update_lease = state
+        .managed_agent_update_leases
+        .try_acquire(
+            operation_id.clone(),
+            input.selected_pubkeys.iter().map(String::as_str),
+        )
+        .map_err(|error| format!("Could not begin the agent update: {error}"))?;
 
     // Stage the exact target without changing a record. Claiming all live
     // generations in the same transition prevents a normal stop or
     // replacement from racing the handoff.
-    let (selected, originals, attempted, original_keys, names) = {
+    let (selected, originals, attempted, original_generations, names) = {
         let _transition = state
             .managed_agent_runtime_transition
             .lock()
@@ -718,10 +1036,86 @@ pub async fn apply_agent_template_update(
             .lock()
             .map_err(|error| error.to_string())?;
         let original_keys = runtime_keys_for_selected(&runtimes, &selected);
+        let original_generations = original_keys
+            .iter()
+            .map(|key| {
+                let runtime = runtimes.get(key).ok_or_else(|| {
+                    "A running agent disappeared before it was claimed.".to_string()
+                })?;
+                let identity = PlannedUpdateIdentity::new(&runtime.start_nonce)?;
+                Ok(JournalRuntimeGeneration {
+                    key: key.clone(),
+                    start_nonce: runtime.start_nonce.clone(),
+                    handoff: JournalHandoffIdentity {
+                        handoff_id: identity.handoff_id,
+                        start_nonce: identity.start_nonce,
+                    },
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         claim_managed_agent_runtime_pairs(&mut runtimes, &original_keys, &operation_id)
             .map_err(|error| format!("Could not begin the agent update: {error}"))?;
-        (selected, originals, attempted, original_keys, names)
+        (selected, originals, attempted, original_generations, names)
     };
+    let original_keys = original_generations
+        .iter()
+        .map(|generation| generation.key.clone())
+        .collect::<Vec<_>>();
+    let selected_records = selected
+        .iter()
+        .map(|pubkey| {
+            Ok((
+                pubkey.clone(),
+                SelectedAgentRecords {
+                    original: originals
+                        .get(pubkey)
+                        .cloned()
+                        .ok_or_else(|| format!("Agent {pubkey} has no original snapshot."))?,
+                    attempted: attempted
+                        .get(pubkey)
+                        .cloned()
+                        .ok_or_else(|| format!("Agent {pubkey} has no attempted snapshot."))?,
+                },
+            ))
+        })
+        .collect::<Result<BTreeMap<_, _>, String>>()?;
+    let mut transaction = UpdateTransaction::new(
+        operation_id.clone(),
+        input.request_id.clone(),
+        ImmutableUpdateTarget {
+            persona_id: input.persona_id.clone(),
+            version: target_version.clone(),
+        },
+        selected_records,
+        original_generations.clone(),
+    )?;
+    let journal = match UpdateTransactionJournal::for_app(&app) {
+        Ok(journal) => journal,
+        Err(error) => {
+            let _ = clear_runtime_claims(&app, &original_keys, &operation_id);
+            let _ = state
+                .managed_agent_update_leases
+                .block_all_for_recovery("recovery-global");
+            return Err(error);
+        }
+    };
+    if let Err(error) = journal.create(&transaction) {
+        let _ = clear_runtime_claims(&app, &original_keys, &operation_id);
+        cleanup_unstarted_update_journal(&state, &journal, &transaction.transaction_id);
+        return Err(error);
+    }
+    if let Err(error) = advance_update_transaction(
+        &journal,
+        &mut transaction,
+        UpdateTransactionStage::BeforeOriginalHandoff,
+        Vec::new(),
+    ) {
+        let _ = clear_runtime_claims(&app, &original_keys, &operation_id);
+        cleanup_unstarted_update_journal(&state, &journal, &transaction.transaction_id);
+        return Err(format!(
+            "Buzz could not make the update handoff durable: {error}"
+        ));
+    }
 
     if !original_keys.is_empty() {
         emit_update_progress(
@@ -730,7 +1124,8 @@ pub async fn apply_agent_template_update(
             AgentTemplateUpdateProgressStage::FinishingCurrentTask,
         );
     }
-    let original_drains = drain_claimed_runtime_keys(&app, &original_keys, &operation_id).await;
+    let original_drains =
+        drain_claimed_runtime_keys(&app, &original_generations, &operation_id).await;
     if original_drains.iter().any(|(_, result)| result.is_err()) {
         let drain_error = describe_drain_errors(&original_drains);
         let mut recovery_errors = Vec::new();
@@ -757,21 +1152,67 @@ pub async fn apply_agent_template_update(
                     .to_string(),
             );
         }
-        match absent_drained_runtime_keys(&app, &original_drains) {
-            Ok(keys) => {
-                recovery_errors.extend(restart_runtime_keys(&app, &keys).await.into_iter().map(
-                    |(key, error)| {
-                        format!(
-                            "Could not restart {} on {}: {error}",
-                            key.pubkey, key.relay_url
-                        )
-                    },
-                ));
+        let restart_keys = match absent_drained_runtime_keys(&app, &original_drains) {
+            Ok(keys) => keys,
+            Err(error) => {
+                recovery_errors.push(error);
+                Vec::new()
             }
-            Err(error) => recovery_errors.push(error),
+        };
+        if !unsafe_handoff && !lost_without_checkpoint && recovery_errors.is_empty() {
+            if let Err(error) = advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::BeforeOriginalRestart,
+                Vec::new(),
+            ) {
+                recovery_errors.push(format!(
+                    "Could not record the previous-version restart: {error}"
+                ));
+            } else {
+                recovery_errors.extend(
+                    restart_runtime_keys(&app, &restart_keys, &operation_id)
+                        .await
+                        .into_iter()
+                        .map(|(key, error)| {
+                            format!(
+                                "Could not restart {} on {}: {error}",
+                                key.pubkey, key.relay_url
+                            )
+                        }),
+                );
+                if recovery_errors.is_empty() {
+                    if let Err(error) = advance_update_transaction(
+                        &journal,
+                        &mut transaction,
+                        UpdateTransactionStage::AfterOriginalRestart,
+                        Vec::new(),
+                    )
+                    .and_then(|()| {
+                        advance_update_transaction(
+                            &journal,
+                            &mut transaction,
+                            UpdateTransactionStage::RollbackCompleted,
+                            Vec::new(),
+                        )
+                    }) {
+                        recovery_errors
+                            .push(format!("Could not finish the rollback journal: {error}"));
+                    } else if let Err(error) =
+                        journal.delete(&transaction.transaction_id, transaction.revision)
+                    {
+                        eprintln!(
+                            "buzz-desktop: completed update journal cleanup deferred: {error}"
+                        );
+                    }
+                }
+            }
         }
         let safely_recovered =
             !unsafe_handoff && !lost_without_checkpoint && recovery_errors.is_empty();
+        if !safely_recovered {
+            let _ = retain_interrupted_update_block(&state, &transaction);
+        }
         emit_update_progress(
             &app,
             &input.request_id,
@@ -799,6 +1240,20 @@ pub async fn apply_agent_template_update(
             },
             error,
         ));
+    }
+
+    for stage in [
+        UpdateTransactionStage::AfterOriginalHandoff,
+        UpdateTransactionStage::BeforeCandidateCommit,
+    ] {
+        if let Err(error) =
+            advance_update_transaction(&journal, &mut transaction, stage, Vec::new())
+        {
+            let _ = retain_interrupted_update_block(&state, &transaction);
+            return Err(format!(
+                "Buzz stopped the update because its recovery journal could not advance: {error}"
+            ));
+        }
     }
 
     // The originals have exited with verified checkpoints. Recheck the
@@ -857,29 +1312,88 @@ pub async fn apply_agent_template_update(
             current.last_error = None;
             current.last_error_code = None;
         }
-        save_managed_agents(&app, &records)
+        save_managed_agents_for_operation(&app, &records, &operation_id)
     })();
 
     if let Err(error) = commit_result {
-        let restore_result = restore_original_records(&app, &selected, &originals, &attempted);
-        let restart_errors = if restore_result.is_ok() {
-            restart_runtime_keys(&app, &original_keys).await
-        } else {
-            Vec::new()
-        };
         let mut recovery_errors = Vec::new();
-        if let Err(restore_error) = restore_result {
+        if let Err(journal_error) = advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::BeforeOriginalRestore,
+            Vec::new(),
+        ) {
             recovery_errors.push(format!(
-                "Could not restore the original configuration: {restore_error}"
+                "Could not record the original configuration restore: {journal_error}"
             ));
-        }
-        recovery_errors.extend(restart_errors.into_iter().map(|(key, restart_error)| {
-            format!(
-                "Could not restart {} on {}: {restart_error}",
-                key.pubkey, key.relay_url
+        } else {
+            let restore_result =
+                restore_original_records(&app, &selected, &originals, &attempted, &operation_id);
+            if let Err(restore_error) = restore_result {
+                recovery_errors.push(format!(
+                    "Could not restore the original configuration: {restore_error}"
+                ));
+            } else if let Err(journal_error) = advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::AfterOriginalRestore,
+                Vec::new(),
             )
-        }));
+            .and_then(|()| {
+                advance_update_transaction(
+                    &journal,
+                    &mut transaction,
+                    UpdateTransactionStage::BeforeOriginalRestart,
+                    Vec::new(),
+                )
+            }) {
+                recovery_errors.push(format!(
+                    "Could not record the original configuration recovery: {journal_error}"
+                ));
+            } else {
+                recovery_errors.extend(
+                    restart_runtime_keys(&app, &original_keys, &operation_id)
+                        .await
+                        .into_iter()
+                        .map(|(key, restart_error)| {
+                            format!(
+                                "Could not restart {} on {}: {restart_error}",
+                                key.pubkey, key.relay_url
+                            )
+                        }),
+                );
+                if recovery_errors.is_empty() {
+                    if let Err(journal_error) = advance_update_transaction(
+                        &journal,
+                        &mut transaction,
+                        UpdateTransactionStage::AfterOriginalRestart,
+                        Vec::new(),
+                    )
+                    .and_then(|()| {
+                        advance_update_transaction(
+                            &journal,
+                            &mut transaction,
+                            UpdateTransactionStage::RollbackCompleted,
+                            Vec::new(),
+                        )
+                    }) {
+                        recovery_errors.push(format!(
+                            "Could not finish the rollback journal: {journal_error}"
+                        ));
+                    } else if let Err(delete_error) =
+                        journal.delete(&transaction.transaction_id, transaction.revision)
+                    {
+                        eprintln!(
+                            "buzz-desktop: completed update journal cleanup deferred: {delete_error}"
+                        );
+                    }
+                }
+            }
+        }
         let safely_recovered = recovery_errors.is_empty();
+        if !safely_recovered {
+            let _ = retain_interrupted_update_block(&state, &transaction);
+        }
         emit_update_progress(
             &app,
             &input.request_id,
@@ -909,16 +1423,58 @@ pub async fn apply_agent_template_update(
         ));
     }
 
+    if let Err(error) = advance_update_transaction(
+        &journal,
+        &mut transaction,
+        UpdateTransactionStage::AfterCandidateCommit,
+        Vec::new(),
+    ) {
+        let _ = retain_interrupted_update_block(&state, &transaction);
+        return Err(format!(
+            "Buzz saved the update but could not advance its recovery journal: {error}"
+        ));
+    }
+    let candidate_generations = original_keys
+        .iter()
+        .map(|key| {
+            let start_nonce = uuid::Uuid::new_v4().simple().to_string();
+            let handoff = PlannedUpdateIdentity::new(&start_nonce)?;
+            Ok(JournalRuntimeGeneration {
+                key: key.clone(),
+                start_nonce: start_nonce.clone(),
+                handoff: JournalHandoffIdentity {
+                    handoff_id: handoff.handoff_id,
+                    start_nonce,
+                },
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    if let Err(error) = advance_update_transaction(
+        &journal,
+        &mut transaction,
+        UpdateTransactionStage::BeforeCandidateLaunch,
+        candidate_generations.clone(),
+    ) {
+        let _ = retain_interrupted_update_block(&state, &transaction);
+        return Err(format!(
+            "Buzz did not start the updated agents because their process identities could not be made durable: {error}"
+        ));
+    }
+
     let mut update_error = None;
-    for key in &original_keys {
+    for generation in &candidate_generations {
+        let key = &generation.key;
         emit_update_progress(
             &app,
             &input.request_id,
             AgentTemplateUpdateProgressStage::StartingUpdatedAgent,
         );
-        match start_managed_agent_runtime_pair_lazy(
+        match start_managed_agent_runtime_pair_authorized_with_nonce(
             key.pubkey.clone(),
             key.relay_url.clone(),
+            true,
+            &operation_id,
+            &generation.start_nonce,
             app.clone(),
         ) {
             Ok(_) => {
@@ -946,11 +1502,7 @@ pub async fn apply_agent_template_update(
     }
 
     if let Some(error) = update_error {
-        // Every pair using the attempted configuration, including a
-        // concurrently added relay pair, must be claimed and handed off before
-        // the previous records can be restored.
-        let rollback_operation_id = uuid::Uuid::new_v4().simple().to_string();
-        let candidate_keys = {
+        let candidate_generations_to_drain = {
             let _transition = state
                 .managed_agent_runtime_transition
                 .lock()
@@ -960,9 +1512,53 @@ pub async fn apply_agent_template_update(
                 .lock()
                 .map_err(|lock_error| lock_error.to_string())?;
             let keys = runtime_keys_for_selected(&runtimes, &selected);
+            let generations = keys
+                .iter()
+                .map(|key| {
+                    let planned = candidate_generations
+                        .iter()
+                        .find(|generation| generation.key == *key)
+                        .ok_or_else(|| {
+                            "An unplanned replacement runtime appeared during rollback.".to_string()
+                        })?;
+                    let runtime = runtimes.get(key).ok_or_else(|| {
+                        "A replacement runtime disappeared before rollback.".to_string()
+                    })?;
+                    if runtime.start_nonce != planned.start_nonce {
+                        return Err(
+                            "A replacement runtime generation did not match the durable update plan."
+                                .to_string(),
+                        );
+                    }
+                    Ok(planned.clone())
+                })
+                .collect::<Result<Vec<_>, String>>();
+            let generations = match generations {
+                Ok(generations) => generations,
+                Err(claim_error) => {
+                    let _ = retain_interrupted_update_block(&state, &transaction);
+                    emit_update_progress(
+                        &app,
+                        &input.request_id,
+                        AgentTemplateUpdateProgressStage::NeedsAttention,
+                    );
+                    return Ok(failure_response(
+                        input.persona_id,
+                        target_version,
+                        &selected,
+                        &names,
+                        false,
+                        AgentTemplateUpdateOutcome::RollbackFailed,
+                        format!(
+                            "{error} Buzz could not verify every replacement agent before rollback: {claim_error}"
+                        ),
+                    ));
+                }
+            };
             if let Err(claim_error) =
-                claim_managed_agent_runtime_pairs(&mut runtimes, &keys, &rollback_operation_id)
+                claim_managed_agent_runtime_pairs(&mut runtimes, &keys, &operation_id)
             {
+                let _ = retain_interrupted_update_block(&state, &transaction);
                 emit_update_progress(
                     &app,
                     &input.request_id,
@@ -980,13 +1576,25 @@ pub async fn apply_agent_template_update(
                     ),
                 ));
             }
-            keys
+            generations
         };
+        if let Err(journal_error) = advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::BeforeCandidateHandoff,
+            candidate_generations.clone(),
+        ) {
+            let _ = retain_interrupted_update_block(&state, &transaction);
+            return Err(format!(
+                "Buzz could not make the replacement handoff durable: {journal_error}"
+            ));
+        }
         let candidate_drains =
-            drain_claimed_runtime_keys(&app, &candidate_keys, &rollback_operation_id).await;
+            drain_claimed_runtime_keys(&app, &candidate_generations_to_drain, &operation_id).await;
         if candidate_drains.iter().any(|(_, result)| result.is_err()) {
             let drain_errors = describe_drain_errors(&candidate_drains);
-            let _ = clear_rollback_safe_claims(&app, &rollback_operation_id, &candidate_drains);
+            let _ = clear_rollback_safe_claims(&app, &operation_id, &candidate_drains);
+            let _ = retain_interrupted_update_block(&state, &transaction);
             emit_update_progress(
                 &app,
                 &input.request_id,
@@ -1005,9 +1613,30 @@ pub async fn apply_agent_template_update(
             ));
         }
 
+        if let Err(journal_error) = advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::AfterCandidateHandoff,
+            candidate_generations.clone(),
+        )
+        .and_then(|()| {
+            advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::BeforeOriginalRestore,
+                candidate_generations.clone(),
+            )
+        }) {
+            let _ = retain_interrupted_update_block(&state, &transaction);
+            return Err(format!(
+                "Buzz stopped rollback because its recovery journal could not advance: {journal_error}"
+            ));
+        }
+
         if let Err(restore_error) =
-            restore_original_records(&app, &selected, &originals, &attempted)
+            restore_original_records(&app, &selected, &originals, &attempted, &operation_id)
         {
+            let _ = retain_interrupted_update_block(&state, &transaction);
             emit_update_progress(
                 &app,
                 &input.request_id,
@@ -1025,8 +1654,28 @@ pub async fn apply_agent_template_update(
                 ),
             ));
         }
-        let restart_errors = restart_runtime_keys(&app, &original_keys).await;
+        if let Err(journal_error) = advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::AfterOriginalRestore,
+            candidate_generations.clone(),
+        )
+        .and_then(|()| {
+            advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::BeforeOriginalRestart,
+                candidate_generations.clone(),
+            )
+        }) {
+            let _ = retain_interrupted_update_block(&state, &transaction);
+            return Err(format!(
+                "Buzz restored the previous configuration but could not advance its recovery journal: {journal_error}"
+            ));
+        }
+        let restart_errors = restart_runtime_keys(&app, &original_keys, &operation_id).await;
         if !restart_errors.is_empty() {
+            let _ = retain_interrupted_update_block(&state, &transaction);
             emit_update_progress(
                 &app,
                 &input.request_id,
@@ -1052,6 +1701,29 @@ pub async fn apply_agent_template_update(
                 ),
             ));
         }
+        if let Err(journal_error) = advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::AfterOriginalRestart,
+            candidate_generations.clone(),
+        )
+        .and_then(|()| {
+            advance_update_transaction(
+                &journal,
+                &mut transaction,
+                UpdateTransactionStage::RollbackCompleted,
+                candidate_generations.clone(),
+            )
+        }) {
+            let _ = retain_interrupted_update_block(&state, &transaction);
+            return Err(format!(
+                "Buzz restored the previous agents but could not finish its recovery journal: {journal_error}"
+            ));
+        }
+        if let Err(delete_error) = journal.delete(&transaction.transaction_id, transaction.revision)
+        {
+            eprintln!("buzz-desktop: completed update journal cleanup deferred: {delete_error}");
+        }
         emit_update_progress(
             &app,
             &input.request_id,
@@ -1066,6 +1738,29 @@ pub async fn apply_agent_template_update(
             AgentTemplateUpdateOutcome::RolledBack,
             error,
         ));
+    }
+
+    if let Err(journal_error) = advance_update_transaction(
+        &journal,
+        &mut transaction,
+        UpdateTransactionStage::AfterCandidateReady,
+        candidate_generations.clone(),
+    )
+    .and_then(|()| {
+        advance_update_transaction(
+            &journal,
+            &mut transaction,
+            UpdateTransactionStage::UpdateCompleted,
+            candidate_generations.clone(),
+        )
+    }) {
+        let _ = retain_interrupted_update_block(&state, &transaction);
+        return Err(format!(
+            "The updated agents are available, but Buzz could not finish their recovery journal: {journal_error}"
+        ));
+    }
+    if let Err(delete_error) = journal.delete(&transaction.transaction_id, transaction.revision) {
+        eprintln!("buzz-desktop: completed update journal cleanup deferred: {delete_error}");
     }
 
     let agents = selected

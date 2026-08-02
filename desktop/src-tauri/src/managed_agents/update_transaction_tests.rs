@@ -221,8 +221,9 @@ fn every_crash_stage_reopens_with_a_conservative_recovery_decision() {
             UpdateTransactionStage::AfterOriginalRestore
             | UpdateTransactionStage::BeforeOriginalRestart => RecoveryDecision::RestartOriginals,
             UpdateTransactionStage::AfterOriginalRestart => RecoveryDecision::FinishRollback,
-            UpdateTransactionStage::UpdateCompleted
-            | UpdateTransactionStage::RollbackCompleted => RecoveryDecision::DeleteCompleted,
+            UpdateTransactionStage::UpdateCompleted | UpdateTransactionStage::RollbackCompleted => {
+                RecoveryDecision::DeleteCompleted
+            }
         };
         assert_eq!(*decision, expected, "wrong recovery at {stage:?}");
         if matches!(
@@ -303,12 +304,7 @@ fn rollback_path_requires_candidate_quiescence_before_restore() {
         UpdateTransactionStage::RollbackCompleted,
     ] {
         current = journal
-            .update(
-                &id,
-                current.revision,
-                stage,
-                candidates.clone(),
-            )
+            .update(&id, current.revision, stage, candidates.clone())
             .unwrap();
     }
     assert_eq!(
@@ -319,13 +315,93 @@ fn rollback_path_requires_candidate_quiescence_before_restore() {
 }
 
 #[test]
+fn pre_candidate_failures_can_finish_rollback_without_inventing_a_candidate() {
+    for path in [
+        vec![
+            UpdateTransactionStage::BeforeOriginalHandoff,
+            UpdateTransactionStage::BeforeOriginalRestart,
+            UpdateTransactionStage::AfterOriginalRestart,
+            UpdateTransactionStage::RollbackCompleted,
+        ],
+        vec![
+            UpdateTransactionStage::BeforeOriginalHandoff,
+            UpdateTransactionStage::AfterOriginalHandoff,
+            UpdateTransactionStage::BeforeCandidateCommit,
+            UpdateTransactionStage::BeforeOriginalRestore,
+            UpdateTransactionStage::AfterOriginalRestore,
+            UpdateTransactionStage::BeforeOriginalRestart,
+            UpdateTransactionStage::AfterOriginalRestart,
+            UpdateTransactionStage::RollbackCompleted,
+        ],
+    ] {
+        let (_temp, journal) = journal();
+        let mut current = transaction();
+        let id = current.transaction_id.clone();
+        journal.create(&current).unwrap();
+        for stage in path {
+            current = journal
+                .update(&id, current.revision, stage, Vec::new())
+                .unwrap();
+        }
+        assert!(current.candidate_generations.is_empty());
+        assert_eq!(
+            current.recovery_decision(),
+            RecoveryDecision::DeleteCompleted
+        );
+        journal.delete(&id, current.revision).unwrap();
+    }
+}
+
+#[test]
+fn candidate_plan_is_immutable_after_the_launch_boundary() {
+    let (_temp, journal) = journal();
+    let mut current = transaction();
+    let id = current.transaction_id.clone();
+    journal.create(&current).unwrap();
+    for stage in [
+        UpdateTransactionStage::BeforeOriginalHandoff,
+        UpdateTransactionStage::AfterOriginalHandoff,
+        UpdateTransactionStage::BeforeCandidateCommit,
+        UpdateTransactionStage::AfterCandidateCommit,
+    ] {
+        current = journal
+            .update(&id, current.revision, stage, Vec::new())
+            .unwrap();
+    }
+    let candidates = vec![generation(&"d".repeat(64), '2')];
+    current = journal
+        .update(
+            &id,
+            current.revision,
+            UpdateTransactionStage::BeforeCandidateLaunch,
+            candidates.clone(),
+        )
+        .unwrap();
+
+    let mut changed = candidates;
+    changed[0].start_nonce = "3".repeat(32);
+    changed[0].handoff.start_nonce = "3".repeat(32);
+    assert!(journal
+        .update(
+            &id,
+            current.revision,
+            UpdateTransactionStage::AfterCandidateReady,
+            changed,
+        )
+        .is_err());
+    assert_eq!(
+        journal.load(&id).unwrap().stage,
+        UpdateTransactionStage::BeforeCandidateLaunch
+    );
+}
+
+#[test]
 fn immutable_target_snapshots_and_generations_reject_tampering() {
     let (_temp, journal) = journal();
     let transaction = transaction();
     journal.create(&transaction).unwrap();
     let path = journal.path_for_id(&transaction.transaction_id).unwrap();
-    let mut wire: serde_json::Value =
-        serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+    let mut wire: serde_json::Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
 
     wire["target"]["version"]["artifactPath"] = "../escape".into();
     atomic_write_owner_file(&path, &serde_json::to_vec(&wire).unwrap()).unwrap();
@@ -415,7 +491,11 @@ fn files_are_owner_only_and_links_are_quarantined_without_following_targets() {
         )]
     ));
     let quarantined = journal.quarantine(&name).unwrap();
-    assert!(quarantined.symlink_metadata().unwrap().file_type().is_symlink());
+    assert!(quarantined
+        .symlink_metadata()
+        .unwrap()
+        .file_type()
+        .is_symlink());
     assert_eq!(fs::read(&target).unwrap(), b"do not touch");
 }
 
@@ -475,11 +555,7 @@ fn strict_documents_reject_unknown_fields_and_filename_mismatches() {
 
     let wrong_id = uuid::Uuid::new_v4().hyphenated().to_string();
     let wrong_path = journal.path_for_id(&wrong_id).unwrap();
-    atomic_write_owner_file(
-        &wrong_path,
-        &serde_json::to_vec(&transaction).unwrap(),
-    )
-    .unwrap();
+    atomic_write_owner_file(&wrong_path, &serde_json::to_vec(&transaction).unwrap()).unwrap();
     assert!(journal.load(&wrong_id).is_err());
 }
 

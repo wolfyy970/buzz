@@ -366,6 +366,26 @@ pub fn run() {
                 .keyring_locked
                 .load(std::sync::atomic::Ordering::Acquire);
             let recovery_mode = identity_lost || keyring_locked;
+            let agent_update_recovery_clear =
+                match managed_agents::update_transaction::initialize_agent_template_update_recovery(
+                    &app_handle,
+                ) {
+                    Ok(recoveries) => {
+                        if !recoveries.is_empty() {
+                            eprintln!(
+                                "buzz-desktop: {} interrupted agent update(s) require recovery; affected agents remain blocked",
+                                recoveries.len()
+                            );
+                        }
+                        recoveries.is_empty()
+                    }
+                    Err(error) => {
+                        eprintln!(
+                            "buzz-desktop: update-journal recovery scan failed; managed agents remain blocked: {error}"
+                        );
+                        false
+                    }
+                };
 
             // Backfill the pinned persona snapshot for any pre-existing agent
             // that predates the record-authoritative-spawn cutover (persona_id
@@ -373,8 +393,10 @@ pub fn run() {
             // restore_managed_agents_on_launch so no agent spawns from an empty
             // snapshot. Synchronous and best-effort — a failure here must not
             // block launch, but a missing persona is logged loudly inside.
-            if let Err(e) = backfill_persona_snapshots(&app_handle) {
-                eprintln!("buzz-desktop: persona-snapshot backfill failed: {e}");
+            if agent_update_recovery_clear {
+                if let Err(e) = backfill_persona_snapshots(&app_handle) {
+                    eprintln!("buzz-desktop: persona-snapshot backfill failed: {e}");
+                }
             }
 
             // Warm the loaded-harness registry BEFORE restore so cold-launch
@@ -523,7 +545,7 @@ pub fn run() {
             // has no relay override to the localhost fallback. Preserve the
             // boot-time repos and identity recovery safety gates by only marking
             // restoration pending when both allow it.
-            if restore_agents && !recovery_mode {
+            if restore_agents && !recovery_mode && agent_update_recovery_clear {
                 state
                     .managed_agent_restore_pending
                     .store(true, Ordering::Release);
@@ -533,40 +555,46 @@ pub fn run() {
             // Catches agents that escaped both the Justfile trap and boot-time
             // reaping (e.g. a `just staging` Ctrl+C leak that only gets collected
             // by a different instance's periodic sweep).
-            let sweep_handle = app.handle().clone();
-            tauri::async_runtime::spawn(async move {
-                use std::collections::HashSet;
-                use std::time::Duration;
-                use tauri::Manager;
-                let instance_id = managed_agents::current_instance_id(&sweep_handle);
-                let state = sweep_handle.state::<AppState>();
-                // Two-tick grace: only reap same-instance orphans seen on two
-                // consecutive sweeps. Prevents killing a legitimately-starting
-                // agent that spawned between the skip-list snapshot and the scan.
-                let mut prev_orphans: HashSet<u32> = HashSet::new();
-                loop {
-                    tokio::time::sleep(Duration::from_secs(60)).await;
-                    // Collect PIDs of our own live agents to avoid killing them.
-                    let skip_pids: Vec<u32> = state
-                        .managed_agent_processes
-                        .lock()
-                        .map(|runtimes| runtimes.values().map(|rt| rt.child.id()).collect())
+            if agent_update_recovery_clear {
+                let sweep_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    use std::collections::HashSet;
+                    use std::time::Duration;
+                    use tauri::Manager;
+                    let instance_id = managed_agents::current_instance_id(&sweep_handle);
+                    let state = sweep_handle.state::<AppState>();
+                    // Two-tick grace: only reap same-instance orphans seen on two
+                    // consecutive sweeps. Prevents killing a legitimately-starting
+                    // agent that spawned between the skip-list snapshot and the scan.
+                    let mut prev_orphans: HashSet<u32> = HashSet::new();
+                    loop {
+                        tokio::time::sleep(Duration::from_secs(60)).await;
+                        // Collect PIDs of our own live agents to avoid killing them.
+                        let skip_pids: Vec<u32> = state
+                            .managed_agent_processes
+                            .lock()
+                            .map(|runtimes| runtimes.values().map(|rt| rt.child.id()).collect())
+                            .unwrap_or_default();
+                        let prev = prev_orphans.clone();
+                        let inst = instance_id.clone();
+                        // Run the blocking syscall work off the async executor.
+                        let new_orphans = tauri::async_runtime::spawn_blocking(move || {
+                            let orphans = managed_agents::sweep_system_agent_processes_with_grace(
+                                &inst, &skip_pids, &prev,
+                            );
+                            managed_agents::reap_dead_instance_agents(&inst, &skip_pids);
+                            orphans
+                        })
+                        .await
                         .unwrap_or_default();
-                    let prev = prev_orphans.clone();
-                    let inst = instance_id.clone();
-                    // Run the blocking syscall work off the async executor.
-                    let new_orphans = tauri::async_runtime::spawn_blocking(move || {
-                        let orphans = managed_agents::sweep_system_agent_processes_with_grace(
-                            &inst, &skip_pids, &prev,
-                        );
-                        managed_agents::reap_dead_instance_agents(&inst, &skip_pids);
-                        orphans
-                    })
-                    .await
-                    .unwrap_or_default();
-                    prev_orphans = new_orphans;
-                }
-            });
+                        prev_orphans = new_orphans;
+                    }
+                });
+            } else {
+                eprintln!(
+                    "buzz-desktop: periodic agent sweeps are paused until interrupted-update recovery completes"
+                );
+            }
 
             // Drain events the retention store flagged `pending_sync` (UI
             // create/edit, delete tombstones, launch reconcile) to the relay.
@@ -740,6 +768,8 @@ pub fn run() {
             list_relay_agents,
             list_managed_agents,
             preview_agent_template_update,
+            list_agent_template_update_recoveries,
+            restore_interrupted_agent_template_update,
             apply_agent_template_update,
             publish_agent_template_version,
             list_managed_agent_runtimes,

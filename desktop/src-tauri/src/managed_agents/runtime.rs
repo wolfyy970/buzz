@@ -438,6 +438,22 @@ pub fn spawn_agent_child(
     lazy: bool,
     owner_hex: Option<&str>,
 ) -> Result<crate::managed_agents::ManagedAgentProcess, String> {
+    spawn_agent_child_with_start_nonce(app, record, relay_url, lazy, owner_hex, None)
+}
+
+/// Spawn one exact preplanned process generation for a durable update.
+///
+/// Ordinary callers use [`spawn_agent_child`], which generates a fresh nonce
+/// immediately before spawn. An update must make the candidate nonce durable
+/// before crossing that boundary, so it supplies the journaled value here.
+pub(crate) fn spawn_agent_child_with_start_nonce(
+    app: &AppHandle,
+    record: &ManagedAgentRecord,
+    relay_url: &str,
+    lazy: bool,
+    owner_hex: Option<&str>,
+    planned_start_nonce: Option<&str>,
+) -> Result<crate::managed_agents::ManagedAgentProcess, String> {
     if let Some(error) = spawn_key_refusal(record) {
         return Err(error);
     }
@@ -913,7 +929,22 @@ pub fn spawn_agent_child(
     };
 
     // Stamp desktop ownership and an unpredictable harness-generation identity.
-    let start_nonce = uuid::Uuid::new_v4().simple().to_string();
+    let start_nonce = match planned_start_nonce {
+        Some(value)
+            if value.len() == 32
+                && value
+                    .bytes()
+                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)) =>
+        {
+            value.to_string()
+        }
+        Some(_) => {
+            return Err(
+                "The planned managed-agent process generation identity is invalid.".to_string(),
+            );
+        }
+        None => uuid::Uuid::new_v4().simple().to_string(),
+    };
     command
         .env("BUZZ_MANAGED_AGENT", current_instance_id(app))
         .env("BUZZ_MANAGED_AGENT_START_NONCE", &start_nonce);

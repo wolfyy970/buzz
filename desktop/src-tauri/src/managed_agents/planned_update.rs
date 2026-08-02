@@ -134,9 +134,15 @@ pub(crate) async fn drain_managed_agent_pair_for_update(
     app: &AppHandle,
     key: &ManagedAgentRuntimeKey,
     operation_id: &str,
+    identity: &PlannedUpdateIdentity,
 ) -> Result<DrainedManagedAgentPair, ManagedAgentUpdateDrainError> {
     let (start_nonce, lifecycle) = claimed_runtime_snapshot(app, key, operation_id)
         .map_err(ManagedAgentUpdateDrainError::before_acceptance)?;
+    if identity.start_nonce != start_nonce {
+        return Err(ManagedAgentUpdateDrainError::before_acceptance(
+            "The planned update identity does not match the claimed agent generation.",
+        ));
+    }
     if !update_can_begin(&lifecycle) {
         return Err(ManagedAgentUpdateDrainError::before_acceptance(
             match lifecycle {
@@ -170,9 +176,7 @@ pub(crate) async fn drain_managed_agent_pair_for_update(
         }
     }
 
-    let identity = PlannedUpdateIdentity::new(&start_nonce)
-        .map_err(ManagedAgentUpdateDrainError::before_acceptance)?;
-    let published = write_planned_update_request(&paths.request, &identity)
+    let published = write_planned_update_request(&paths.request, identity)
         .map_err(ManagedAgentUpdateDrainError::before_acceptance)?;
     let started = Instant::now();
     let mut accepted = false;
@@ -201,7 +205,7 @@ pub(crate) async fn drain_managed_agent_pair_for_update(
                         "The agent exited unsuccessfully after accepting the update ({status}); Buzz did not trust its checkpoint."
                     )));
                 }
-                if let Err(error) = verify_handoff_checkpoint(&paths.checkpoint, key, &identity) {
+                if let Err(error) = verify_handoff_checkpoint(&paths.checkpoint, key, identity) {
                     cleanup_exited_runtime(app, key, runtime);
                     return Err(ManagedAgentUpdateDrainError::after_acceptance(error));
                 }
