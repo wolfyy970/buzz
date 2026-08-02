@@ -45,6 +45,7 @@ import {
   applyAgentTemplateUpdate,
   publishAgentTemplateVersion,
   previewAgentTemplateUpdate,
+  type AgentTemplateUpdateProgressStage,
   type AgentTemplateUpdatePreview,
   type ApplyAgentTemplateUpdateResponse,
 } from "@/shared/api/tauriAgentTemplateUpdates";
@@ -145,6 +146,8 @@ export function usePersonaActions() {
   >(null);
   const [isTemplateUpdatePending, setIsTemplateUpdatePending] =
     React.useState(false);
+  const [templateUpdateProgressStage, setTemplateUpdateProgressStage] =
+    React.useState<AgentTemplateUpdateProgressStage | null>(null);
 
   const personas = personasQuery.data ?? [];
   const publications = catalogQuery.data ?? [];
@@ -260,6 +263,7 @@ export function usePersonaActions() {
               if (hasOutdatedAgentTemplateInstances(preview)) {
                 setTemplateUpdateResult(null);
                 setTemplateUpdateError(null);
+                setTemplateUpdateProgressStage(null);
                 setTemplateUpdatePreview(preview);
               }
             } catch (error) {
@@ -363,14 +367,21 @@ export function usePersonaActions() {
     const preview = templateUpdatePreview;
     if (!preview || isTemplateUpdatePending) return;
     setTemplateUpdateError(null);
+    setTemplateUpdateResult(null);
+    setTemplateUpdateProgressStage("preparing_update");
     setIsTemplateUpdatePending(true);
     try {
-      const result = await applyAgentTemplateUpdate({
-        personaId: preview.personaId,
-        expectedVersion: preview.targetVersion,
-        selectedPubkeys,
-        connectionBindingsByPubkey,
-      });
+      const result = await applyAgentTemplateUpdate(
+        {
+          personaId: preview.personaId,
+          expectedVersion: preview.targetVersion,
+          selectedPubkeys,
+          connectionBindingsByPubkey,
+        },
+        {
+          onProgress: ({ stage }) => setTemplateUpdateProgressStage(stage),
+        },
+      );
       setTemplateUpdateResult(result);
       await queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey });
     } catch (error) {
@@ -387,6 +398,7 @@ export function usePersonaActions() {
     setTemplateUpdatePreview(null);
     setTemplateUpdateResult(null);
     setTemplateUpdateError(null);
+    setTemplateUpdateProgressStage(null);
   }
 
   async function handleDelete(persona: AgentPersona) {
@@ -719,6 +731,7 @@ export function usePersonaActions() {
     templateUpdatePreview,
     templateUpdateResult,
     templateUpdateError,
+    templateUpdateProgressStage,
     isTemplateUpdatePending,
     handleApplyTemplateUpdate,
     closeTemplateUpdateDialog,

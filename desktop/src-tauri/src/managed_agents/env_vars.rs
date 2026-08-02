@@ -88,6 +88,12 @@ pub(crate) const RESERVED_ENV_KEYS: &[&str] = &[
     // ambient env var must not be able to forge setup mode (NotReady) on a
     // Ready agent or suppress it (empty/stale payload) on a NotReady one.
     "BUZZ_ACP_SETUP_PAYLOAD",
+    // Planned update handoff: Desktop owns the private checkpoint and request
+    // paths. Letting an imported template replace either path would break
+    // restart recovery or make the harness read attacker-chosen state.
+    "BUZZ_ACP_HANDOFF_CHECKPOINT",
+    "BUZZ_ACP_HANDOFF_REQUEST",
+    "BUZZ_ACP_HANDOFF_GRACE_SECS",
     // Desktop ownership markers: these brand every spawned harness with the
     // launching Desktop instance. A user-supplied override would let a
     // definition masquerade as a different instance or fake the nonce used

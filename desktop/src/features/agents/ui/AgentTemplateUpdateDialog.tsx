@@ -2,9 +2,11 @@ import * as React from "react";
 import { Check, Minus, RefreshCw, RotateCcw, XCircle } from "lucide-react";
 
 import type {
+  AgentTemplateUpdateProgressStage,
   AgentTemplateUpdatePreview,
   ApplyAgentTemplateUpdateResponse,
 } from "@/shared/api/tauriAgentTemplateUpdates";
+import { agentTemplateUpdateProgressLabel } from "@/shared/api/tauriAgentTemplateUpdates";
 import type { AgentTemplateVersionRef } from "@/shared/api/types";
 import { shortAgentTemplateVersionToken } from "../lib/agentTemplateUpdatePreview";
 import { Badge } from "@/shared/ui/badge";
@@ -39,6 +41,7 @@ type AgentTemplateUpdateDialogProps = {
   onOpenChange: (open: boolean) => void;
   open: boolean;
   preview: AgentTemplateUpdatePreview | null;
+  progressStage: AgentTemplateUpdateProgressStage | null;
   result: ApplyAgentTemplateUpdateResponse | null;
 };
 
@@ -53,6 +56,7 @@ export function AgentTemplateUpdateDialog({
   onOpenChange,
   open,
   preview,
+  progressStage,
   result,
 }: AgentTemplateUpdateDialogProps) {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
@@ -118,6 +122,8 @@ export function AgentTemplateUpdateDialog({
         preview.targetToolRequirements.length === 0 ||
         bindingsValidByPubkey[agent.pubkey] === true,
     );
+  const activeProgressStage = progressStage ?? "preparing_update";
+  const progressComplete = activeProgressStage === "updated";
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -164,19 +170,17 @@ export function AgentTemplateUpdateDialog({
             data-testid="template-rollout-progress"
           >
             <div className="flex items-center gap-3">
-              <RefreshCw
-                aria-hidden="true"
-                className="size-5 animate-spin text-primary"
-              />
-              <div>
-                <p className="text-sm font-medium">Updating agents</p>
-                <p className="mt-1 text-xs text-muted-foreground">
-                  Buzz stops new work, lets the current task finish, then starts
-                  the selected version. If a task can’t finish cleanly, Buzz
-                  recovers it after the update. If the new version cannot start,
-                  Buzz restores the previous version.
-                </p>
-              </div>
+              {progressComplete ? (
+                <Check aria-hidden="true" className="size-5 text-emerald-500" />
+              ) : (
+                <RefreshCw
+                  aria-hidden="true"
+                  className="size-5 animate-spin text-primary"
+                />
+              )}
+              <p className="text-sm font-medium">
+                {agentTemplateUpdateProgressLabel(activeProgressStage)}
+              </p>
             </div>
           </div>
         ) : (

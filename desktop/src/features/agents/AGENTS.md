@@ -176,7 +176,10 @@ with a TypeScript lookup table or an id comparison in a component.
     connection or applying a template update restarts affected running agents,
     checks that they become ready, and rolls back the template update if the
     replacement launch fails. Do not introduce an "apply when idle" state or
-    describe a process restart as reconnecting.
+    describe a process restart as reconnecting. Template-update progress is a
+    backend event scoped to the frontend-generated request id. Render only
+    stages emitted for that request, remove the listener when the command
+    settles, and never simulate rollout progress with frontend timers.
 15. **Template rollout is explicit and impact-aware.** Agents retain their
     pinned template snapshot until the operator chooses Update agents. The
     preview shows each affected agent, its own added, changed, and removed tool

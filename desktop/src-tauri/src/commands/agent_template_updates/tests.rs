@@ -244,3 +244,71 @@ fn rollback_guard_accepts_atomic_save_original_and_preserves_runtime_state() {
     assert_eq!(attempted.last_started_at.as_deref(), Some("started"));
     assert!(same_nonvolatile_config(&attempted, &original));
 }
+
+#[test]
+fn drain_failure_never_treats_a_missing_uncheckpointed_runtime_as_restartable() {
+    let before_acceptance = ManagedAgentUpdateDrainError {
+        message: "exited before acceptance".to_string(),
+        rollback_safe: true,
+    };
+    let after_acceptance = ManagedAgentUpdateDrainError {
+        message: "ownership uncertain".to_string(),
+        rollback_safe: false,
+    };
+
+    assert_eq!(
+        classify_drain_failure(&before_acceptance, true),
+        DrainFailureState::OriginalStillRunning
+    );
+    assert_eq!(
+        classify_drain_failure(&before_acceptance, false),
+        DrainFailureState::ExitedWithoutCheckpoint
+    );
+    assert_eq!(
+        classify_drain_failure(&after_acceptance, true),
+        DrainFailureState::OwnershipUncertain
+    );
+    assert_eq!(
+        classify_drain_failure(&after_acceptance, false),
+        DrainFailureState::OwnershipUncertain
+    );
+}
+
+#[test]
+fn rollback_failure_is_returned_as_an_agent_outcome() {
+    let pubkey = "a".repeat(64);
+    let response = failure_response(
+        "analytics".to_string(),
+        version('d'),
+        std::slice::from_ref(&pubkey),
+        &BTreeMap::from([(pubkey.clone(), "Analyst".to_string())]),
+        false,
+        AgentTemplateUpdateOutcome::RollbackFailed,
+        "ownership could not be proved".to_string(),
+    );
+    let json = serde_json::to_value(response).expect("serialize response");
+
+    assert_eq!(json["rolledBack"], false);
+    assert_eq!(json["agents"][0]["outcome"], "rollback_failed");
+    assert_eq!(json["agents"][0]["name"], "Analyst");
+    assert_eq!(json["agents"][0]["error"], "ownership could not be proved");
+}
+
+#[test]
+fn update_progress_requires_a_frontend_request_uuid() {
+    assert!(validate_update_request_id("4f62dd32-2f13-42ca-8c1d-c455149a0eef").is_ok());
+    assert!(validate_update_request_id("").is_err());
+    assert!(validate_update_request_id("shared-request-name").is_err());
+}
+
+#[test]
+fn update_progress_payload_uses_product_stage_names() {
+    let payload = AgentTemplateUpdateProgress {
+        request_id: "4f62dd32-2f13-42ca-8c1d-c455149a0eef".to_string(),
+        stage: AgentTemplateUpdateProgressStage::FinishingCurrentTask,
+    };
+    let json = serde_json::to_value(payload).expect("serialize progress");
+
+    assert_eq!(json["requestId"], "4f62dd32-2f13-42ca-8c1d-c455149a0eef");
+    assert_eq!(json["stage"], "finishing_current_task");
+}

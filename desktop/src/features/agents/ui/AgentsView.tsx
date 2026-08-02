@@ -421,6 +421,7 @@ export function AgentsView() {
         }}
         open={personas.templateUpdatePreview !== null}
         preview={personas.templateUpdatePreview}
+        progressStage={personas.templateUpdateProgressStage}
         result={personas.templateUpdateResult}
       />
       {personas.personaToDelete ? (

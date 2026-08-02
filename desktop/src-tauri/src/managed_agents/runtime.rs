@@ -545,6 +545,7 @@ pub fn spawn_agent_child(
         &runtime_key,
         crate::managed_agents::effective_agent_skills(record),
     )?;
+    let handoff_paths = crate::managed_agents::prepare_managed_agent_handoff(app, &runtime_key)?;
 
     // Augment PATH for DMG launches so child processes can find:
     //   - bundled CLI via ~/.local/bin symlink
@@ -868,6 +869,9 @@ pub fn spawn_agent_child(
     for (key, value) in &descriptor.env {
         command.env(key, value);
     }
+    command.env("BUZZ_ACP_HANDOFF_CHECKPOINT", &handoff_paths.checkpoint);
+    command.env("BUZZ_ACP_HANDOFF_REQUEST", &handoff_paths.request);
+    command.env("BUZZ_ACP_HANDOFF_GRACE_SECS", "30");
     configure_runtime_cli(&mut command, runtime_meta);
 
     // Buzz shared compute is stored as a native provider; derive the OpenAI-compatible

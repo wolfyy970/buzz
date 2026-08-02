@@ -292,6 +292,8 @@ type E2eConfig = {
     personaSharePublicationStatuses?: Array<"published" | "queued">;
     /** Reject immutable template publishing after the mutable edit is saved. */
     publishAgentTemplateVersionError?: string;
+    /** Hold each real mocked update stage long enough for progress UI assertions. */
+    agentTemplateUpdateStageDelayMs?: number;
     teams?: MockTeamSeed[];
     relayAgents?: MockRelayAgentSeed[];
     /** Native-like huddle state seeded from authoritative role-bearing membership. */
@@ -8269,12 +8271,32 @@ function handleDeleteProjectConnection(args: { connectionId: string }) {
 
 async function handleApplyAgentTemplateUpdate(args: {
   input: {
+    requestId: string;
     personaId: string;
     expectedVersion: AgentTemplateVersionRef;
     selectedPubkeys: string[];
     connectionBindingsByPubkey?: Record<string, Record<string, string>>;
   };
 }) {
+  const emitProgress = async (
+    stage:
+      | "preparing_update"
+      | "finishing_current_task"
+      | "starting_updated_agent"
+      | "checking_update"
+      | "updated",
+  ) => {
+    await emit("agent-template-update-progress", {
+      requestId: args.input.requestId,
+      stage,
+    });
+    const delayMs =
+      window.__BUZZ_E2E__?.mock?.agentTemplateUpdateStageDelayMs ?? 0;
+    if (delayMs > 0) {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs));
+    }
+  };
+  await emitProgress("preparing_update");
   const preview = handlePreviewAgentTemplateUpdate({
     personaId: args.input.personaId,
   });
@@ -8285,8 +8307,17 @@ async function handleApplyAgentTemplateUpdate(args: {
       "This template changed while you were reviewing it. Review the affected agents again.",
     );
   }
-  await new Promise((resolve) => setTimeout(resolve, 700));
   const selected = new Set(args.input.selectedPubkeys);
+  const hasRunningAgent = preview.agents.some(
+    (agent) => selected.has(agent.pubkey) && agent.runningRelays.length > 0,
+  );
+  if (hasRunningAgent) {
+    await emitProgress("finishing_current_task");
+  }
+  if (hasRunningAgent) {
+    await emitProgress("starting_updated_agent");
+    await emitProgress("checking_update");
+  }
   const agents = preview.agents
     .filter((agent) => selected.has(agent.pubkey))
     .map((agent) => {
@@ -8318,6 +8349,7 @@ async function handleApplyAgentTemplateUpdate(args: {
       };
     });
   await emit("agents-data-changed");
+  await emitProgress("updated");
   return {
     personaId: preview.personaId,
     version: preview.targetVersion,

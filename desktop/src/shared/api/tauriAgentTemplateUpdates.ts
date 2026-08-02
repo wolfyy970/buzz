@@ -1,3 +1,5 @@
+import { listen } from "@tauri-apps/api/event";
+
 import { invokeTauri } from "@/shared/api/tauri";
 import type {
   AgentProjectScope,
@@ -69,6 +71,44 @@ export type ApplyAgentTemplateUpdateResponse = {
   agents: AgentTemplateUpdateResult[];
 };
 
+export type AgentTemplateUpdateProgressStage =
+  | "preparing_update"
+  | "finishing_current_task"
+  | "starting_updated_agent"
+  | "checking_update"
+  | "updated"
+  | "update_rolled_back"
+  | "needs_attention";
+
+export type AgentTemplateUpdateProgress = {
+  requestId: string;
+  stage: AgentTemplateUpdateProgressStage;
+};
+
+export const AGENT_TEMPLATE_UPDATE_PROGRESS_EVENT =
+  "agent-template-update-progress";
+
+export function agentTemplateUpdateProgressLabel(
+  stage: AgentTemplateUpdateProgressStage,
+): string {
+  switch (stage) {
+    case "preparing_update":
+      return "Preparing update";
+    case "finishing_current_task":
+      return "Finishing current task";
+    case "starting_updated_agent":
+      return "Starting updated agent";
+    case "checking_update":
+      return "Checking update";
+    case "updated":
+      return "Updated";
+    case "update_rolled_back":
+      return "Update rolled back";
+    case "needs_attention":
+      return "Needs attention";
+  }
+}
+
 export async function previewAgentTemplateUpdate(
   personaId: string,
   targetVersion?: AgentTemplateVersionRef,
@@ -105,16 +145,43 @@ export async function previewAgentTemplateUpdate(
   };
 }
 
-export async function applyAgentTemplateUpdate(input: {
+export type ApplyAgentTemplateUpdateInput = {
   personaId: string;
   expectedVersion: AgentTemplateVersionRef;
   selectedPubkeys: string[];
   connectionBindingsByPubkey: Record<string, Record<string, string>>;
-}): Promise<ApplyAgentTemplateUpdateResponse> {
-  return invokeTauri<ApplyAgentTemplateUpdateResponse>(
-    "apply_agent_template_update",
-    { input },
+};
+
+export function applyAgentTemplateUpdatePayload(
+  input: ApplyAgentTemplateUpdateInput,
+  requestId: string,
+) {
+  return { input: { requestId, ...input } };
+}
+
+export async function applyAgentTemplateUpdate(
+  input: ApplyAgentTemplateUpdateInput,
+  options?: {
+    onProgress?: (progress: AgentTemplateUpdateProgress) => void;
+  },
+): Promise<ApplyAgentTemplateUpdateResponse> {
+  const requestId = crypto.randomUUID();
+  const unlisten = await listen<AgentTemplateUpdateProgress>(
+    AGENT_TEMPLATE_UPDATE_PROGRESS_EVENT,
+    (event) => {
+      if (event.payload.requestId === requestId) {
+        options?.onProgress?.(event.payload);
+      }
+    },
   );
+  try {
+    return await invokeTauri<ApplyAgentTemplateUpdateResponse>(
+      "apply_agent_template_update",
+      applyAgentTemplateUpdatePayload(input, requestId),
+    );
+  } finally {
+    unlisten();
+  }
 }
 
 export type PublishAgentTemplateVersionResult = {

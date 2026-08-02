@@ -7,6 +7,7 @@ import {
   applyAgentTemplateUpdate,
   publishAgentTemplateVersion,
   previewAgentTemplateUpdate,
+  type AgentTemplateUpdateProgressStage,
   type AgentTemplateUpdatePreview,
   type ApplyAgentTemplateUpdateResponse,
   type PublishAgentTemplateVersionResult,
@@ -22,6 +23,7 @@ export type ProfileAgentTemplateUpdateController = {
   isPending: boolean;
   onOpenChange: (open: boolean) => void;
   preview: AgentTemplateUpdatePreview | null;
+  progressStage: AgentTemplateUpdateProgressStage | null;
   result: ApplyAgentTemplateUpdateResponse | null;
   publishSavedTemplate: (persona: AgentPersona) => Promise<void>;
 };
@@ -37,6 +39,8 @@ export function useProfileAgentTemplateUpdate({
     React.useState<ApplyAgentTemplateUpdateResponse | null>(null);
   const [error, setError] = React.useState<string | null>(null);
   const [isPending, setIsPending] = React.useState(false);
+  const [progressStage, setProgressStage] =
+    React.useState<AgentTemplateUpdateProgressStage | null>(null);
 
   const publishSavedTemplate = React.useCallback(
     async (persona: AgentPersona) => {
@@ -59,6 +63,7 @@ export function useProfileAgentTemplateUpdate({
         if (hasOutdatedAgentTemplateInstances(nextPreview)) {
           setResult(null);
           setError(null);
+          setProgressStage(null);
           setPreview(nextPreview);
         }
       } catch (previewError) {
@@ -79,14 +84,21 @@ export function useProfileAgentTemplateUpdate({
     ) => {
       if (!preview || isPending) return;
       setError(null);
+      setResult(null);
+      setProgressStage("preparing_update");
       setIsPending(true);
       try {
-        const nextResult = await applyAgentTemplateUpdate({
-          personaId: preview.personaId,
-          expectedVersion: preview.targetVersion,
-          selectedPubkeys,
-          connectionBindingsByPubkey,
-        });
+        const nextResult = await applyAgentTemplateUpdate(
+          {
+            personaId: preview.personaId,
+            expectedVersion: preview.targetVersion,
+            selectedPubkeys,
+            connectionBindingsByPubkey,
+          },
+          {
+            onProgress: ({ stage }) => setProgressStage(stage),
+          },
+        );
         setResult(nextResult);
         void onAgentsUpdated();
       } catch (applyError) {
@@ -108,6 +120,7 @@ export function useProfileAgentTemplateUpdate({
       setPreview(null);
       setResult(null);
       setError(null);
+      setProgressStage(null);
     },
     [isPending],
   );
@@ -118,6 +131,7 @@ export function useProfileAgentTemplateUpdate({
     isPending,
     onOpenChange,
     preview,
+    progressStage,
     result,
     publishSavedTemplate,
   };
@@ -138,6 +152,7 @@ export function UserProfileAgentTemplateUpdateDialog({
       onOpenChange={controller.onOpenChange}
       open={controller.preview !== null}
       preview={controller.preview}
+      progressStage={controller.progressStage}
       result={controller.result}
     />
   );

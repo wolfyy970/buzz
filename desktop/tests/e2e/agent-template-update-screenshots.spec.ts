@@ -101,6 +101,7 @@ test.describe("agent template update screenshots", () => {
         env_vars: { ANTHROPIC_API_KEY: "test-only-placeholder" },
       },
       managedAgents: LINKED_AGENTS,
+      agentTemplateUpdateStageDelayMs: 700,
       personas: [
         {
           id: TEMPLATE_ID,
@@ -248,12 +249,28 @@ test.describe("agent template update screenshots", () => {
     ).toBeVisible({ timeout: 2_000 });
     await expect(
       updateReview.getByTestId("template-rollout-progress"),
-    ).toContainText(
-      "Buzz stops new work, lets the current task finish, then starts the selected version. If a task can’t finish cleanly, Buzz recovers it after the update.",
-    );
-    // The mock rollout settles after 700 ms. A short animation ceiling lets
-    // the progress surface paint without waiting through the entire rollout.
-    await capture(page, updateReview, "04-pending-update-progress.png", 75);
+    ).toContainText("Preparing update");
+    await capture(page, updateReview, "04-preparing-update.png", 75);
+
+    await expect(
+      updateReview.getByTestId("template-rollout-progress"),
+    ).toContainText("Finishing current task");
+    await capture(page, updateReview, "05-finishing-current-task.png", 75);
+
+    await expect(
+      updateReview.getByTestId("template-rollout-progress"),
+    ).toContainText("Starting updated agent");
+    await capture(page, updateReview, "06-starting-updated-agent.png", 75);
+
+    await expect(
+      updateReview.getByTestId("template-rollout-progress"),
+    ).toContainText("Checking update");
+    await capture(page, updateReview, "07-checking-update.png", 75);
+
+    await expect(
+      updateReview.getByTestId("template-rollout-progress"),
+    ).toContainText("Updated");
+    await capture(page, updateReview, "08-updated.png", 75);
 
     await expect(
       updateReview.getByText("Agents updated", { exact: true }),
@@ -263,7 +280,7 @@ test.describe("agent template update screenshots", () => {
     await expect(updateReview).toContainText(
       "Updated · starts on this version next time",
     );
-    await capture(page, updateReview, "05-completed-update.png");
+    await capture(page, updateReview, "09-completed-update.png");
   });
 
   test("keeps the saved edit when version publishing fails", async ({

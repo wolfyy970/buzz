@@ -14,11 +14,13 @@ pub(crate) mod effective_config;
 mod env_vars;
 pub(crate) mod git_bash;
 pub(crate) mod global_config;
+mod handoff_control;
 mod managed_node_paths;
 mod nest;
 mod persona_avatars;
 pub(crate) mod persona_events;
 mod personas;
+mod planned_update;
 #[cfg(windows)]
 mod process_lifecycle;
 pub(crate) mod project_connections;
@@ -59,10 +61,18 @@ pub(crate) use global_config::{
     load_global_agent_config, resolve_effective_model_provider, save_global_agent_config,
     validate_global_config, GlobalAgentConfig,
 };
+pub(crate) use handoff_control::{
+    cancel_planned_update_request, planned_update_request_state, prepare_managed_agent_handoff,
+    verify_handoff_checkpoint, write_planned_update_request, PlannedUpdateIdentity,
+    PlannedUpdateRequestState,
+};
 pub(crate) use managed_node_paths::*;
 pub use nest::*;
 pub(crate) use persona_events::persona_snapshot_version;
 pub use personas::*;
+pub(crate) use planned_update::{
+    drain_managed_agent_pair_for_update, DrainedManagedAgentPair, ManagedAgentUpdateDrainError,
+};
 #[cfg(windows)]
 pub use process_lifecycle::*;
 pub(crate) use readiness::{
