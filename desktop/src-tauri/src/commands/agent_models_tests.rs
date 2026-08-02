@@ -351,12 +351,11 @@ fn effective_discovery_provider_reads_the_runtimes_own_env_var() {
     );
 }
 
-/// Definition-authoritative: a linked agent's stale materialized
-/// `record.model`/`record.provider` must never drive model discovery — the
-/// linked definition's current model/provider wins, mirroring spawn's
-/// `resolve_effective_model_provider`.
+/// Revision-authoritative: model discovery must use the linked agent's
+/// selected record snapshot rather than silently advancing to a newer
+/// definition head.
 #[test]
-fn model_discovery_ignores_stale_record_for_linked_agent() {
+fn model_discovery_uses_selected_revision_for_linked_agent() {
     let record: crate::managed_agents::ManagedAgentRecord = serde_json::from_str(
         r#"{
             "pubkey": "abcd1234",
@@ -370,8 +369,11 @@ fn model_discovery_ignores_stale_record_for_linked_agent() {
             "mcp_command": "",
             "turn_timeout_seconds": 320,
             "system_prompt": null,
-            "model": "stale-record-model",
-            "provider": "stale-record-provider",
+            "model": "selected-model",
+            "provider": "selected-provider",
+            "runtime": "goose",
+            "persona_source_version": "selected-v1",
+            "pinned_persona_env_vars": {},
             "env_vars": {},
             "created_at": "2026-01-01T00:00:00Z",
             "updated_at": "2026-01-01T00:00:00Z",
@@ -407,25 +409,24 @@ fn model_discovery_ignores_stale_record_for_linked_agent() {
     };
 
     // agent_model_discovery_config is the single helper get_agent_models
-    // consumes — the stale record bytes must lose to the persona's current
-    // model/provider (the same authoritative resolver spawn uses).
+    // consumes. Discovery must query the same selected model/provider that
+    // spawn uses, even after the mutable definition head changes.
     let personas = [persona];
     let global = crate::managed_agents::GlobalAgentConfig::default();
     let discovery = agent_model_discovery_config(&record, &personas, &global)
         .expect("discovery config should resolve for a linked record");
-    assert_eq!(discovery.model.as_deref(), Some("persona-model"));
-    assert_eq!(discovery.provider.as_deref(), Some("anthropic"));
+    assert_eq!(discovery.model.as_deref(), Some("selected-model"));
+    assert_eq!(discovery.provider.as_deref(), Some("selected-provider"));
 
     // And the discovery env comes from the descriptor, whose layering also
-    // resolves through the definition — the derived model env var must carry
-    // the persona's model, not the stale record snapshot.
+    // resolves through the selected revision.
     assert_eq!(
         discovery.env.get("GOOSE_MODEL").map(String::as_str),
-        Some("persona-model")
+        Some("selected-model")
     );
     assert_eq!(
         discovery.env.get("GOOSE_PROVIDER").map(String::as_str),
-        Some("anthropic")
+        Some("selected-provider")
     );
 }
 

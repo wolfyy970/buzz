@@ -294,26 +294,6 @@ pub(super) async fn start_local_agent_pairs_with_preflight(
         );
     ensure_relay_mesh_for_record(app, mesh_model_id.as_deref(), false).await?;
 
-    {
-        let _store_guard = state
-            .managed_agents_store_lock
-            .lock()
-            .map_err(|e| e.to_string())?;
-        let mut records = load_managed_agents(app)?;
-        let record = find_managed_agent_mut(&mut records, pubkey)?;
-        let personas = load_personas(app).unwrap_or_default();
-        if let Some(persona_id) = record.persona_id.clone() {
-            if let Some(persona) = personas.iter().find(|persona| persona.id == persona_id) {
-                crate::managed_agents::persona_events::apply_persona_snapshot(record, persona);
-                record.updated_at = crate::util::now_iso();
-            }
-        }
-        save_managed_agents(app, &records)?;
-        if let Some(saved_record) = records.iter().find(|record| record.pubkey == pubkey) {
-            retain_managed_agent_pending(app, state, saved_record);
-        }
-    }
-
     let mut errors = Vec::new();
     for relay_url in relay_urls {
         if let Err(error) = crate::managed_agents::start_managed_agent_runtime_pair_lazy(
@@ -378,13 +358,8 @@ pub(super) async fn start_local_agent_with_preflight(
         return Err(format!("agent {pubkey} is not a local agent"));
     }
 
-    // Preflight against the same resolution spawn uses — `resolve_effective_config`
-    // (definition → global fallback). A linked instance's own `provider`/`model`/
-    // `relay_mesh` bytes never contribute: this reads the CURRENT definition
-    // directly, so a definition edit that flips `provider` to/from relay-mesh
-    // between saves is reflected here without needing a prospective re-snapshot;
-    // for a global-inherited blank definition, it also folds in the global
-    // default, which record-byte sniffing could never see.
+    // Preflight against the same pinned-record resolution spawn uses. The
+    // linked definition is loaded only as the orphan-presence gate.
     let personas = load_personas(app).unwrap_or_default();
     let global = crate::managed_agents::load_global_agent_config(app).unwrap_or_default();
     let mesh_model_id =
@@ -408,25 +383,14 @@ pub(super) async fn start_local_agent_with_preflight(
     if record.backend != BackendKind::Local {
         return Err(format!("agent {pubkey} is no longer a local agent"));
     }
-    // Re-snapshot the persona onto the record at every spawn so the agent always
-    // starts with the current persona config (system_prompt, model, provider,
-    // runtime). This clears the "out of date" drift badge without requiring a
-    // delete+recreate. See `apply_persona_snapshot` for the precedence and
-    // env-override self-heal rules.
-    // Load personas once: used for snapshot application below and summary build
-    // at the end — avoids a second disk read for the same file in the same call.
+    // Load personas once for the orphan gate and summary. Ordinary start never
+    // advances the record's selected persona revision.
     let personas = load_personas(app).unwrap_or_default();
     if let Some(persona_id) = record.persona_id.clone() {
-        match personas.iter().find(|p| p.id == persona_id) {
-            Some(persona) => {
-                crate::managed_agents::persona_events::apply_persona_snapshot(record, persona);
-                record.updated_at = crate::util::now_iso();
-            }
-            None => {
-                return Err(
-                    crate::managed_agents::effective_config::ORPHANED_INSTANCE_ERROR.to_string(),
-                );
-            }
+        if !personas.iter().any(|p| p.id == persona_id) {
+            return Err(
+                crate::managed_agents::effective_config::ORPHANED_INSTANCE_ERROR.to_string(),
+            );
         }
     }
     start_managed_agent_process(app, record, &mut runtimes, Some(owner_hex))?;
@@ -788,11 +752,9 @@ pub async fn create_managed_agent(
         // Pin the persona config onto the record at create. After this, spawn
         // and deploy read these snapshotted fields, never the live persona, so
         // the agent stays on the config it was created with across restarts;
-        // delete+respawn re-runs create and rewrites the snapshot. env_vars are
-        // NOT pinned: `record.env_vars` holds agent-level overrides only
-        // (input.env_vars), and the live persona env is merged underneath at
-        // read time (spawn / readiness / deploy) so persona credential edits
-        // refresh on the next spawn like prompt/model/provider already do.
+        // delete+respawn re-runs create and rewrites the snapshot. Persona env
+        // is pinned in the same revision; `record.env_vars` holds agent-level
+        // overrides only and wins on collisions.
         let linked_persona = requested_persona_id.as_deref().and_then(|pid| {
             load_personas(&app)
                 .ok()?
@@ -801,13 +763,16 @@ pub async fn create_managed_agent(
         });
         let persona_snapshot = linked_persona
             .as_ref()
-            .map(crate::managed_agents::persona_events::persona_snapshot);
+            .map(crate::managed_agents::persona_events::persona_snapshot)
+            .transpose()?;
         let snapshot_prompt = persona_snapshot
             .as_ref()
             .and_then(|s| s.system_prompt.clone());
         let snapshot_model = persona_snapshot.as_ref().and_then(|s| s.model.clone());
         let snapshot_provider = persona_snapshot.as_ref().and_then(|s| s.provider.clone());
+        let snapshot_runtime = persona_snapshot.as_ref().and_then(|s| s.runtime.clone());
         let snapshot_source_version = persona_snapshot.as_ref().map(|s| s.source_version.clone());
+        let pinned_persona_env_vars = persona_snapshot.as_ref().map(|s| s.env_vars.clone());
         let effective_provider = snapshot_provider
             .or_else(|| input.provider.as_deref().and_then(trim_to_optional_string));
         let mut effective_model =
@@ -868,6 +833,8 @@ pub async fn create_managed_agent(
             model: effective_model.clone(),
             provider: effective_provider.clone(),
             persona_source_version: snapshot_source_version,
+            pinned_persona_env_vars,
+            previous_persona_snapshots: Vec::new(),
             // Provider agents are managed externally — force false.
             start_on_app_launch: if input.backend != BackendKind::Local {
                 false
@@ -893,7 +860,7 @@ pub async fn create_managed_agent(
             respond_to_allowlist: minted.respond_to_allowlist.clone(),
             display_name: None,
             slug: None,
-            runtime: None,
+            runtime: snapshot_runtime,
             name_pool: Vec::new(),
             is_builtin: false,
             is_active: true,

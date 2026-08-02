@@ -75,12 +75,10 @@ fn backfill_links_standalone_agent_to_manufactured_definition() {
     assert_eq!(definition.definition_respond_to.as_deref(), Some("anyone"));
     assert_eq!(definition.definition_parallelism, Some(4));
 
-    // The recorded version matches the definition's actual content hash —
-    // the drift badge starts clean.
+    // The recorded version matches the definition's non-secret revision
+    // token — the drift badge starts clean, including after env-only edits.
     let view = definition.to_definition_view().unwrap();
-    let expected = crate::managed_agents::persona_events::persona_content_hash(
-        &crate::managed_agents::persona_events::persona_event_content(&view),
-    );
+    let expected = crate::managed_agents::persona_events::persona_snapshot_version(&view);
     assert_eq!(
         instance.persona_source_version.as_deref(),
         Some(expected.as_str())

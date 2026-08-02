@@ -18,6 +18,7 @@
 //! - `private_key_nsec` — the agent's secret key.
 //! - `auth_tag` — the NIP-OA owner attestation.
 //! - `env_vars` — may hold API keys / credentials.
+//! - pinned persona env and rollback history — may also hold credentials.
 //! - `backend` — `Provider { config }` is an opaque blob that may hold secrets.
 //! - any runtime field (`runtime_pid`, `last_*`, `backend_agent_id`, …) — these
 //!   mutate on every start/stop and describe transient process state.
@@ -45,9 +46,9 @@ pub struct ManagedAgentEventContent {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<String>,
-    /// `persona_content_hash` of the persona snapshot pinned at create time.
-    /// Public drift indicator (not a secret) — lets other clients flag a stale
-    /// snapshot without re-reading the source persona.
+    /// Non-secret revision token of the persona snapshot pinned at create
+    /// time. Public drift indicator — lets other clients flag a stale snapshot
+    /// without re-reading the source persona.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persona_source_version: Option<String>,
     pub parallelism: u32,
@@ -178,6 +179,24 @@ mod tests {
             model: Some("claude-opus-4".to_string()),
             provider: Some("anthropic".to_string()),
             persona_source_version: Some("abc123".to_string()),
+            pinned_persona_env_vars: Some(BTreeMap::from([(
+                "PINNED_PERSONA_SECRET_KEY".to_string(),
+                "pinned-persona-secret-value".to_string(),
+            )])),
+            previous_persona_snapshots: vec![super::super::PersonaSnapshotHistoryEntry {
+                system_prompt: Some("old private prompt".to_string()),
+                model: None,
+                provider: None,
+                runtime: None,
+                source_version: Some("old-source".to_string()),
+                pinned_persona_env_vars: BTreeMap::from([(
+                    "HISTORICAL_PERSONA_SECRET_KEY".to_string(),
+                    "historical-persona-secret-value".to_string(),
+                )]),
+                respond_to: super::super::RespondTo::OwnerOnly,
+                respond_to_allowlist: Vec::new(),
+                parallelism: 10,
+            }],
             env_vars: BTreeMap::from([("OPENAI_API_KEY".to_string(), "sk-secret".to_string())]),
             start_on_app_launch: true,
             auto_restart_on_config_change: true,
@@ -261,6 +280,15 @@ mod tests {
         assert!(!json.contains("auth_tag"), "leaked auth tag field");
         assert!(!json.contains("OPENAI_API_KEY"), "leaked env var key");
         assert!(!json.contains("sk-secret"), "leaked env var value");
+        assert!(
+            !json.contains("PINNED_PERSONA_SECRET_KEY")
+                && !json.contains("pinned-persona-secret-value")
+                && !json.contains("HISTORICAL_PERSONA_SECRET_KEY")
+                && !json.contains("historical-persona-secret-value"),
+            "leaked pinned persona env or rollback history"
+        );
+        assert!(!json.contains("previous_persona_snapshots"));
+        assert!(!json.contains("pinned_persona_env_vars"));
         assert!(!json.contains("env_vars"), "leaked env var field");
         assert!(
             !json.contains("sk-provider-secret"),

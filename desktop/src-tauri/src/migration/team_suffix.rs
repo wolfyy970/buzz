@@ -19,9 +19,9 @@
 //! The fix has to happen at rest. Suppressing the duplicate in the observer
 //! parser would hide the symptom while the agent kept receiving the stale bytes.
 //!
-//! Stripping a definition's prompt also changes its `persona_content_hash`, the
-//! drift basis behind the Agents-menu "out of date" badge, so the migration
-//! advances the pin of instances that were current before the strip (see
+//! Stripping a definition's prompt also changes legacy
+//! `persona_content_hash` version markers, so this migration advances exact
+//! matching legacy pins before startup upgrades them to revision tokens (see
 //! [`repin_current_instances`]).
 
 use std::collections::HashMap;
@@ -74,11 +74,9 @@ pub(super) fn strip_baked_team_instructions_in_dir(base_dir: &Path) -> Result<us
     let mut all: Vec<ManagedAgentRecord> = serde_json::from_str(&content)
         .map_err(|e| format!("failed to parse managed-agents.json: {e}"))?;
 
-    // Definition hashes BEFORE the strip: stripping a definition's
-    // `system_prompt` changes its `persona_content_hash`, which is the drift
-    // basis the Agents menu compares each linked instance's pinned
-    // `persona_source_version` against. Captured here so instances that were
-    // current before the strip can be re-pinned after it.
+    // Legacy definition hashes BEFORE the strip. This migration predates the
+    // revision-token upgrade, so it first keeps matching legacy pins aligned;
+    // startup snapshot backfill then safely upgrades exact matches.
     let pre_strip_hashes = definition_hashes(&all);
 
     // Applies to every record: the definition records carry the suffix as
@@ -129,9 +127,8 @@ pub(super) fn strip_baked_team_instructions_in_dir(base_dir: &Path) -> Result<us
     Ok(stripped)
 }
 
-/// `slug → persona_content_hash` for every definition record, computed through
-/// the same projection the drift indicator uses (`persona_drift_state` in
-/// `managed_agents/runtime.rs`).
+/// `slug → persona_content_hash` for every definition record carrying the
+/// legacy public-content version marker.
 fn definition_hashes(records: &[ManagedAgentRecord]) -> HashMap<String, String> {
     records
         .iter()
@@ -144,15 +141,14 @@ fn definition_hashes(records: &[ManagedAgentRecord]) -> HashMap<String, String> 
         .collect()
 }
 
-/// Advance the drift pin of instances that were current before the strip.
+/// Advance legacy version pins of instances that were current before the strip.
 ///
 /// Stripping a definition's prompt changes its `persona_content_hash`, so every
-/// linked instance would otherwise light up "out of date" in the Agents menu
-/// for a change the user never made — a badge that only clears on the next
-/// start, when `apply_persona_snapshot` re-pins. Same conditional as
+/// linked instance would otherwise remain on the pre-strip legacy version.
+/// Same conditional as
 /// `refresh_builtin_agent_avatars`: move the pin only when it still equals the
 /// definition's PRE-strip hash. An instance that had genuinely drifted keeps
-/// its stale pin, and its badge.
+/// its stale pin and badge until an explicit version advance.
 fn repin_current_instances(
     records: &mut [ManagedAgentRecord],
     pre_strip_hashes: &HashMap<String, String>,

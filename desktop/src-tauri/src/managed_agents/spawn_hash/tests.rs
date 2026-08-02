@@ -24,6 +24,8 @@ fn record() -> ManagedAgentRecord {
         model: None,
         provider: None,
         persona_source_version: None,
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         env_vars: BTreeMap::new(),
         start_on_app_launch: false,
         auto_restart_on_config_change: true,
@@ -95,36 +97,16 @@ fn hash_is_deterministic() {
 }
 
 #[test]
-fn materializing_runtime_keeps_hash_stable() {
-    // Migration cutover invariant (Phase 1A): materializing the linked
-    // persona's runtime onto the record must NOT change the spawn hash —
-    // otherwise every running persona-linked agent would show a spurious
-    // restart badge right after migration. Pre-migration the command resolves
-    // through the persona fallback; post-migration through record.runtime.
-    // Same persona, same runtime, same command → same hash.
-    let personas = vec![persona("p1", Some("goose"), "Persona prompt.")];
-
-    let mut pre = record();
-    pre.persona_id = Some("p1".into());
-
-    let mut post = pre.clone();
-    post.runtime = Some("goose".into());
-
+fn mutable_definition_runtime_does_not_change_pinned_hash() {
+    let mut rec = record();
+    rec.persona_id = Some("p1".into());
+    rec.runtime = Some("goose".into());
+    let before = vec![persona("p1", Some("goose"), "Persona prompt.")];
+    let after = vec![persona("p1", Some("claude"), "Persona prompt.")];
     assert_eq!(
-        spawn_config_hash(
-            &pre,
-            &personas,
-            &[],
-            "wss://ws.example",
-            &Default::default()
-        ),
-        spawn_config_hash(
-            &post,
-            &personas,
-            &[],
-            "wss://ws.example",
-            &Default::default()
-        )
+        spawn_config_hash(&rec, &before, &[], "wss://ws.example", &Default::default()),
+        spawn_config_hash(&rec, &after, &[], "wss://ws.example", &Default::default()),
+        "editing the definition head must not alter a selected instance"
     );
 }
 
@@ -142,6 +124,40 @@ fn record_env_var_edit_changes_hash() {
 }
 
 #[test]
+fn pinned_persona_env_edit_changes_hash() {
+    let mut rec = record();
+    rec.pinned_persona_env_vars = Some(BTreeMap::from([("PERSONA_KEY".into(), "v1".into())]));
+    let mut edited = rec.clone();
+    edited.pinned_persona_env_vars = Some(BTreeMap::from([("PERSONA_KEY".into(), "v2".into())]));
+    assert_ne!(
+        spawn_config_hash(&rec, &[], &[], "wss://ws.example", &Default::default()),
+        spawn_config_hash(&edited, &[], &[], "wss://ws.example", &Default::default())
+    );
+}
+
+#[test]
+fn mutable_definition_env_edit_does_not_change_pinned_hash() {
+    let mut rec = record();
+    rec.persona_id = Some("pers".into());
+    rec.pinned_persona_env_vars = Some(BTreeMap::from([("PERSONA_KEY".into(), "selected".into())]));
+    let before = persona("pers", Some("goose"), "prompt");
+    let mut after = before.clone();
+    after
+        .env_vars
+        .insert("PERSONA_KEY".into(), "new-head".into());
+    assert_eq!(
+        spawn_config_hash(
+            &rec,
+            &[before],
+            &[],
+            "wss://ws.example",
+            &Default::default()
+        ),
+        spawn_config_hash(&rec, &[after], &[], "wss://ws.example", &Default::default())
+    );
+}
+
+#[test]
 fn record_prompt_edit_changes_hash() {
     let rec = record();
     let mut edited = record();
@@ -153,29 +169,25 @@ fn record_prompt_edit_changes_hash() {
 }
 
 #[test]
-fn persona_runtime_edit_changes_hash() {
-    // The harness command resolves live personas at spawn, so a persona
-    // runtime change means a restart WOULD change what runs → badge trips.
+fn persona_runtime_edit_does_not_change_hash() {
     let mut rec = record();
     rec.persona_id = Some("pers".into());
+    rec.runtime = Some("goose".into());
     let before = [persona("pers", Some("goose"), "prompt")];
     let after = [persona("pers", Some("claude"), "prompt")];
-    assert_ne!(
+    assert_eq!(
         spawn_config_hash(&rec, &before, &[], "wss://ws.example", &Default::default()),
         spawn_config_hash(&rec, &after, &[], "wss://ws.example", &Default::default())
     );
 }
 
 #[test]
-fn persona_prompt_edit_changes_hash() {
-    // Start/restore re-snapshot the persona prompt onto the record right
-    // before spawning, so a persona prompt edit DOES apply on a plain
-    // restart → the badge must trip.
+fn persona_prompt_edit_does_not_change_hash() {
     let mut rec = record();
     rec.persona_id = Some("pers".into());
     let before = [persona("pers", Some("goose"), "old prompt")];
     let after = [persona("pers", Some("goose"), "new prompt")];
-    assert_ne!(
+    assert_eq!(
         spawn_config_hash(&rec, &before, &[], "wss://ws.example", &Default::default()),
         spawn_config_hash(&rec, &after, &[], "wss://ws.example", &Default::default())
     );
@@ -306,13 +318,9 @@ fn non_spawn_bookkeeping_fields_do_not_change_hash() {
 }
 
 #[test]
-fn resnapshot_does_not_clobber_record_quad_with_definition_absent_quad() {
-    // B5 hash row 3: the prospective re-snapshot copies ONLY
-    // prompt/model/provider/env from the linked definition. An instance
-    // whose owner hand-set respond_to/allowlist/parallelism must
-    // hash identically whether or not its definition carries a quad —
-    // activation of the definition-level defaults must never reach through
-    // spawn and overwrite instance state.
+fn mutable_definition_quad_does_not_clobber_record_quad() {
+    // An existing instance's owner-selected behavioral fields are independent
+    // of later definition-head edits.
     let quadless_definition = vec![persona("p1", Some("goose"), "Persona prompt.")];
 
     let mut rec = record();
@@ -347,8 +355,7 @@ fn resnapshot_does_not_clobber_record_quad_with_definition_absent_quad() {
 #[test]
 fn empty_prompt_hashes_like_absent_prompt() {
     // B5 hash row 2 foundation: Some("") and None spawn identically (env var
-    // absent either way), so they must hash equal — a backfilled prompt-less
-    // record re-snapshots to Some("") and must not trip the badge.
+    // absent either way), so they must hash equal.
     let mut absent = record();
     absent.system_prompt = None;
     let mut empty = record();
@@ -359,28 +366,27 @@ fn empty_prompt_hashes_like_absent_prompt() {
     );
 }
 
-/// (a) A definition-runtime edit must change spawn_config_hash for a
-/// materialized, override-free record — the prospective re-snapshot now
-/// copies the persona's runtime onto the record before hashing.
+/// A mutable definition-runtime edit is inert for a materialized,
+/// override-free record.
 #[test]
-fn definition_runtime_edit_changes_hash_for_materialized_record() {
+fn definition_runtime_edit_is_inert_for_materialized_record() {
     let mut rec = record();
     rec.persona_id = Some("pers".into());
     rec.runtime = Some("goose".into()); // materialized runtime on instance
 
     let before = [persona("pers", Some("goose"), "prompt")];
     let after = [persona("pers", Some("claude"), "prompt")];
-    assert_ne!(
+    assert_eq!(
         spawn_config_hash(&rec, &before, &[], "wss://ws.example", &Default::default()),
         spawn_config_hash(&rec, &after, &[], "wss://ws.example", &Default::default()),
-        "definition runtime edit must badge a materialized, override-free instance"
+        "definition runtime edit must not advance a selected instance"
     );
 }
 
-/// (c) A pin naming a KNOWN runtime no longer beats a changed definition
-/// runtime — apply_persona_snapshot clears the stale pin, so the badge fires.
+/// An explicit known-runtime override remains authoritative across mutable
+/// definition edits.
 #[test]
-fn known_runtime_pin_yields_to_definition_runtime_change() {
+fn known_runtime_pin_survives_definition_runtime_change() {
     let mut rec = record();
     rec.persona_id = Some("pers".into());
     rec.runtime = Some("goose".into()); // materialized runtime
@@ -388,10 +394,10 @@ fn known_runtime_pin_yields_to_definition_runtime_change() {
 
     let before = [persona("pers", Some("goose"), "prompt")];
     let after = [persona("pers", Some("claude"), "prompt")];
-    assert_ne!(
+    assert_eq!(
         spawn_config_hash(&rec, &before, &[], "wss://ws.example", &Default::default()),
         spawn_config_hash(&rec, &after, &[], "wss://ws.example", &Default::default()),
-        "stale known-runtime pin must not shadow a definition runtime edit"
+        "explicit known-runtime override must remain pinned"
     );
 }
 
@@ -413,8 +419,8 @@ fn custom_command_override_beats_definition_runtime_change() {
     );
 }
 
-/// (d) When the linked definition is absent the prospective re-snapshot is
-/// skipped entirely: the materialized runtime must still affect the hash.
+/// When the linked definition is absent, the materialized runtime still
+/// affects the display hash even though actual spawn fails closed.
 #[test]
 fn missing_definition_leaves_materialized_runtime_in_hash() {
     let mut rec = record();
@@ -451,7 +457,7 @@ fn missing_definition_leaves_materialized_runtime_in_hash() {
 fn global_model_change_trips_hash_for_linked_inherited_agent() {
     let mut rec = record();
     rec.persona_id = Some("p1".into());
-    rec.model = Some("stale-record-model".into());
+    rec.model = None;
 
     let personas = vec![persona("p1", Some("goose"), "prompt")];
 
@@ -507,18 +513,7 @@ fn global_model_change_trips_hash_without_model_env_var() {
 }
 
 #[test]
-fn linked_instance_stale_prompt_bytes_are_inert_at_hash_time() {
-    // Regression for the split-resolve defect: prompt used to be read from
-    // the record's own (possibly Phase-A-snapshot-stale) bytes while
-    // model/provider were resolved live from the definition. A definition
-    // edit landing between a caller's snapshot apply and spawn could hand a
-    // fresh model/provider to a stale prompt, and the hash (which already
-    // resolved model/provider live) would silently agree with a spawn that
-    // wrote the stale prompt. Now both come from one `resolve_effective_config`
-    // call, so a record whose own `system_prompt` bytes disagree with the
-    // live definition must hash exactly as if the record carried the
-    // definition's prompt verbatim — the record's prompt bytes are inert for
-    // a linked instance.
+fn linked_instance_selected_prompt_bytes_are_authoritative_at_hash_time() {
     let mut rec = record();
     rec.persona_id = Some("p1".into());
     rec.system_prompt = Some("stale prompt on record".into());
@@ -528,7 +523,7 @@ fn linked_instance_stale_prompt_bytes_are_inert_at_hash_time() {
 
     let personas = [persona("p1", Some("goose"), "live prompt")];
 
-    assert_eq!(
+    assert_ne!(
         spawn_config_hash(
             &rec,
             &personas,
@@ -543,7 +538,7 @@ fn linked_instance_stale_prompt_bytes_are_inert_at_hash_time() {
             "wss://ws.example",
             &Default::default()
         ),
-        "record's own system_prompt bytes must not affect the hash of a linked instance"
+        "selected prompt bytes must affect the hash of a linked instance"
     );
 }
 
@@ -614,10 +609,7 @@ fn title_override_edit_changes_hash() {
 }
 
 #[test]
-fn linked_instance_prompt_model_provider_resolve_from_one_call() {
-    // The prompt for a linked instance must track the definition, exactly
-    // like model/provider — a definition prompt edit trips the hash even
-    // though the record's own (stale) system_prompt bytes are unchanged.
+fn linked_instance_prompt_model_provider_share_one_pinned_resolution() {
     let mut rec = record();
     rec.persona_id = Some("p1".into());
     rec.system_prompt = Some("stale".into());
@@ -625,10 +617,10 @@ fn linked_instance_prompt_model_provider_resolve_from_one_call() {
     let before = [persona("p1", Some("goose"), "old definition prompt")];
     let after = [persona("p1", Some("goose"), "new definition prompt")];
 
-    assert_ne!(
+    assert_eq!(
         spawn_config_hash(&rec, &before, &[], "wss://ws.example", &Default::default()),
         spawn_config_hash(&rec, &after, &[], "wss://ws.example", &Default::default()),
-        "linked instance prompt must resolve from the live definition, not stale record bytes"
+        "mutable definition prompt edits must not alter the selected resolution"
     );
 }
 

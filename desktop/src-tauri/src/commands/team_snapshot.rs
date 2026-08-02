@@ -548,6 +548,7 @@ pub async fn confirm_team_snapshot_import(
             (agent_keys, private_key_nsec, pubkey, auth_tag)
         };
 
+        let pinned_snapshot = crate::managed_agents::persona_events::persona_snapshot(&definition)?;
         // Build the ManagedAgentRecord for this member.
         let record = ManagedAgentRecord {
             pubkey: pubkey.clone(),
@@ -572,7 +573,9 @@ pub async fn confirm_team_snapshot_import(
             system_prompt: member.definition.system_prompt.clone(),
             model: member.definition.model.clone(),
             provider: member.definition.provider.clone(),
-            persona_source_version: None,
+            persona_source_version: Some(pinned_snapshot.source_version),
+            pinned_persona_env_vars: Some(pinned_snapshot.env_vars),
+            previous_persona_snapshots: Vec::new(),
             env_vars: std::collections::BTreeMap::new(),
             start_on_app_launch: false,
             auto_restart_on_config_change: true,

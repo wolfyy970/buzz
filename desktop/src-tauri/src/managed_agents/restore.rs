@@ -29,11 +29,14 @@ type AgentSpawnResult = (String, SpawnOutcome);
 /// `restore_managed_agents_on_launch` spawns anything, so no agent boots from an
 /// empty snapshot.
 ///
-/// Only records with a `persona_id` but no `persona_source_version` are touched.
-/// Records that already have a `persona_source_version` — including those whose
-/// `model`/`provider` were clobbered by the old unconditional snapshot code before
-/// this fix — are skipped here; they self-heal on the next manual start via the
-/// start-path re-snapshot in `start_local_agent_with_preflight`.
+/// Records with no `persona_source_version` receive the complete current
+/// snapshot. A record that already has a source version but lacks the optional
+/// pinned-env marker receives only the current definition env, preserving its
+/// selected prompt/model/provider/runtime revision. Records carrying the old
+/// public-content version hash are upgraded to the non-secret revision token
+/// only when every pinned field exactly matches the current definition head.
+/// `Some(empty)` is already initialized and is never refreshed from the
+/// mutable definition.
 /// If the linked persona is gone, we log loudly and leave the record untouched —
 /// it stays orphaned and `spawn_agent_child` refuses to start it (see
 /// `effective_config::resolve_effective_config`'s `OrphanedInstance` arm).
@@ -45,36 +48,28 @@ pub fn backfill_persona_snapshots(app: &tauri::AppHandle) -> Result<(), String> 
         .map_err(|error| error.to_string())?;
 
     let mut records = load_managed_agents(app)?;
-    let needs_backfill = records
-        .iter()
-        .any(|r| r.persona_id.is_some() && r.persona_source_version.is_none());
-    if !needs_backfill {
-        return Ok(());
-    }
-
     let personas = load_personas(app)?;
     let mut changed = false;
     for record in records.iter_mut() {
         let Some(persona_id) = record.persona_id.clone() else {
             continue;
         };
-        if record.persona_source_version.is_some() {
-            continue;
-        }
         let Some(persona) = personas.iter().find(|p| p.id == persona_id) else {
-            eprintln!(
-                "buzz-desktop: persona-snapshot backfill: agent {} links persona {persona_id} which no longer exists; leaving it orphaned — spawn will refuse it",
-                record.pubkey
-            );
+            if record.persona_source_version.is_none() || record.pinned_persona_env_vars.is_none() {
+                eprintln!(
+                    "buzz-desktop: persona-snapshot backfill: agent {} links persona {persona_id} which no longer exists; leaving it orphaned — spawn will refuse it",
+                    record.pubkey
+                );
+            }
             continue;
         };
-        // Layer precedence at read time: persona env < agent env. When the
-        // persona leaves model/provider blank, the record's own configured
-        // values are preserved — a blank persona must not clobber a
-        // user-configured agent. See `apply_persona_snapshot`.
-        super::persona_events::apply_persona_snapshot(record, persona);
-        record.updated_at = util::now_iso();
-        changed = true;
+        // One-time legacy pin/version migration. The helper is deliberately
+        // idempotent, so all linked records can be examined under this single
+        // store lock without refreshing a selected revision.
+        if super::persona_events::backfill_persona_snapshot(record, persona)? {
+            record.updated_at = util::now_iso();
+            changed = true;
+        }
     }
 
     if changed {
@@ -100,7 +95,7 @@ pub async fn restore_managed_agents_on_launch(
     let state = app.state::<AppState>();
 
     // ── Phase A (under lock): housekeeping + collect agents to restore ──
-    let mut agents_to_start: Vec<super::ManagedAgentRecord>;
+    let agents_to_start: Vec<super::ManagedAgentRecord>;
     {
         let _store_guard = state
             .managed_agents_store_lock
@@ -189,35 +184,10 @@ pub async fn restore_managed_agents_on_launch(
                 to_start.push(record.clone());
             }
         }
+        // Restore the exact revision that was previously selected. Orphaned
+        // links stay in the list so `spawn_agent_child` records the shared
+        // fail-closed error instead of silently running detached config.
         agents_to_start = to_start;
-
-        // Re-snapshot persona config for agents about to be restored, matching
-        // the interactive spawn path so auto-start agents also pick up the
-        // current persona on app launch.
-        let personas_for_snapshot = super::load_personas(app).unwrap_or_default();
-        for record in records.iter_mut() {
-            if !agents_to_start.iter().any(|r| r.pubkey == record.pubkey) {
-                continue;
-            }
-            let Some(persona_id) = record.persona_id.clone() else {
-                continue;
-            };
-            let Some(persona) = personas_for_snapshot.iter().find(|p| p.id == persona_id) else {
-                // Orphaned: no current persona to re-snapshot from. Leave the
-                // record as-is — `spawn_agent_child` (Phase B below) refuses to
-                // spawn it and Phase C persists the refusal to `last_error`.
-                continue;
-            };
-            super::persona_events::apply_persona_snapshot(record, persona);
-            record.updated_at = util::now_iso();
-            changed = true;
-        }
-        // Re-collect to_start from the updated records so Phase B spawns the refreshed config.
-        agents_to_start = records
-            .iter()
-            .filter(|r| agents_to_start.iter().any(|s| s.pubkey == r.pubkey))
-            .cloned()
-            .collect();
 
         if changed {
             save_managed_agents(app, &records)?;
@@ -240,10 +210,7 @@ pub async fn restore_managed_agents_on_launch(
 
     #[cfg(feature = "mesh-llm")]
     let agents_to_start = {
-        // Preflight against the same resolution spawn uses — `resolve_effective_config`
-        // (definition → global fallback). A linked instance's own `provider`/`model`/
-        // `relay_mesh` bytes never contribute. See `start_local_agent_with_preflight`
-        // in `commands/agents.rs` for the identical rationale on the interactive path.
+        // Preflight against the same pinned-record resolution spawn uses.
         let personas = load_personas(app).unwrap_or_default();
         let global = super::load_global_agent_config(app).unwrap_or_default();
         let mut mesh_preflight_failures = std::collections::HashSet::new();

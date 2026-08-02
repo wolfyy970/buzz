@@ -119,6 +119,8 @@ impl AgentDefinition {
             model: self.model,
             provider: self.provider,
             persona_source_version: None,
+            pinned_persona_env_vars: None,
+            previous_persona_snapshots: Vec::new(),
             env_vars: self.env_vars,
             start_on_app_launch: false,
             auto_restart_on_config_change: true,
@@ -245,13 +247,11 @@ pub struct ManagedAgentRecord {
     pub avatar_url: Option<String>,
     pub acp_command: String,
     pub agent_command: String,
-    /// Explicit per-instance harness pin. `None` (the default) means inherit
-    /// the harness from the linked persona's `runtime`, so persona harness
-    /// edits propagate on the next spawn — mirroring the opt-in `model`
-    /// override. `Some` is set only when the user deliberately picks a harness
-    /// that diverges from the persona. Resolved via `effective_agent_command`;
-    /// `agent_command` above is the create-time snapshot kept for avatar/legacy
-    /// derivations and is not authoritative for spawn.
+    /// Explicit per-instance harness override. `None` means use the selected
+    /// persona revision's pinned `runtime`; `Some` is set only when the user
+    /// deliberately picks a divergent harness. `agent_command` above is a
+    /// create-time snapshot kept for avatar/legacy derivations and is not
+    /// authoritative for spawn.
     #[serde(default)]
     pub agent_command_override: Option<String>,
     pub agent_args: Vec<String>,
@@ -279,30 +279,37 @@ pub struct ManagedAgentRecord {
     /// Desired LLM model ID. Matches AgentModelInfo.id from discovery.
     /// The harness re-discovers the correct ACP switching metadata at session
     /// creation by matching this ID against the fresh session/new response.
-    /// For a linked instance this is a legacy/display snapshot only — spawn
-    /// and deploy resolve the effective model from the definition, never
-    /// from this field (see `effective_config::resolve_effective_config`).
-    /// For a definition-less instance this field is authoritative.
+    /// For a linked instance this is the pinned template value used by spawn
+    /// and deploy until an explicit template-version update advances it. For a
+    /// definition-less instance this field is the instance's own value.
     #[serde(default)]
     pub model: Option<String>,
-    /// LLM inference provider. For a linked instance this is a legacy/display
-    /// snapshot only — spawn and deploy resolve the effective provider from
-    /// the definition, never from this field (see
-    /// `effective_config::resolve_effective_config`). For a definition-less
-    /// instance this field is authoritative. `#[serde(default)]` so
-    /// pre-existing records deserialize as `None` and get backfilled on
-    /// first load.
+    /// LLM inference provider. For a linked instance this is the pinned
+    /// template value; for a definition-less instance it is the instance's own
+    /// value. `#[serde(default)]` keeps pre-existing records readable until the
+    /// launch backfill pins them.
     #[serde(default)]
     pub provider: Option<String>,
-    /// Content hash of the persona at the time this agent was created — the
-    /// `persona_content_hash` of the snapshot in `system_prompt` / `model` /
-    /// `provider` / `env_vars`. The Agents menu compares it against the linked
-    /// persona's current hash to flag a stale (out-of-date) instance. `None`
-    /// for non-persona agents and for pre-existing records pending backfill.
+    /// Non-secret revision token of the persona at the time this agent was
+    /// created. The Agents menu compares it against the linked persona's
+    /// current token to flag a stale (out-of-date) instance. `None` for
+    /// non-persona agents and for pre-existing records pending backfill.
     #[serde(default)]
     pub persona_source_version: Option<String>,
+    /// Persona env values pinned alongside the structured persona snapshot.
+    /// `None` is reserved for legacy linked records whose env snapshot has not
+    /// yet been initialized; `Some(empty)` is an intentional pinned revision
+    /// with no persona env. `env_vars` below remains the per-instance override
+    /// layer and wins on collisions. This map can contain credentials and
+    /// therefore must never enter public Nostr events or portable snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pinned_persona_env_vars: Option<BTreeMap<String, String>>,
+    /// Bounded rollback stack populated only by explicit persona-version
+    /// advances. Create/backfill applies do not add history.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub previous_persona_snapshots: Vec<PersonaSnapshotHistoryEntry>,
     /// Environment variables injected at spawn time. Layered as: desktop
-    /// parent env < persona `env_vars` < this agent's `env_vars` (last wins).
+    /// parent env < pinned persona env < this agent's env (last wins).
     ///
     /// To "override" a persona env var: set the same key here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -362,20 +369,11 @@ pub struct ManagedAgentRecord {
     /// agents created directly (never persona-backed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
-    /// Absorbed from `AgentDefinition.runtime` — the preferred ACP runtime ID
-    /// (e.g. 'goose', 'claude'). Record-first command resolution reads this
-    /// before falling back to legacy persona lookup; populated by the store
-    /// migration and at create time, and re-mirrored from the linked
-    /// definition at every snapshot apply (`apply_persona_snapshot`).
-    ///
-    /// `None` means "inherit from the linked definition" (the Inherit sentinel
-    /// clears it). Serialization then omits the key, so boot-time
-    /// `materialize_agent_runtimes` re-inserts a mirror of the definition's
-    /// current runtime on the next launch — behaviorally identical, because
-    /// every apply site re-mirrors the live definition anyway. A literal
-    /// `"runtime": null` in the store (key present, e.g. hand-edited) is
-    /// honored: materialization skips it and it deserializes to `None`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Pinned preferred ACP runtime ID from the selected persona revision.
+    /// `None` is a meaningful pinned value (use Buzz's default runtime), so it
+    /// is serialized as JSON null rather than omitted. Explicit instance
+    /// harness choices live in `agent_command_override` and win at resolution.
+    #[serde(default)]
     pub runtime: Option<String>,
     /// Pool of short thematic names for clones of this agent. Absorbed from
     /// `AgentDefinition.name_pool`; feeds clone naming.
@@ -992,6 +990,8 @@ pub fn resolve_mint_behavioral_defaults(
 
 mod catalog_source;
 pub use catalog_source::CatalogSource;
+mod persona_snapshot;
+pub use persona_snapshot::PersonaSnapshotHistoryEntry;
 mod requests;
 pub use requests::*;
 

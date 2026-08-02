@@ -15,12 +15,12 @@ use super::{canonical_dev_data_dir, load_persona_runtimes, patch_json_records};
 /// persona (unified agent model, Phase 1A). After this, spawn resolution reads
 /// the record's own runtime (`record_agent_command` step 2) instead of the
 /// live persona — same effective command by construction, so the spawn-config
-/// hash is unchanged and no running agent shows a spurious restart badge (see
-/// `spawn_hash::tests::materializing_runtime_keeps_hash_stable`).
+/// hash is unchanged once the one-time snapshot backfill has completed.
 ///
-/// Idempotent: records that already carry `runtime` are untouched, as are
-/// records with no linked persona or a persona without a runtime (both keep
-/// resolving through the legacy fallback path unchanged).
+/// Idempotent and legacy-only: records that already carry a pinned
+/// `persona_source_version` are untouched even when `runtime` is absent/null.
+/// That absence is a meaningful selected-revision value and must never be
+/// replaced from the mutable definition head.
 pub fn materialize_agent_runtimes(app: &tauri::AppHandle) {
     let Ok(current_dir) = app.path().app_data_dir() else {
         return;
@@ -45,7 +45,11 @@ fn materialize_runtimes_in_file(path: &Path) {
         return;
     }
     patch_json_records(path, |obj| {
-        if obj.contains_key("runtime") {
+        if obj.contains_key("runtime")
+            || obj
+                .get("persona_source_version")
+                .is_some_and(|value| !value.is_null())
+        {
             return false;
         }
         let Some(runtime) = obj
@@ -136,5 +140,30 @@ mod tests {
         materialize_runtimes_in_file(&agents_path);
         let after = std::fs::read_to_string(&agents_path).unwrap();
         assert_eq!(before, after, "no linked runtime → untouched file");
+    }
+
+    #[test]
+    fn materialize_runtimes_preserves_selected_null_runtime() {
+        let dir = tempfile::tempdir().unwrap();
+        write_personas_json(
+            dir.path(),
+            &serde_json::json!([{ "id": "persona-1", "displayName": "Alice", "runtime": "goose" }]),
+        );
+        write_agents_json(
+            dir.path(),
+            &serde_json::json!([{
+                "name": "Fizz",
+                "persona_id": "persona-1",
+                "persona_source_version": "selected-version"
+            }]),
+        );
+
+        materialize_runtimes_in_file(&dir.path().join("agents/managed-agents.json"));
+
+        let records = read_agents_json(dir.path());
+        assert!(
+            records[0].get("runtime").is_none(),
+            "a selected revision whose runtime is absent/None must not be repinned from the mutable head"
+        );
     }
 }

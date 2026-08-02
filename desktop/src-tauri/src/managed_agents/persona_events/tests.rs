@@ -25,6 +25,8 @@ fn sample_record() -> ManagedAgentRecord {
         model: None,
         provider: None,
         persona_source_version: None,
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         env_vars: BTreeMap::new(),
         start_on_app_launch: false,
         auto_restart_on_config_change: true,
@@ -61,84 +63,6 @@ fn sample_record() -> ManagedAgentRecord {
     }
 }
 
-// ── preview_prospective_persona_snapshot (Finding 4: relay-mesh preflight
-// ordering) ───────────────────────────────────────────────────────────────
-
-/// Regression for the relay-mesh preflight-ordering defect: the preflight
-/// used to check `ensure_relay_mesh_for_record` against the record's stale
-/// pre-snapshot bytes, so a persona edit that flips `provider` to
-/// `relay-mesh` between saves would not trigger the mesh preflight on the
-/// very next start — only on the restart after that, once the real
-/// `apply_persona_snapshot` had already landed. The preview must reflect the
-/// same prospective re-snapshot the real spawn path applies.
-#[test]
-fn preview_reflects_persona_edit_flipping_provider_into_relay_mesh() {
-    let record = sample_record(); // provider: None (not relay-mesh)
-    let mut persona = sample_persona();
-    persona.id = "test-persona".into();
-    persona.provider = Some("relay-mesh".into());
-    persona.model = Some("auto".into());
-
-    let preview = preview_prospective_persona_snapshot(&record, &[persona]);
-
-    assert_eq!(
-        preview.provider.as_deref(),
-        Some("relay-mesh"),
-        "preview must carry the persona's current provider, not the record's stale None"
-    );
-    assert_eq!(preview.model.as_deref(), Some("auto"));
-}
-
-/// Preview reflects a persona edit flipping AWAY from relay-mesh too —
-/// symmetric with the into-mesh case above.
-#[test]
-fn preview_reflects_persona_edit_flipping_provider_out_of_relay_mesh() {
-    let mut record = sample_record();
-    record.provider = Some("relay-mesh".into());
-    record.model = Some("auto".into());
-    let mut persona = sample_persona();
-    persona.id = "test-persona".into();
-    persona.provider = Some("anthropic".into());
-    persona.model = Some("claude-opus-4".into());
-
-    let preview = preview_prospective_persona_snapshot(&record, &[persona]);
-
-    assert_eq!(preview.provider.as_deref(), Some("anthropic"));
-    assert_eq!(preview.model.as_deref(), Some("claude-opus-4"));
-}
-
-/// The preview must not mutate the record passed in — callers (the mesh
-/// preflight) need the original bytes intact for the real snapshot apply
-/// that follows.
-#[test]
-fn preview_does_not_mutate_input_record() {
-    let record = sample_record();
-    let original = record.clone();
-    let mut persona = sample_persona();
-    persona.id = "test-persona".into();
-    persona.provider = Some("relay-mesh".into());
-
-    let _ = preview_prospective_persona_snapshot(&record, &[persona]);
-
-    assert_eq!(record.provider, original.provider);
-    assert_eq!(record.model, original.model);
-}
-
-/// Orphaned instance (persona deleted): the preview must pass the record
-/// through unchanged so downstream orphan handling (refuse to spawn) sees
-/// the same bytes it always would.
-#[test]
-fn preview_passes_through_unchanged_when_persona_missing() {
-    let mut record = sample_record();
-    record.provider = Some("anthropic".into());
-    record.persona_id = Some("deleted-persona".into());
-
-    let preview = preview_prospective_persona_snapshot(&record, &[]);
-
-    assert_eq!(preview.provider.as_deref(), Some("anthropic"));
-    assert_eq!(preview.persona_id.as_deref(), Some("deleted-persona"));
-}
-
 fn sample_persona() -> AgentDefinition {
     AgentDefinition {
         id: "test-persona".to_string(),
@@ -162,6 +86,122 @@ fn sample_persona() -> AgentDefinition {
         created_at: "2025-01-01T00:00:00Z".to_string(),
         updated_at: "2025-01-01T00:00:00Z".to_string(),
     }
+}
+
+#[path = "persona_revision_tests.rs"]
+mod persona_revision_tests;
+
+#[test]
+fn apply_snapshot_marks_an_intentionally_empty_persona_env() {
+    let mut record = sample_record();
+    let mut persona = sample_persona();
+    persona.env_vars.clear();
+    record.agent_command_override = Some("custom-harness".into());
+    record
+        .env_vars
+        .insert("INSTANCE_ONLY".into(), "keep".into());
+
+    apply_persona_snapshot(&mut record, &persona).unwrap();
+
+    assert_eq!(record.pinned_persona_env_vars, Some(BTreeMap::new()));
+    assert_eq!(
+        record.agent_command_override.as_deref(),
+        Some("custom-harness")
+    );
+    assert_eq!(
+        record.env_vars.get("INSTANCE_ONLY").map(String::as_str),
+        Some("keep")
+    );
+}
+
+#[test]
+fn advance_records_the_prior_pinned_revision_without_touching_overrides() {
+    let mut record = sample_record();
+    let first = sample_persona();
+    apply_persona_snapshot(&mut record, &first).unwrap();
+    record.agent_command_override = Some("custom-harness".into());
+    record
+        .env_vars
+        .insert("KEY".into(), "instance-secret".into());
+
+    let mut second = first.clone();
+    second.system_prompt = "second prompt".into();
+    second.model = Some("second-model".into());
+    second.provider = Some("second-provider".into());
+    second.runtime = Some("pi".into());
+    second.env_vars = BTreeMap::from([("SECOND_KEY".into(), "second-value".into())]);
+    second.respond_to = Some("anyone".into());
+    second.parallelism = Some(4);
+
+    advance_persona_snapshot(&mut record, &second).unwrap();
+
+    assert_eq!(record.previous_persona_snapshots.len(), 1);
+    assert_eq!(record.system_prompt.as_deref(), Some("second prompt"));
+    assert_eq!(
+        record.pinned_persona_env_vars,
+        Some(second.env_vars.clone())
+    );
+    assert_eq!(record.respond_to, RespondTo::Anyone);
+    assert_eq!(record.parallelism, 4);
+    assert_eq!(
+        record.agent_command_override.as_deref(),
+        Some("custom-harness")
+    );
+    assert_eq!(
+        record.env_vars.get("KEY").map(String::as_str),
+        Some("instance-secret")
+    );
+
+    let previous = &record.previous_persona_snapshots[0];
+    assert_eq!(
+        previous.system_prompt.as_deref(),
+        Some("You are a test assistant.")
+    );
+    assert_eq!(previous.model, first.model);
+    assert_eq!(previous.provider, first.provider);
+    assert_eq!(previous.runtime, first.runtime);
+    assert_eq!(previous.pinned_persona_env_vars, first.env_vars);
+    assert_eq!(previous.respond_to, RespondTo::OwnerOnly);
+    assert_eq!(previous.parallelism, DEFAULT_AGENT_PARALLELISM);
+    assert_eq!(
+        record.agent_command_override.as_deref(),
+        Some("custom-harness")
+    );
+    assert_eq!(
+        record.env_vars.get("KEY").map(String::as_str),
+        Some("instance-secret")
+    );
+}
+
+#[test]
+fn persona_snapshot_history_is_bounded() {
+    let mut record = sample_record();
+    let mut persona = sample_persona();
+    apply_persona_snapshot(&mut record, &persona).unwrap();
+
+    for revision in 0..(MAX_PERSONA_SNAPSHOT_HISTORY + 2) {
+        persona.system_prompt = format!("revision {revision}");
+        advance_persona_snapshot(&mut record, &persona).unwrap();
+    }
+
+    assert_eq!(
+        record.previous_persona_snapshots.len(),
+        MAX_PERSONA_SNAPSHOT_HISTORY
+    );
+    assert_eq!(
+        record.previous_persona_snapshots[0]
+            .system_prompt
+            .as_deref(),
+        Some("revision 1"),
+        "the two oldest revisions must be evicted"
+    );
+    let newest_retained = format!("revision {MAX_PERSONA_SNAPSHOT_HISTORY}");
+    assert_eq!(
+        record.previous_persona_snapshots[MAX_PERSONA_SNAPSHOT_HISTORY - 1]
+            .system_prompt
+            .as_deref(),
+        Some(newest_retained.as_str())
+    );
 }
 
 #[test]
@@ -335,9 +375,10 @@ fn content_matches_nip_ap_vector() {
     // Hash invariance across the unified-model widening: REAL pre-revision
     // content bytes (fixture string, not a round-trip through the new
     // struct) must parse and re-serialize byte-identically, so
-    // persona_content_hash — the drift-badge basis — is unchanged on
-    // upgrade. A bare Option serializing "system_prompt":null would flip
-    // every persona's hash fleet-wide.
+    // persona_content_hash — the canonical public-content component of the
+    // revision token and legacy version marker — is unchanged on upgrade. A
+    // bare Option serializing "system_prompt":null would flip every persona's
+    // public hash fleet-wide.
     let parsed: PersonaEventContent = serde_json::from_str(VECTOR).unwrap();
     assert_eq!(
         serde_json::to_string(&parsed).unwrap(),
@@ -615,7 +656,7 @@ fn persona_content_hash_changes_on_edit() {
 #[test]
 fn snapshot_runtime_verbatim_from_persona() {
     let persona = sample_persona(); // runtime = Some("goose")
-    let snap = persona_snapshot(&persona);
+    let snap = persona_snapshot(&persona).unwrap();
     assert_eq!(
         snap.runtime.as_deref(),
         Some("goose"),
@@ -624,7 +665,7 @@ fn snapshot_runtime_verbatim_from_persona() {
 
     let mut no_runtime = sample_persona();
     no_runtime.runtime = None;
-    let snap = persona_snapshot(&no_runtime);
+    let snap = persona_snapshot(&no_runtime).unwrap();
     assert_eq!(
         snap.runtime, None,
         "persona runtime None must produce None snapshot (clears stale materialized value)"
@@ -647,9 +688,9 @@ fn blank_model_persona() -> AgentDefinition {
 #[test]
 fn blank_definition_clears_model_provider() {
     let persona = blank_model_persona();
-    let expected_version = persona_content_hash(&persona_event_content(&persona));
+    let expected_version = persona_snapshot_version(&persona);
 
-    let snapshot = persona_snapshot(&persona);
+    let snapshot = persona_snapshot(&persona).unwrap();
 
     assert!(
         snapshot.model.is_none(),
@@ -661,7 +702,7 @@ fn blank_definition_clears_model_provider() {
     );
     assert_eq!(
         snapshot.source_version, expected_version,
-        "source_version must still reflect current persona hash"
+        "source_version must still reflect the current persona revision"
     );
 }
 
@@ -670,7 +711,7 @@ fn blank_definition_clears_model_provider() {
 fn snapshot_carries_persona_model_provider() {
     let persona = sample_persona(); // has model=Some("claude-opus-4"), provider=Some("anthropic")
 
-    let snapshot = persona_snapshot(&persona);
+    let snapshot = persona_snapshot(&persona).unwrap();
 
     assert_eq!(
         snapshot.model.as_deref(),
@@ -690,7 +731,7 @@ fn snapshot_carries_persona_model_provider() {
 fn both_blank_stays_none() {
     let persona = blank_model_persona();
 
-    let snapshot = persona_snapshot(&persona);
+    let snapshot = persona_snapshot(&persona).unwrap();
 
     assert!(
         snapshot.model.is_none(),
@@ -710,7 +751,7 @@ fn whitespace_only_definition_preserved_verbatim() {
     persona.model = Some("  ".to_string());
     persona.provider = Some("\t".to_string());
 
-    let snapshot = persona_snapshot(&persona);
+    let snapshot = persona_snapshot(&persona).unwrap();
 
     assert_eq!(
         snapshot.model.as_deref(),
@@ -731,7 +772,7 @@ fn definition_model_set_provider_blank_produces_none_provider() {
     let mut persona = sample_persona();
     persona.provider = None;
 
-    let snapshot = persona_snapshot(&persona);
+    let snapshot = persona_snapshot(&persona).unwrap();
 
     assert_eq!(
         snapshot.model.as_deref(),
@@ -751,7 +792,7 @@ fn definition_provider_set_model_blank_produces_none_model() {
     let mut persona = sample_persona();
     persona.model = None;
 
-    let snapshot = persona_snapshot(&persona);
+    let snapshot = persona_snapshot(&persona).unwrap();
 
     assert!(
         snapshot.model.is_none(),

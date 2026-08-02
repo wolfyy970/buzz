@@ -11,6 +11,7 @@ import { AgentDialog } from "./AgentDialog";
 import { PersonaCatalogDialog } from "./PersonaCatalogDialog";
 import { PersonaDeleteDialog } from "./PersonaDeleteDialog";
 import { PersonaShareDialog } from "./PersonaShareDialog";
+import { AgentTemplateUpdateDialog } from "./AgentTemplateUpdateDialog";
 import { AgentSnapshotExportDialog } from "./AgentSnapshotExportDialog";
 import { AgentSnapshotImportDialog } from "./AgentSnapshotImportDialog";
 import { TeamSnapshotExportDialog } from "./TeamSnapshotExportDialog";
@@ -102,6 +103,16 @@ export function AgentsView() {
         (value) => value.trim().length > 0,
       ),
   );
+  const editedPersonaId =
+    personas.personaDialogState &&
+    "id" in personas.personaDialogState.initialValues
+      ? personas.personaDialogState.initialValues.id
+      : null;
+  const affectedAgents = editedPersonaId
+    ? agents.managedAgents.filter(
+        (agent) => agent.personaId === editedPersonaId,
+      )
+    : undefined;
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only; personas.handleImportSnapshotFile and teamActions.handleImportTeamSnapshotFile are stable
   React.useEffect(() => {
     // Consume a snapshot import that was enqueued before navigation (e.g. from
@@ -354,6 +365,7 @@ export function AgentsView() {
       ) : null}
       {personas.personaDialogState ? (
         <AgentDialog
+          affectedAgents={affectedAgents}
           description={personas.personaDialogState.description}
           error={
             personas.updatePersonaMutation.error instanceof Error
@@ -394,6 +406,19 @@ export function AgentsView() {
           title={personas.personaDialogState.title}
         />
       ) : null}
+      <AgentTemplateUpdateDialog
+        error={personas.templateUpdateError}
+        isPending={personas.isTemplateUpdatePending}
+        onApply={(selectedPubkeys) => {
+          void personas.handleApplyTemplateUpdate(selectedPubkeys);
+        }}
+        onOpenChange={(open) => {
+          if (!open) personas.closeTemplateUpdateDialog();
+        }}
+        open={personas.templateUpdatePreview !== null}
+        preview={personas.templateUpdatePreview}
+        result={personas.templateUpdateResult}
+      />
       {personas.personaToDelete ? (
         <PersonaDeleteDialog
           instanceCount={

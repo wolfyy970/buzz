@@ -23,10 +23,9 @@ pub(super) struct AgentModelDiscoveryConfig {
     /// Effective harness args (descriptor-resolved).
     pub(super) args: Vec<String>,
     /// Model from the authoritative resolver spawn uses — linked instances
-    /// read their definition, never stale `record.model` bytes.
+    /// read their selected record revision.
     pub(super) model: Option<String>,
-    /// Provider from the same authoritative resolver — never stale
-    /// `record.provider` bytes for linked instances.
+    /// Provider from the same authoritative resolver and selected revision.
     pub(super) provider: Option<String>,
     /// The runtime's provider env var (e.g. `GOOSE_PROVIDER`), so discovery
     /// can recover the provider from the env when the resolver yields none.
@@ -41,11 +40,10 @@ pub(super) struct AgentModelDiscoveryConfig {
 ///
 /// Command/args/env come from `resolve_effective_harness_descriptor` (the same
 /// resolver as `spawn_agent_child`); model/provider come from
-/// `resolve_effective_model_provider` (#1968's definition-authoritative
-/// contract) — linked instances read their definition, never a stale
-/// materialized `record.model`/`record.provider`, so discovery cannot query a
-/// provider this agent will not actually launch with. Definition-less
-/// instances keep their own record values, matching spawn's
+/// `resolve_effective_model_provider` — linked instances read their selected
+/// record revision, so discovery cannot query a provider this agent will not
+/// actually launch with after the mutable definition head changes.
+/// Definition-less instances keep their own record values, matching spawn's
 /// `resolve_definition_less` arm. When the resolver yields no provider,
 /// `effective_discovery_provider` recovers the provider the agent will
 /// actually launch with from the runtime's own provider env var, read out of

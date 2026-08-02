@@ -71,11 +71,8 @@ fn non_blank(v: Option<&str>) -> Option<&str> {
     v.filter(|s| !s.trim().is_empty())
 }
 
-fn resolve_linked(
-    definition: &AgentDefinition,
-    global: &GlobalAgentConfig,
-) -> EffectiveAgentConfig {
-    let model = match non_blank(definition.model.as_deref()) {
+fn resolve_linked(record: &ManagedAgentRecord, global: &GlobalAgentConfig) -> EffectiveAgentConfig {
+    let model = match non_blank(record.model.as_deref()) {
         Some(m) => ResolvedField {
             value: Some(m.to_owned()),
             source: ConfigSource::Definition,
@@ -86,7 +83,7 @@ fn resolve_linked(
         },
     };
 
-    let provider = match non_blank(definition.provider.as_deref()) {
+    let provider = match non_blank(record.provider.as_deref()) {
         Some(p) => ResolvedField {
             value: Some(p.to_owned()),
             source: ConfigSource::Definition,
@@ -98,7 +95,7 @@ fn resolve_linked(
     };
 
     let system_prompt = ResolvedField {
-        value: non_blank(Some(definition.system_prompt.as_str())).map(str::to_owned),
+        value: non_blank(record.system_prompt.as_deref()).map(str::to_owned),
         source: ConfigSource::Definition,
     };
 
@@ -251,7 +248,9 @@ pub fn resolve_effective_config(
 ) -> EffectiveConfigResult {
     match &record.persona_id {
         Some(pid) => match definitions.iter().find(|d| d.id == *pid) {
-            Some(def) => EffectiveConfigResult::Resolved(resolve_linked(def, global)),
+            // Definition presence remains the orphan gate, but the instance's
+            // selected revision is authoritative for spawn/deploy values.
+            Some(_) => EffectiveConfigResult::Resolved(resolve_linked(record, global)),
             None => EffectiveConfigResult::OrphanedInstance {
                 record_pubkey: record.pubkey.clone(),
                 missing_persona_id: pid.clone(),
@@ -273,11 +272,10 @@ pub fn resolve_effective_model_provider_pair(
 }
 
 /// The relay-mesh preflight decision for `record`, resolved the same way
-/// spawn resolves its mesh env: through `resolve_effective_config` (which
-/// folds in the definition → global fallback). A linked instance's own
-/// `provider`/`model`/`relay_mesh` bytes never contribute; a definition-less
-/// legacy record may fall back to them via `legacy_record_mesh_model_id`,
-/// which is confined to `resolve_definition_less`.
+/// spawn resolves its mesh env: through `resolve_effective_config`. A linked
+/// instance uses its pinned record provider/model while definition presence is
+/// the orphan gate. A definition-less legacy record may additionally fall back
+/// to `legacy_record_mesh_model_id`, confined to `resolve_definition_less`.
 ///
 /// `None` covers both "not a mesh agent" and "orphaned instance" — an orphan
 /// never spawns (see `require_resolved`), so it never needs a mesh preflight

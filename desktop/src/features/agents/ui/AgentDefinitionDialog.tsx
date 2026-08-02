@@ -2,11 +2,6 @@ import * as React from "react";
 import { ChevronDown } from "lucide-react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 
-import type {
-  AcpRuntimeCatalogEntry,
-  CreatePersonaInput,
-  UpdatePersonaInput,
-} from "@/shared/api/types";
 import { cn } from "@/shared/lib/cn";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
@@ -91,33 +86,9 @@ import {
   runtimeDropdownAction,
   usePendingHarnessSelection,
 } from "./addCustomHarness";
-
-type AgentDefinitionDialogProps = {
-  open: boolean;
-  title: string;
-  description: string;
-  submitLabel: string;
-  initialValues: CreatePersonaInput | UpdatePersonaInput | null;
-  error: Error | null;
-  isPending: boolean;
-  runtimes: AcpRuntimeCatalogEntry[];
-  runtimesLoading?: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSubmit: (
-    input: CreatePersonaInput | UpdatePersonaInput,
-    options: AgentDefinitionSubmitOptions,
-  ) => Promise<unknown>;
-  /** Publishes saved changes when the edited agent is shared in the catalog. */
-  publishCatalogUpdatesOnSave?: boolean;
-  /** Rendered below the form fields in create mode only ("Where to run"). */
-  createRunSection?: React.ReactNode;
-  /** Extra create-mode submit gate (e.g. incomplete provider config). */
-  createSubmitBlocked?: boolean;
-};
-
-export type AgentDefinitionSubmitOptions = {
-  publishCatalogUpdates: boolean;
-};
+import { AgentTemplateImpactPreview } from "./AgentTemplateImpactPreview";
+import type { AgentDefinitionDialogProps } from "./AgentDefinitionDialogTypes";
+export type { AgentDefinitionSubmitOptions } from "./AgentDefinitionDialogTypes";
 
 export function AgentDefinitionDialog({
   open,
@@ -132,6 +103,7 @@ export function AgentDefinitionDialog({
   onOpenChange,
   onSubmit,
   publishCatalogUpdatesOnSave = false,
+  affectedAgents,
   createRunSection,
   createSubmitBlocked = false,
 }: AgentDefinitionDialogProps) {
@@ -764,6 +736,12 @@ export function AgentDefinitionDialog({
           onChangeCapture={() => setHasUserChanges(true)}
           onSubmit={handleSubmitForm}
         >
+          {affectedAgents ? (
+            <AgentTemplateImpactPreview
+              agents={affectedAgents}
+              className="lg:col-span-2"
+            />
+          ) : null}
           <AgentCreationPreview
             avatarUrl={previewAvatarUrl}
             disabled={isPending || isAvatarUploadPending}
@@ -785,7 +763,7 @@ export function AgentDefinitionDialog({
                 className="text-sm font-medium text-foreground"
                 htmlFor="persona-display-name"
               >
-                Agent name
+                {isCreateMode ? "Agent name" : "Template name"}
               </label>
               <div
                 className={cn(
@@ -832,6 +810,11 @@ export function AgentDefinitionDialog({
 
             {modelFieldVisible ? (
               <AgentAiConfigurationModeField
+                customLabel={
+                  isCreateMode
+                    ? "Customize for this agent"
+                    : "Customize this template"
+                }
                 mode={aiConfigurationMode}
                 needsProviderSelection={runtimeCanChooseLlmProvider}
                 onModeChange={handleAiConfigurationModeChange}

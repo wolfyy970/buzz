@@ -59,6 +59,8 @@ fn record(
         model: model.map(str::to_string),
         provider: provider.map(str::to_string),
         persona_source_version: None,
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         env_vars: BTreeMap::new(),
         start_on_app_launch: false,
         runtime_pid: None,
@@ -103,10 +105,10 @@ fn global(model: Option<&str>, provider: Option<&str>) -> GlobalAgentConfig {
     }
 }
 
-// ── Linked instance: definition → global, record ignored ──
+// ── Linked instance: pinned record → global; definition is existence gate ──
 
 #[test]
-fn linked_definition_model_wins_over_stale_record() {
+fn linked_pin_wins_over_mutable_definition_head() {
     let rec = record(
         Some("d1"),
         Some("stale-model"),
@@ -127,23 +129,23 @@ fn linked_definition_model_wins_over_stale_record() {
         other => panic!("expected Resolved, got {:?}", other),
     };
 
-    assert_eq!(cfg.model.value.as_deref(), Some("def-model"));
+    assert_eq!(cfg.model.value.as_deref(), Some("stale-model"));
     assert_eq!(cfg.model.source, ConfigSource::Definition);
-    assert_eq!(cfg.provider.value.as_deref(), Some("def-prov"));
+    assert_eq!(cfg.provider.value.as_deref(), Some("stale-prov"));
     assert_eq!(cfg.provider.source, ConfigSource::Definition);
-    assert_eq!(cfg.system_prompt.value.as_deref(), Some("def prompt"));
+    assert_eq!(cfg.system_prompt.value.as_deref(), Some("stale prompt"));
     assert_eq!(cfg.system_prompt.source, ConfigSource::Definition);
 }
 
 #[test]
-fn linked_inherit_global_when_definition_blank() {
-    let rec = record(
-        Some("d1"),
-        Some("stale-model"),
-        Some("stale-prov"),
-        Some("stale prompt"),
-    );
-    let defs = vec![definition("d1", None, None, "")];
+fn linked_inherits_global_when_selected_pin_is_blank() {
+    let rec = record(Some("d1"), None, None, None);
+    let defs = vec![definition(
+        "d1",
+        Some("new-head-model"),
+        Some("new-head-provider"),
+        "new head prompt",
+    )];
     let g = global(Some("global-model"), Some("global-prov"));
 
     let result = resolve_effective_config(&rec, &defs, &g);
@@ -161,7 +163,7 @@ fn linked_inherit_global_when_definition_blank() {
 }
 
 #[test]
-fn linked_stale_record_model_is_inert() {
+fn linked_selected_record_values_are_authoritative() {
     let rec = record(Some("d1"), Some("stale-model"), Some("stale-prov"), None);
     let defs = vec![definition("d1", None, None, "")];
     let g = global(None, None);
@@ -172,16 +174,21 @@ fn linked_stale_record_model_is_inert() {
         other => panic!("expected Resolved, got {:?}", other),
     };
 
-    assert_eq!(cfg.model.value, None);
-    assert_eq!(cfg.model.source, ConfigSource::Global);
-    assert_eq!(cfg.provider.value, None);
-    assert_eq!(cfg.provider.source, ConfigSource::Global);
+    assert_eq!(cfg.model.value.as_deref(), Some("stale-model"));
+    assert_eq!(cfg.model.source, ConfigSource::Definition);
+    assert_eq!(cfg.provider.value.as_deref(), Some("stale-prov"));
+    assert_eq!(cfg.provider.source, ConfigSource::Definition);
 }
 
 #[test]
-fn linked_definition_model_set_provider_inherits() {
-    let rec = record(Some("d1"), None, None, None);
-    let defs = vec![definition("d1", Some("def-model"), None, "prompt")];
+fn linked_selected_model_set_provider_inherits() {
+    let rec = record(Some("d1"), Some("selected-model"), None, Some("prompt"));
+    let defs = vec![definition(
+        "d1",
+        Some("new-model"),
+        Some("new-provider"),
+        "new",
+    )];
     let g = global(None, Some("global-prov"));
 
     let result = resolve_effective_config(&rec, &defs, &g);
@@ -190,7 +197,7 @@ fn linked_definition_model_set_provider_inherits() {
         other => panic!("expected Resolved, got {:?}", other),
     };
 
-    assert_eq!(cfg.model.value.as_deref(), Some("def-model"));
+    assert_eq!(cfg.model.value.as_deref(), Some("selected-model"));
     assert_eq!(cfg.model.source, ConfigSource::Definition);
     assert_eq!(cfg.provider.value.as_deref(), Some("global-prov"));
     assert_eq!(cfg.provider.source, ConfigSource::Global);
@@ -198,8 +205,8 @@ fn linked_definition_model_set_provider_inherits() {
 
 #[test]
 fn linked_blank_prompt_means_no_prompt() {
-    let rec = record(Some("d1"), None, None, Some("stale prompt on record"));
-    let defs = vec![definition("d1", None, None, "")];
+    let rec = record(Some("d1"), None, None, None);
+    let defs = vec![definition("d1", None, None, "new head prompt")];
     let g = global(None, None);
 
     let result = resolve_effective_config(&rec, &defs, &g);
@@ -213,9 +220,9 @@ fn linked_blank_prompt_means_no_prompt() {
 }
 
 #[test]
-fn linked_whitespace_only_definition_model_inherits_global() {
-    let rec = record(Some("d1"), Some("stale"), None, None);
-    let defs = vec![definition("d1", Some("  "), Some("  \t"), "")];
+fn linked_whitespace_only_selected_values_inherit_global() {
+    let rec = record(Some("d1"), Some("  "), Some("  \t"), None);
+    let defs = vec![definition("d1", Some("new"), Some("new"), "new")];
     let g = global(Some("global-model"), Some("global-prov"));
 
     let result = resolve_effective_config(&rec, &defs, &g);
@@ -323,7 +330,7 @@ fn model_provider_pair_returns_none_for_orphan() {
 
 #[test]
 fn model_provider_pair_returns_resolved_values() {
-    let rec = record(Some("d1"), None, None, None);
+    let rec = record(Some("d1"), Some("m"), Some("p"), None);
     let defs = vec![definition("d1", Some("m"), Some("p"), "")];
     let g = global(None, None);
 
@@ -345,7 +352,7 @@ fn require_resolved_returns_shared_error_for_orphan() {
 
 #[test]
 fn require_resolved_returns_config_for_resolved() {
-    let rec = record(Some("d1"), None, None, None);
+    let rec = record(Some("d1"), Some("m"), Some("p"), Some("prompt"));
     let defs = vec![definition("d1", Some("m"), Some("p"), "prompt")];
     let cfg = resolve_effective_config(&rec, &defs, &global(None, None))
         .require_resolved()
@@ -379,10 +386,10 @@ fn require_resolved_refuses_orphan_only() {
         .is_ok());
 }
 
-// ── Morgan's exact regression sequence ──
+// ── Pin advance sequence ──
 
 #[test]
-fn morgans_sequence_inherit_explicit_inherit() {
+fn selected_pin_changes_only_when_the_record_is_advanced() {
     let g = global(Some("claude-opus-4-6"), Some("anthropic"));
 
     // Step 1: fresh agent with inherited model → resolves global
@@ -395,7 +402,7 @@ fn morgans_sequence_inherit_explicit_inherit() {
     assert_eq!(cfg1.model.value.as_deref(), Some("claude-opus-4-6"));
     assert_eq!(cfg1.model.source, ConfigSource::Global);
 
-    // Step 2: set explicit model on definition
+    // Step 2: editing only the definition head does not advance this instance.
     let defs_explicit = vec![definition(
         "d1",
         Some("goose-gpt-5-6-sol"),
@@ -406,25 +413,24 @@ fn morgans_sequence_inherit_explicit_inherit() {
         EffectiveConfigResult::Resolved(c) => c,
         other => panic!("step 2: {:?}", other),
     };
-    assert_eq!(cfg2.model.value.as_deref(), Some("goose-gpt-5-6-sol"));
-    assert_eq!(cfg2.model.source, ConfigSource::Definition);
+    assert_eq!(cfg2.model.value.as_deref(), Some("claude-opus-4-6"));
+    assert_eq!(cfg2.model.source, ConfigSource::Global);
 
-    // Step 3: switch back to inherit — even with stale record bytes
-    let rec_stale = record(
+    // Step 3: the explicit update path materializes the selected values.
+    let rec_advanced = record(
         Some("d1"),
         Some("goose-gpt-5-6-sol"),
         Some("databricks"),
         None,
     );
-    let defs_inherit = vec![definition("d1", None, None, "agent prompt")];
-    let cfg3 = match resolve_effective_config(&rec_stale, &defs_inherit, &g) {
+    let cfg3 = match resolve_effective_config(&rec_advanced, &defs_explicit, &g) {
         EffectiveConfigResult::Resolved(c) => c,
         other => panic!("step 3: {:?}", other),
     };
-    assert_eq!(cfg3.model.value.as_deref(), Some("claude-opus-4-6"));
-    assert_eq!(cfg3.model.source, ConfigSource::Global);
-    assert_eq!(cfg3.provider.value.as_deref(), Some("anthropic"));
-    assert_eq!(cfg3.provider.source, ConfigSource::Global);
+    assert_eq!(cfg3.model.value.as_deref(), Some("goose-gpt-5-6-sol"));
+    assert_eq!(cfg3.model.source, ConfigSource::Definition);
+    assert_eq!(cfg3.provider.value.as_deref(), Some("databricks"));
+    assert_eq!(cfg3.provider.source, ConfigSource::Definition);
 }
 
 // ── relay-mesh preflight resolution (Wes review 2 on #1968) ──
@@ -435,7 +441,7 @@ fn morgans_sequence_inherit_explicit_inherit() {
 
 #[test]
 fn relay_mesh_model_id_none_for_non_mesh_config() {
-    let rec = record(Some("d1"), None, None, None);
+    let rec = record(Some("d1"), Some("m"), Some("anthropic"), None);
     let defs = vec![definition("d1", Some("m"), Some("anthropic"), "")];
     let g = global(None, None);
 
@@ -444,7 +450,7 @@ fn relay_mesh_model_id_none_for_non_mesh_config() {
 
 #[test]
 fn relay_mesh_model_id_defaults_to_auto_when_model_blank() {
-    let rec = record(Some("d1"), None, None, None);
+    let rec = record(Some("d1"), None, Some(RELAY_MESH_PROVIDER_ID), None);
     let defs = vec![definition("d1", None, Some(RELAY_MESH_PROVIDER_ID), "")];
     let g = global(None, None);
 
@@ -454,19 +460,15 @@ fn relay_mesh_model_id_defaults_to_auto_when_model_blank() {
     );
 }
 
-/// Switch-away regression (Wes finding 1): a linked definition that used to
-/// be relay-mesh but was edited to another provider must NOT trigger the mesh
-/// preflight — even though the record's own stale bytes still say
-/// `provider: relay-mesh`. The old `relay_mesh_config(record)` sniff read
-/// those stale record bytes directly and returned Some; the resolver-driven
-/// decision must read the definition's CURRENT provider and return None.
+/// A linked instance selected onto a non-mesh revision must not be dragged
+/// back to mesh by a later edit to the mutable definition head.
 #[test]
-fn switch_away_from_relay_mesh_clears_preflight_despite_stale_record_bytes() {
-    let rec = record(Some("d1"), Some("auto"), Some(RELAY_MESH_PROVIDER_ID), None);
+fn selected_non_mesh_revision_ignores_new_mesh_definition_head() {
+    let rec = record(Some("d1"), Some("claude-opus-4-6"), Some("anthropic"), None);
     let defs = vec![definition(
         "d1",
-        Some("claude-opus-4-6"),
-        Some("anthropic"),
+        Some("auto"),
+        Some(RELAY_MESH_PROVIDER_ID),
         "",
     )];
     let g = global(None, None);
@@ -474,7 +476,7 @@ fn switch_away_from_relay_mesh_clears_preflight_despite_stale_record_bytes() {
     assert_eq!(
         resolve_effective_relay_mesh_model_id(&rec, &defs, &g),
         None,
-        "definition switched away from relay-mesh — no mesh preflight should fire"
+        "mutable definition edits must not change a selected instance revision"
     );
 }
 
@@ -537,12 +539,11 @@ fn orphaned_instance_never_triggers_mesh_preflight() {
 // on every resolution path, confirming the helper that both callers now use
 // handles whitespace correctly.
 
-/// Definition provider with leading/trailing whitespace — resolver preserves
-/// the raw string, but `relay_mesh_model_id()` trims before matching, so the
-/// mesh preflight fires correctly.
+/// Selected provider with leading/trailing whitespace is normalized by the
+/// shared mesh decision.
 #[test]
-fn whitespace_provider_in_definition_triggers_mesh_decision() {
-    let rec = record(Some("d1"), None, None, None);
+fn whitespace_provider_in_selected_pin_triggers_mesh_decision() {
+    let rec = record(Some("d1"), Some("qwen3"), Some(" relay-mesh "), None);
     let defs = vec![definition("d1", Some("qwen3"), Some(" relay-mesh "), "")];
     let g = global(None, None);
 
@@ -550,7 +551,7 @@ fn whitespace_provider_in_definition_triggers_mesh_decision() {
     assert_eq!(
         mesh_id.as_deref(),
         Some("qwen3"),
-        "padded definition provider must be treated as relay-mesh by the shared helper"
+        "padded selected provider must be treated as relay-mesh by the shared helper"
     );
 }
 
@@ -817,7 +818,7 @@ fn definition_less_explicit_provider_wins_over_stale_legacy_mesh_bytes() {
 /// from its definition and never trips mesh.
 #[test]
 fn linked_record_ignores_legacy_mesh_marker_and_env() {
-    let mut rec = record(Some("d1"), Some("auto"), None, None);
+    let mut rec = record(Some("d1"), Some("claude-opus-4-6"), Some("anthropic"), None);
     rec.relay_mesh = Some(crate::managed_agents::RelayMeshConfig {
         model_ref: "Qwen3".to_string(),
     });

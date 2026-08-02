@@ -295,14 +295,12 @@ pub fn default_agent_command() -> String {
 /// Resolution order:
 ///   1. explicit override (non-empty) — a deliberate per-instance pin;
 ///   2. the record's own `runtime` id mapped to its primary command —
-///      records materialize their runtime at create/migration time;
+///      linked records pin it from their selected persona revision;
 ///      checks both static builtins AND the loaded preset/custom registry;
-///   3. legacy fallback: the linked persona's `runtime` (records created
-///      before the unified model carry `persona_id` but no `runtime`);
-///   4. `default_agent_command()`.
+///   3. `default_agent_command()`.
 pub fn record_agent_command(
     record: &crate::managed_agents::types::ManagedAgentRecord,
-    personas: &[crate::managed_agents::types::AgentDefinition],
+    _personas: &[crate::managed_agents::types::AgentDefinition],
 ) -> String {
     if let Some(pin) = record
         .agent_command_override
@@ -326,12 +324,12 @@ pub fn record_agent_command(
         }
     }
 
-    effective_agent_command(record.persona_id.as_deref(), personas, None)
+    default_agent_command()
 }
 
-/// Resolve the agent command (harness) for a spawn/deploy/summary. The linked
-/// persona wins so persona harness edits propagate on the next spawn. An
-/// explicit per-instance override (`agent_command_override`) takes precedence.
+/// Resolve a persona-head harness command for create/update-time comparison.
+/// Spawn/deploy/summary use `record_agent_command`, which reads the selected
+/// record revision instead.
 ///
 /// Resolution order:
 ///   1. explicit override (non-empty) — a deliberate per-instance pin;
@@ -407,8 +405,8 @@ pub(crate) fn dangling_harness_display(id: &str) -> String {
 }
 
 /// Spawn-time variant of `record_agent_command` that returns a typed error when
-/// a record's `runtime` id or its persona's `runtime` id is set but cannot be
-/// resolved (i.e. the definition was deleted after the agent was created).
+/// a record's pinned `runtime` id is set but cannot be resolved (i.e. the
+/// harness definition was deleted after the revision was selected).
 ///
 /// Returns `Err("DANGLING_HARNESS_ID:<id>")` so callers can surface the error
 /// without falling through to `buzz-agent`.  When there is no runtime id at all
@@ -416,7 +414,7 @@ pub(crate) fn dangling_harness_display(id: &str) -> String {
 /// pre-date the unified harness model).
 pub fn try_record_agent_command(
     record: &crate::managed_agents::types::ManagedAgentRecord,
-    personas: &[crate::managed_agents::types::AgentDefinition],
+    _personas: &[crate::managed_agents::types::AgentDefinition],
 ) -> Result<String, String> {
     // Explicit pin always wins — if the user set a raw override, honour it.
     if let Some(pin) = record
@@ -438,25 +436,6 @@ pub fn try_record_agent_command(
             return Ok(def.command.clone());
         }
         return Err(format!("DANGLING_HARNESS_ID:{id}"));
-    }
-
-    // Persona-level runtime id.
-    if let Some(persona_id) = record.persona_id.as_deref() {
-        if let Some(persona) = personas.iter().find(|p| p.id == persona_id) {
-            if let Some(id) = persona.runtime.as_deref() {
-                if let Some(cmd) =
-                    known_acp_runtime_exact(id).and_then(|r| r.commands.first().copied())
-                {
-                    return Ok(cmd.to_string());
-                }
-                if let Some(def) =
-                    crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(id)
-                {
-                    return Ok(def.command.clone());
-                }
-                return Err(format!("DANGLING_HARNESS_ID:{id}"));
-            }
-        }
     }
 
     // No runtime id set — legacy agent; use the safe default.

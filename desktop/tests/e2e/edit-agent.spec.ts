@@ -278,16 +278,12 @@ test.describe("edit agent dialog", () => {
     ).toBeVisible();
   });
 
-  test("profile Edit routes persona-linked agents to the definition editor", async ({
+  test("profile Edit asks for scope before routing persona-linked agents to the definition editor", async ({
     page,
   }) => {
-    // Routing pin for handleEditAgent (UserProfilePanel): when the agent has
-    // a resolvable non-built-in persona, the Edit quick action opens the
-    // DEFINITION editor (persona dialog), not EditAgentDialog. The instance
-    // editor (and its inherit-runtime toggle) is reachable for persona-linked
-    // agents only via the requestOpenEditAgent event (ConfigNudgeCard) — no
-    // plain UI path — so its inherit-toggle behavior is covered by B3b's
-    // component-level pinning test, not e2e.
+    // Routing pin for handleEditAgent (UserProfilePanel): a linked agent first
+    // asks whether the change belongs to the instance or its template. This
+    // test chooses the template and verifies that the definition editor opens.
     await installMockBridge(page, {
       managedAgents: [
         {
@@ -321,6 +317,12 @@ test.describe("edit agent dialog", () => {
       timeout: 10_000,
     });
     await page.getByTestId("user-profile-edit-agent").click();
+
+    // A linked agent can now be edited independently or through its template.
+    // Choose the template explicitly before asserting the definition editor.
+    const scopeDialog = page.getByTestId("agent-edit-scope-dialog");
+    await expect(scopeDialog).toBeVisible({ timeout: 10_000 });
+    await scopeDialog.getByTestId("agent-edit-scope-template").click();
 
     // Definition editor opens; the instance editor does not.
     await expect(page.getByTestId("persona-dialog")).toBeVisible({

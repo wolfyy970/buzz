@@ -59,9 +59,13 @@ export function PersonaActionsMenu({
         onCloseAutoFocus={(event) => event.preventDefault()}
       >
         {canEdit ? (
-          <DropdownMenuItem disabled={disabled} onClick={() => onEdit(persona)}>
+          <DropdownMenuItem
+            data-testid={`persona-actions-edit-${persona.id}`}
+            disabled={disabled}
+            onClick={() => onEdit(persona)}
+          >
             <Pencil className="h-4 w-4" />
-            Edit
+            Edit template
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem

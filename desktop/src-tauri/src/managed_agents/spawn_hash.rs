@@ -8,13 +8,9 @@
 //!
 //! Scope rules (decided in #centralize-personas-and-agents, revised in PR
 //! #1602 review):
-//! - Inputs mirror what a start would actually run: the start/restore paths
-//!   re-snapshot the linked persona's prompt/model/provider/env onto the
-//!   record immediately before spawning (`start_local_agent_with_preflight`,
-//!   `restore_managed_agents_on_launch`), so persona edits to those fields DO
-//!   apply on a plain restart and are hashed via the same prospective
-//!   re-snapshot. Harness command, args/mcp, env layering, and the record
-//!   fields the spawn env writes read are hashed as spawn resolves them.
+//! - Inputs mirror what a start actually runs: linked records carry an
+//!   explicitly selected persona revision. Plain restart never re-snapshots
+//!   the mutable definition head.
 //! - The relay URL is hashed in resolved form (`effective_agent_relay_url`):
 //!   every record spawns against the active workspace relay (legacy per-record
 //!   pins are ignored), so a workspace relay change means a restart would
@@ -30,7 +26,6 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use super::{
     effective_config::{resolve_effective_config, EffectiveConfigResult},
     known_acp_runtime, normalize_agent_args,
-    persona_events::preview_prospective_persona_snapshot,
     runtime::{resolve_session_title, SESSION_TITLE_ENV_VAR},
     types::{AgentDefinition, ManagedAgentRecord, TeamRecord},
     GlobalAgentConfig,
@@ -61,16 +56,6 @@ pub(crate) fn spawn_config_hash(
     workspace_relay: &str,
     global: &GlobalAgentConfig,
 ) -> u64 {
-    // Prospective re-snapshot: apply the same `apply_persona_snapshot` the
-    // start/restore paths run right before spawning, so the hash covers what a
-    // restart would actually run. Idempotent, so the spawn-time stamp
-    // (post-snapshot record) and later recomputes (persisted record) agree
-    // when nothing changed. The persona env itself reaches the hash through
-    // the descriptor's layered env below; `persona_source_version` is set on
-    // the clone but is not a hash input.
-    let record = preview_prospective_persona_snapshot(record, personas);
-    let record = &record;
-
     // Resolve command, args, and env via the single typed descriptor — same path
     // as spawn_agent_child.  Dangling harness id falls back to the infallible
     // record_agent_command (no-op: a dangling harness can't be spawned, so the
@@ -90,7 +75,7 @@ pub(crate) fn spawn_config_hash(
 
     let mut hasher = DefaultHasher::new();
 
-    // Harness identity and derivations (live-persona-resolved, like spawn).
+    // Harness identity and derivations from the selected record revision.
     record.acp_command.hash(&mut hasher);
     descriptor.command.hash(&mut hasher);
     descriptor.args.hash(&mut hasher);

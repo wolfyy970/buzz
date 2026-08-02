@@ -4,8 +4,7 @@
  * Exercises two surfaces:
  *   - Agent grid card: warning badge ("Restart required") on standalone and
  *     persona-backed cards when `needsRestart: true`, absent when false.
- *   - Profile panel Runtime tab: amber banner with copy branched on the
- *     per-agent auto-restart toggle.
+ *   - Profile panel Runtime tab: amber banner with an explicit restart action.
  */
 
 import { expect, test } from "@playwright/test";
@@ -139,9 +138,8 @@ test.describe("needs-restart screenshots", () => {
     const banner = panel.getByTestId("needs-restart-banner");
     await expect(banner).toBeVisible({ timeout: 10_000 });
 
-    // Auto-restart defaults ON — verify the enabled copy.
     await expect(
-      banner.getByText("Buzz can restart it automatically"),
+      banner.getByText("Restart it to apply the changes"),
     ).toBeVisible();
 
     await waitForAnimations(page);
@@ -176,8 +174,9 @@ test.describe("needs-restart screenshots", () => {
     const banner = panel.getByTestId("needs-restart-banner");
     await expect(banner).toBeVisible({ timeout: 10_000 });
 
-    // Auto-restart OFF — verify the disabled copy.
-    await expect(banner.getByText("Automatic restart is off")).toBeVisible();
+    await expect(
+      banner.getByText("Restart it to apply the changes"),
+    ).toBeVisible();
 
     await waitForAnimations(page);
     await banner.screenshot({

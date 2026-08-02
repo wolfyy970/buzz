@@ -16,6 +16,7 @@ fn empty_env() -> EffectiveAgentEnv {
         env: BTreeMap::new(),
         config_file_path: Some("~/.config/goose/config.yaml"),
         effective_command: "goose".to_string(),
+        persona_env_snapshot_initialized: true,
     }
 }
 
@@ -27,6 +28,7 @@ fn env_with(pairs: &[(&str, &str)]) -> EffectiveAgentEnv {
             .collect(),
         config_file_path: Some("~/.config/goose/config.yaml"),
         effective_command: "goose".to_string(),
+        persona_env_snapshot_initialized: true,
     }
 }
 

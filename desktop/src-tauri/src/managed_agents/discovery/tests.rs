@@ -250,6 +250,8 @@ fn record_with(
         model: None,
         provider: None,
         persona_source_version: None,
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         start_on_app_launch: false,
         auto_restart_on_config_change: true,
         runtime_pid: None,
@@ -300,14 +302,17 @@ fn record_agent_command_override_beats_runtime() {
     let record = record_with(Some("claude"), None, Some("codex-acp"));
     assert_eq!(record_agent_command(&record, &[]), "codex-acp");
 }
-
 #[test]
-fn record_agent_command_legacy_persona_fallback() {
-    // Pre-migration record: persona_id set, no runtime — resolves through
-    // the legacy persona path unchanged.
+fn record_agent_command_does_not_read_mutable_persona_runtime() {
+    // Startup backfill materializes linked runtimes before launch. If a
+    // partially migrated record reaches this pure resolver, it must not
+    // silently select the mutable definition head.
     let personas = vec![persona_with_runtime("p1", Some("goose"))];
     let record = record_with(None, Some("p1"), None);
-    assert_eq!(record_agent_command(&record, &personas), "goose");
+    assert_eq!(
+        record_agent_command(&record, &personas),
+        default_agent_command()
+    );
 }
 
 #[test]
@@ -336,17 +341,13 @@ fn try_record_agent_command_dangling_runtime_id_returns_err() {
     );
 }
 
-/// When the persona carries a dangling runtime id, `try_record_agent_command`
-/// must also error — the error must not silently resolve to the default.
+/// A mutable persona runtime is never consulted by record resolution.
 #[test]
-fn try_record_agent_command_dangling_persona_runtime_returns_err() {
+fn try_record_agent_command_ignores_dangling_persona_runtime() {
     let personas = vec![persona_with_runtime("p1", Some("ghost-harness"))];
     let record = record_with(None, Some("p1"), None);
     let result = try_record_agent_command(&record, &personas);
-    assert!(
-        result.is_err(),
-        "dangling persona runtime id must produce Err"
-    );
+    assert_eq!(result, Ok(default_agent_command()));
 }
 
 /// When neither the record nor persona has any runtime id, `try_record_agent_command`
@@ -625,18 +626,17 @@ fn update_time_override_preserves_pin_for_persona_less_agent() {
 }
 
 #[test]
-fn apply_agent_command_update_inherit_sentinel_clears_pin_and_runtime() {
-    // Choosing Inherit on a persona-linked record clears BOTH the explicit
-    // pin and the materialized runtime, so resolution falls through to the
-    // live definition immediately — not on the next spawn.
+fn apply_agent_command_update_inherit_sentinel_preserves_pinned_runtime() {
+    // Choosing Inherit clears only the per-instance override. The selected
+    // persona revision's runtime remains the authoritative inherited value.
     let personas = vec![persona_with_runtime("p1", Some("goose"))];
     let mut record = record_with(Some("claude"), Some("p1"), Some("codex-acp"));
 
     apply_agent_command_update(&mut record, &personas, "", false);
 
     assert_eq!(record.agent_command_override, None);
-    assert_eq!(record.runtime, None);
-    assert_eq!(record_agent_command(&record, &personas), "goose");
+    assert_eq!(record.runtime.as_deref(), Some("claude"));
+    assert_eq!(record_agent_command(&record, &personas), "claude-agent-acp");
 }
 
 #[test]

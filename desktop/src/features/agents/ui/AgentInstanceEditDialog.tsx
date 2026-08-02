@@ -23,7 +23,6 @@ import { Button } from "@/shared/ui/button";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
 import { Input } from "@/shared/ui/input";
-import { setManagedAgentAutoRestart } from "@/shared/api/tauriManagedAgents";
 import { EditAgentAdvancedFields } from "./EditAgentAdvancedFields";
 import {
   ADVANCED_FIELDS_MOTION_TRANSITION,
@@ -142,8 +141,6 @@ export function AgentInstanceEditDialog({
   const [isCustomProviderEditing, setIsCustomProviderEditing] =
     React.useState(false);
   const [envVars, setEnvVars] = React.useState<EnvVarsValue>(agent.envVars);
-  const [autoRestartOnConfigChange, setAutoRestartOnConfigChange] =
-    React.useState(agent.autoRestartOnConfigChange);
   const personasQuery = usePersonasQuery();
   const linkedPersona = React.useMemo(
     () =>
@@ -192,7 +189,6 @@ export function AgentInstanceEditDialog({
       setProvider(agent.provider ?? "");
       setIsCustomProviderEditing(false);
       setEnvVars(agent.envVars);
-      setAutoRestartOnConfigChange(agent.autoRestartOnConfigChange);
       setRespondTo(agent.respondTo);
       setRespondToAllowlist(agent.respondToAllowlist);
       setAvatarUrl(agent.avatarUrl ?? "");
@@ -726,21 +722,11 @@ export function AgentInstanceEditDialog({
       };
 
       const result = await updateMutation.mutateAsync(input);
-      if (autoRestartOnConfigChange !== agent.autoRestartOnConfigChange) {
-        // Standalone setter (mirrors start-on-app-launch) — not part of
-        // UpdateManagedAgentInput, so the frozen update shape stays frozen.
-        await setManagedAgentAutoRestart(
-          agent.pubkey,
-          autoRestartOnConfigChange,
-        );
-      }
       showAgentProfileSyncWarning(result.agent.name, result.profileSyncError);
       handleOpenChange(false);
       onUpdated?.(result.agent);
-      // The auto-restart policy deliberately never fires for a stopped or
-      // failing agent (a broken agent must not auto-loop), so an edit meant
-      // to FIX one silently waits for a manual start. Offer that start
-      // explicitly instead of relying on the user to know the policy.
+      // A stopped agent cannot apply saved runtime changes until it starts.
+      // Offer that action explicitly.
       if (!isManagedAgentActive(result.agent)) {
         const startedName = result.agent.name;
         toast(`${startedName} saved while stopped.`, {
@@ -853,7 +839,7 @@ export function AgentInstanceEditDialog({
         data-testid="edit-agent-dialog"
         footerClassName="border-t-0 pt-0"
         headerClassName="pb-2"
-        title={`Edit ${agent.name}`}
+        title="Edit this agent"
         footer={
           <div className="flex w-full items-center justify-end gap-2">
             <Button
@@ -876,6 +862,14 @@ export function AgentInstanceEditDialog({
         }
       >
         <div className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]">
+          <p
+            className="rounded-xl border border-border/60 bg-muted/20 px-4 py-3 text-sm text-muted-foreground lg:col-span-2"
+            data-testid="instance-edit-scope-note"
+          >
+            Only{" "}
+            <span className="font-medium text-foreground">{agent.name}</span>{" "}
+            will change.
+          </p>
           {/* Avatar is definition-level identity. hideEditControl suppresses
               the internal pencil badge; the CTA below is the only edit path. */}
           <div className="flex flex-col items-center gap-2">
@@ -895,14 +889,15 @@ export function AgentInstanceEditDialog({
                   onEditLinkedPersona();
                 }}
                 size="sm"
+                data-testid="instance-edit-template-link"
                 type="button"
                 variant="outline"
               >
-                Edit avatar
+                Edit its template
               </Button>
             ) : (
               <p className="text-center text-xs text-muted-foreground">
-                Avatar is shared identity
+                Avatar comes from its template
               </p>
             )}
           </div>
@@ -1179,7 +1174,6 @@ export function AgentInstanceEditDialog({
                     <EditAgentAdvancedFields
                       acpCommand={acpCommand}
                       agentArgs={agentArgs}
-                      autoRestartOnConfigChange={autoRestartOnConfigChange}
                       disabled={updateMutation.isPending}
                       envVars={envVars}
                       fileSatisfiedEnvKeys={fileSatisfiedEnvKeys}
@@ -1202,7 +1196,6 @@ export function AgentInstanceEditDialog({
                       systemPrompt={systemPrompt}
                       onAcpCommandChange={setAcpCommand}
                       onAgentArgsChange={setAgentArgs}
-                      onAutoRestartChange={setAutoRestartOnConfigChange}
                       onEnvVarsChange={setEnvVars}
                       onInheritHarnessChange={setInheritHarness}
                       onParallelismChange={setParallelism}

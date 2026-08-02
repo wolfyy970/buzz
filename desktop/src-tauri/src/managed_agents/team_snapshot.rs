@@ -273,6 +273,8 @@ mod tests {
             model: Some("claude-opus-4".to_string()),
             provider: Some("anthropic".to_string()),
             persona_source_version: None,
+            pinned_persona_env_vars: Default::default(),
+            previous_persona_snapshots: Vec::new(),
             env_vars: {
                 let mut m = BTreeMap::new();
                 m.insert("API_KEY".to_string(), "secret123".to_string()); // MUST NOT appear

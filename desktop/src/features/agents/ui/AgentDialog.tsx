@@ -50,7 +50,7 @@ type AgentDialogInstanceEditProps = {
   onUpdated?: (agent: ManagedAgent) => void;
   initialFocus?: EditAgentFocusTarget;
   /**
-   * Called when the user clicks "Edit avatar" inside the instance-edit dialog.
+   * Called when the user clicks "Edit its template" inside the instance dialog.
    * Caller (UserProfilePanel) is responsible for closing this dialog and
    * opening the definition-edit dialog. Only passed when the linked definition
    * is editable (non-built-in, resolved).
@@ -75,6 +75,8 @@ type AgentDialogDefinitionEditProps = {
     options: AgentDefinitionSubmitOptions,
   ) => Promise<unknown>;
   publishCatalogUpdatesOnSave?: boolean;
+  /** Managed instances currently linked to the edited template. */
+  affectedAgents?: ManagedAgent[];
 };
 
 type AgentDialogProps =

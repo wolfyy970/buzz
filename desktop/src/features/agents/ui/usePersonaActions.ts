@@ -41,6 +41,13 @@ import type {
   SnapshotFormat,
   SnapshotMemoryLevel,
 } from "@/shared/api/tauriPersonas";
+import {
+  applyAgentTemplateUpdate,
+  previewAgentTemplateUpdate,
+  type AgentTemplateUpdatePreview,
+  type ApplyAgentTemplateUpdateResponse,
+} from "@/shared/api/tauriAgentTemplateUpdates";
+import { hasOutdatedAgentTemplateInstances } from "@/features/agents/lib/agentTemplateUpdatePreview";
 import type {
   AcpRuntime,
   AgentPersona,
@@ -127,6 +134,15 @@ export function usePersonaActions() {
   const createdAgentAttachment = useCreatedAgentChannelAttachment();
   const [isPersonaSubmitPending, setIsPersonaSubmitPending] =
     React.useState(false);
+  const [templateUpdatePreview, setTemplateUpdatePreview] =
+    React.useState<AgentTemplateUpdatePreview | null>(null);
+  const [templateUpdateResult, setTemplateUpdateResult] =
+    React.useState<ApplyAgentTemplateUpdateResponse | null>(null);
+  const [templateUpdateError, setTemplateUpdateError] = React.useState<
+    string | null
+  >(null);
+  const [isTemplateUpdatePending, setIsTemplateUpdatePending] =
+    React.useState(false);
 
   const personas = personasQuery.data ?? [];
   const publications = catalogQuery.data ?? [];
@@ -205,6 +221,20 @@ export function usePersonaActions() {
           await updatePersonaMutation.mutateAsync(input);
           setPersonaNoticeMessage(personaSaveNotice(input.displayName, null));
         }
+        try {
+          const preview = await previewAgentTemplateUpdate(input.id);
+          if (hasOutdatedAgentTemplateInstances(preview)) {
+            setTemplateUpdateResult(null);
+            setTemplateUpdateError(null);
+            setTemplateUpdatePreview(preview);
+          }
+        } catch (error) {
+          setPersonaErrorMessage(
+            error instanceof Error
+              ? `${input.displayName} was saved, but Buzz could not load the affected agents: ${error.message}`
+              : `${input.displayName} was saved, but Buzz could not load the affected agents.`,
+          );
+        }
       } else {
         const runtime = availableRuntimes.find(
           (candidate) => candidate.id === input.runtime,
@@ -282,6 +312,35 @@ export function usePersonaActions() {
     } finally {
       setIsPersonaSubmitPending(false);
     }
+  }
+
+  async function handleApplyTemplateUpdate(selectedPubkeys: string[]) {
+    const preview = templateUpdatePreview;
+    if (!preview || isTemplateUpdatePending) return;
+    setTemplateUpdateError(null);
+    setIsTemplateUpdatePending(true);
+    try {
+      const result = await applyAgentTemplateUpdate({
+        personaId: preview.personaId,
+        expectedVersion: preview.targetVersion,
+        selectedPubkeys,
+      });
+      setTemplateUpdateResult(result);
+      await queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey });
+    } catch (error) {
+      setTemplateUpdateError(
+        error instanceof Error ? error.message : "The agents were not updated.",
+      );
+    } finally {
+      setIsTemplateUpdatePending(false);
+    }
+  }
+
+  function closeTemplateUpdateDialog() {
+    if (isTemplateUpdatePending) return;
+    setTemplateUpdatePreview(null);
+    setTemplateUpdateResult(null);
+    setTemplateUpdateError(null);
   }
 
   async function handleDelete(persona: AgentPersona) {
@@ -561,7 +620,8 @@ export function usePersonaActions() {
     exportAgentSnapshotMutation.isPending ||
     previewSnapshotImportMutation.isPending ||
     confirmSnapshotImportMutation.isPending ||
-    setCatalogSharedMutation.isPending;
+    setCatalogSharedMutation.isPending ||
+    isTemplateUpdatePending;
 
   return {
     personasQuery,
@@ -610,5 +670,11 @@ export function usePersonaActions() {
     handleImportSnapshotFile,
     handleConfirmSnapshotImport,
     closeSnapshotImportDialog,
+    templateUpdatePreview,
+    templateUpdateResult,
+    templateUpdateError,
+    isTemplateUpdatePending,
+    handleApplyTemplateUpdate,
+    closeTemplateUpdateDialog,
   };
 }

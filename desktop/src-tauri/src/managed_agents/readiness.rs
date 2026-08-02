@@ -29,7 +29,7 @@
 //! 2. Runtime metadata env vars (`runtime_metadata_env_vars`) — provider /
 //!    model env keys derived from the record's `model`/`provider` fields and
 //!    the runtime's `model_env_var`/`provider_env_var`.
-//! 3. Merged user env (`merged_user_env`) — live persona env under the
+//! 3. Merged user env (`merged_user_env`) — pinned persona env under the
 //!    record's `env_vars` overrides, after reserved-key and malformed-key
 //!    filtering.  Last-wins on collision.
 //!
@@ -76,6 +76,26 @@ pub(crate) struct EffectiveAgentEnv {
     pub config_file_path: Option<&'static str>,
     /// The resolved harness binary name (e.g. `"buzz-agent"`, `"goose"`).
     pub effective_command: String,
+    /// False only for a legacy linked record whose credential-bearing persona
+    /// env revision has not been initialized. Such a record must never be
+    /// treated as an intentional empty env snapshot.
+    pub persona_env_snapshot_initialized: bool,
+}
+
+pub(crate) const UNINITIALIZED_PERSONA_ENV_SNAPSHOT_ERROR: &str =
+    "linked persona environment snapshot is not initialized; restart Buzz to complete migration";
+
+/// Refuse to interpret a legacy linked record's absent env marker as an
+/// intentional empty persona env. Standalone records legitimately have no
+/// persona snapshot, while linked records must carry `Some(empty)` or values.
+pub(crate) fn ensure_persona_env_snapshot_initialized(
+    record: &ManagedAgentRecord,
+) -> Result<(), String> {
+    if record.persona_id.is_some() && record.pinned_persona_env_vars.is_none() {
+        Err(UNINITIALIZED_PERSONA_ENV_SNAPSHOT_ERROR.to_string())
+    } else {
+        Ok(())
+    }
 }
 
 // ── Typed effective-harness descriptor ───────────────────────────────────────
@@ -127,24 +147,15 @@ pub(crate) fn resolve_effective_harness_descriptor(
     personas: &[crate::managed_agents::types::AgentDefinition],
     global: &crate::managed_agents::GlobalAgentConfig,
 ) -> Result<EffectiveHarnessDescriptor, String> {
+    ensure_persona_env_snapshot_initialized(record)?;
     let effective_command = crate::managed_agents::try_record_agent_command(record, personas)?;
     let runtime_meta = known_acp_runtime(&effective_command);
 
     // Look up the harness definition once — used for both args and env.
-    // Resolution order: record.runtime → persona.runtime → "".
+    // Linked instances carry their selected persona runtime on the record;
+    // consulting the mutable definition here would bypass version pinning.
     let harness_def = {
-        let runtime_id = record
-            .runtime
-            .as_deref()
-            .or_else(|| {
-                record.persona_id.as_deref().and_then(|pid| {
-                    personas
-                        .iter()
-                        .find(|p| p.id == pid)
-                        .and_then(|p| p.runtime.as_deref())
-                })
-            })
-            .unwrap_or("");
+        let runtime_id = record.runtime.as_deref().unwrap_or("");
         crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(runtime_id)
     };
 
@@ -190,21 +201,9 @@ pub(crate) fn resolve_effective_agent_env(
     global: &GlobalAgentConfig,
 ) -> EffectiveAgentEnv {
     // Look up the harness definition for definition-level env (preset/custom).
-    // Same resolution logic as spawn_agent_child: record runtime id first, then
-    // persona runtime id, then nothing.
+    // The record runtime is the selected persona revision's pinned runtime.
     let harness_def = {
-        let runtime_id = record
-            .runtime
-            .as_deref()
-            .or_else(|| {
-                record.persona_id.as_deref().and_then(|pid| {
-                    personas
-                        .iter()
-                        .find(|p| p.id == pid)
-                        .and_then(|p| p.runtime.as_deref())
-                })
-            })
-            .unwrap_or("");
+        let runtime_id = record.runtime.as_deref().unwrap_or("");
         crate::managed_agents::custom_harnesses::lookup_loaded_harness_by_id(runtime_id)
     };
 
@@ -259,14 +258,15 @@ fn resolve_effective_agent_env_with_def(
     let global_env = merged_user_env(&BTreeMap::new(), &global.env_vars);
     env.extend(global_env);
 
-    // Layer 3b: merged user env — live persona env under the record's own
-    // overrides (last-wins), after reserved/malformed-key filtering. Reading
-    // the persona live is what makes persona credential edits refresh on the
-    // next spawn instead of being frozen into the record.
-    let user_env = merged_user_env(
-        &super::env_vars::live_persona_env(personas, record.persona_id.as_deref()),
-        &record.env_vars,
-    );
+    // Layer 3b: merged user env — the selected persona revision's pinned env
+    // under the record's own overrides (last-wins), after
+    // reserved/malformed-key filtering.
+    let empty_persona_env = BTreeMap::new();
+    let pinned_persona_env = record
+        .pinned_persona_env_vars
+        .as_ref()
+        .unwrap_or(&empty_persona_env);
+    let user_env = merged_user_env(pinned_persona_env, &record.env_vars);
     env.extend(user_env);
 
     // Buzz shared compute is a native Buzz provider. Translate it to buzz-agent's
@@ -282,6 +282,8 @@ fn resolve_effective_agent_env_with_def(
         env,
         config_file_path: runtime.and_then(|r| r.config_file_path),
         effective_command,
+        persona_env_snapshot_initialized: record.persona_id.is_none()
+            || record.pinned_persona_env_vars.is_some(),
     }
 }
 
@@ -292,6 +294,9 @@ fn resolve_effective_agent_env_with_def(
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "surface", rename_all = "snake_case")]
 pub enum Requirement {
+    /// A legacy linked record has not yet materialized its private persona env
+    /// revision. Spawn remains blocked until startup migration initializes it.
+    PersonaSnapshotUninitialized,
     /// A normalized dropdown field (provider or model) that is missing.
     /// Routes to the provider/model dropdown in the Edit Agent dialog.
     NormalizedField {
@@ -400,6 +405,11 @@ impl AgentReadiness {
 /// but the normal path is OAuth PKCE.  We intentionally do NOT mark the
 /// token as required to avoid a false NotReady for users on OAuth.
 pub(crate) fn agent_readiness(effective: &EffectiveAgentEnv) -> AgentReadiness {
+    if !effective.persona_env_snapshot_initialized {
+        return AgentReadiness::NotReady {
+            requirements: vec![Requirement::PersonaSnapshotUninitialized],
+        };
+    }
     let runtime = known_acp_runtime(&effective.effective_command);
     let missing = collect_missing_requirements(effective, runtime);
     if missing.is_empty() {
@@ -666,6 +676,7 @@ mod tests {
             env,
             config_file_path: runtime.and_then(|r| r.config_file_path),
             effective_command: command.to_string(),
+            persona_env_snapshot_initialized: true,
         }
     }
 
@@ -1463,91 +1474,6 @@ mod tests {
         assert!(json["setup_copy"].as_str().unwrap().contains("codex login"));
     }
 
-    // ── resolve_effective_agent_env ─────────────────────────────────────────
-
-    #[test]
-    fn resolve_effective_agent_env_user_env_wins_over_structured_fields() {
-        // A record whose env_vars explicitly set provider/model must win over
-        // any baked defaults. In OSS test builds the baked map is empty, so
-        // this test validates the user-env layer is present in the output.
-        let mut env_vars = BTreeMap::new();
-        env_vars.insert("BUZZ_AGENT_PROVIDER".to_string(), "anthropic".to_string());
-        env_vars.insert(
-            "BUZZ_AGENT_MODEL".to_string(),
-            "claude-opus-4-5".to_string(),
-        );
-
-        // Minimal record: only the fields resolve_effective_agent_env reads.
-        let record = crate::managed_agents::types::ManagedAgentRecord {
-            pubkey: "test-pubkey".to_string(),
-            name: "test-agent".to_string(),
-            persona_id: None,
-            private_key_nsec: String::new(),
-            auth_tag: None,
-            relay_url: String::new(),
-            avatar_url: None,
-            acp_command: "buzz-acp".to_string(),
-            agent_command: "buzz-agent".to_string(),
-            agent_command_override: None,
-            agent_args: vec![],
-            mcp_command: String::new(),
-            turn_timeout_seconds: 320,
-            idle_timeout_seconds: None,
-            max_turn_duration_seconds: None,
-            parallelism: 1,
-            system_prompt: None,
-            model: None,
-            provider: None,
-            persona_source_version: None,
-            env_vars,
-            start_on_app_launch: false,
-            auto_restart_on_config_change: true,
-            runtime_pid: None,
-            backend: Default::default(),
-            backend_agent_id: None,
-            provider_binary_path: None,
-            team_id: None,
-            persona_team_dir: None,
-            persona_name_in_team: None,
-            created_at: String::new(),
-            updated_at: String::new(),
-            last_started_at: None,
-            last_stopped_at: None,
-            last_exit_code: None,
-            last_error: None,
-            last_error_code: None,
-            respond_to: Default::default(),
-            respond_to_allowlist: vec![],
-            display_name: None,
-            slug: None,
-            runtime: None,
-            name_pool: Vec::new(),
-            is_builtin: false,
-            is_active: true,
-            shared: false,
-            source_team: None,
-            source_team_persona_slug: None,
-            catalog_source: None,
-            definition_respond_to: None,
-            definition_respond_to_allowlist: Vec::new(),
-            definition_parallelism: None,
-            relay_mesh: None,
-        };
-
-        let runtime = known_acp_runtime_exact("buzz-agent");
-        let effective = resolve_effective_agent_env(&record, &[], runtime, &Default::default());
-
-        // User env_vars must be present in the output (last-write-wins).
-        assert_eq!(
-            effective.env.get("BUZZ_AGENT_PROVIDER").map(String::as_str),
-            Some("anthropic")
-        );
-        assert_eq!(
-            effective.env.get("BUZZ_AGENT_MODEL").map(String::as_str),
-            Some("claude-opus-4-5")
-        );
-    }
-
     // ── provider-specific model fallback tests ────────────────────────────
 
     #[test]
@@ -1741,3 +1667,7 @@ mod tests {
 #[cfg(test)]
 #[path = "readiness_goose_file_config_tests.rs"]
 mod goose_file_config_tests;
+
+#[cfg(test)]
+#[path = "readiness_persona_snapshot_tests.rs"]
+mod persona_snapshot_tests;

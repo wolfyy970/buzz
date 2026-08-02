@@ -414,9 +414,6 @@ export function ProfileSummaryView({
             <>
               <ProfileRuntimeTabContent
                 agentInstruction={agentInstruction}
-                autoRestartEnabled={
-                  managedAgent?.autoRestartOnConfigChange ?? false
-                }
                 diagnosticsFields={diagnosticsFields}
                 diagnosticsSummary={diagnosticsTrailing}
                 needsRestart={managedAgent?.needsRestart ?? false}

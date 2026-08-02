@@ -81,15 +81,11 @@ pub fn update_time_agent_command_override(
 }
 
 /// Apply an explicit `agent_command` edit to `record`: persist the override
-/// pin decided by [`update_time_agent_command_override`], and on the inherit
-/// sentinel (empty/whitespace command) also clear the materialized
-/// `record.runtime` so the resolution ladder falls through to the live
-/// definition immediately instead of silently keeping the stale instance copy.
+/// pin decided by [`update_time_agent_command_override`].
 ///
-/// The runtime clear is guarded on a live persona link: for a definition-less
-/// record the materialized runtime is the only harness source left after the
-/// override clear, so a stray empty `agent_command` from a non-dialog caller
-/// must not change what the agent runs.
+/// Clearing an override deliberately leaves `record.runtime` untouched: it is
+/// the selected persona revision's pinned runtime, not a live-definition
+/// fallback sentinel.
 pub fn apply_agent_command_update(
     record: &mut crate::managed_agents::types::ManagedAgentRecord,
     personas: &[crate::managed_agents::types::AgentDefinition],
@@ -102,9 +98,6 @@ pub fn apply_agent_command_update(
         Some(agent_command),
         harness_override,
     );
-    if agent_command.trim().is_empty() && record.persona_id.is_some() {
-        record.runtime = None;
-    }
 }
 
 /// Decide the `agent_command_override` to persist at AGENT CREATE time.

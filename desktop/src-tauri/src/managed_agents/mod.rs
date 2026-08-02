@@ -59,12 +59,13 @@ pub(crate) use global_config::{
 };
 pub(crate) use managed_node_paths::*;
 pub use nest::*;
+pub(crate) use persona_events::persona_snapshot_version;
 pub use personas::*;
 #[cfg(windows)]
 pub use process_lifecycle::*;
 pub(crate) use readiness::{
-    agent_readiness, resolve_effective_agent_env, resolve_effective_harness_descriptor,
-    AgentReadiness, Requirement,
+    agent_readiness, ensure_persona_env_snapshot_initialized, resolve_effective_agent_env,
+    resolve_effective_harness_descriptor, AgentReadiness, Requirement,
 };
 pub use relay_mesh::*;
 pub use repos::{

@@ -116,6 +116,8 @@ fn test_record() -> ManagedAgentRecord {
         relay_mesh: None,
         agent_command_override: None,
         persona_source_version: None,
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         provider: None,
     }
 }

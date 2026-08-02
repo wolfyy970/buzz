@@ -2,6 +2,7 @@ import type {
   AcpRuntimeCatalogEntry,
   AgentPersona,
   CreatePersonaInput,
+  ManagedAgent,
   UpdatePersonaInput,
 } from "@/shared/api/types";
 import { AgentCardMintDialog } from "@/features/agents/ui/AgentCardMintDialog";
@@ -18,6 +19,7 @@ export type CardMintTarget = {
 };
 
 export function UserProfilePersonaDialogs({
+  affectedAgents,
   cardMintTarget,
   createError,
   instanceCount,
@@ -38,6 +40,7 @@ export function UserProfilePersonaDialogs({
   onExportSnapshot,
   onSubmit,
 }: {
+  affectedAgents: ManagedAgent[];
   cardMintTarget: CardMintTarget | null;
   createError: Error | null;
   /** Number of managed-agent instances backed by the persona being deleted. */
@@ -62,6 +65,11 @@ export function UserProfilePersonaDialogs({
   return (
     <>
       <AgentDialog
+        affectedAgents={
+          personaDialogState && "id" in personaDialogState.initialValues
+            ? affectedAgents
+            : undefined
+        }
         description={personaDialogState?.description ?? ""}
         error={updateError ?? createError}
         initialValues={personaDialogState?.initialValues ?? null}

@@ -78,6 +78,7 @@ type MockManagedAgentSeed = {
   name: string;
   avatarUrl?: string | null;
   personaId?: string | null;
+  personaVersion?: string | null;
   /** Harness/runtime id pin; `null` = inherit from persona (native default). */
   runtime?: string | null;
   status?: RawManagedAgent["status"];
@@ -897,6 +898,7 @@ type RawTeam = {
 type MockManagedAgent = RawManagedAgent & {
   private_key_nsec: string;
   log_lines: string[];
+  persona_source_version: string | null;
 };
 
 // Mirrors the Rust `ManagedAgentRuntimeStatus` camelCase wire shape for the
@@ -2123,6 +2125,7 @@ function buildSeededManagedAgent(seed: MockManagedAgentSeed): MockManagedAgent {
     respond_to: seed.respondTo ?? "owner-only",
     respond_to_allowlist: seed.respondToAllowlist ?? [],
     private_key_nsec: `nsec1mock${seed.pubkey.slice(0, 20)}`,
+    persona_source_version: seed.personaVersion ?? "previous",
     log_lines: [
       `buzz-acp starting: relay=${DEFAULT_RELAY_WS_URL} agent_pubkey=${seed.pubkey} parallelism=1`,
       "profile created; harness not started",
@@ -7864,6 +7867,97 @@ async function handleUpdatePersonaAndPublish(
   );
 }
 
+// Production hashes canonical template content plus its non-secret revision
+// timestamp. The mock only needs a deterministic 64-character token with the
+// same change semantics and display shape.
+function mockPersonaRevision(persona: RawPersona): string {
+  const input = `${persona.id}\0${persona.updated_at}`;
+  let revision = "";
+  for (let word = 0; word < 8; word += 1) {
+    let hash = (0x811c9dc5 ^ word) >>> 0;
+    for (let index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash = Math.imul(hash, 0x01000193) >>> 0;
+    }
+    revision += hash.toString(16).padStart(8, "0");
+  }
+  return revision;
+}
+
+function handlePreviewAgentTemplateUpdate(args: { personaId: string }) {
+  const persona = mockPersonas.find(
+    (candidate) => candidate.id === args.personaId,
+  );
+  if (!persona) {
+    throw new Error(`Template ${args.personaId} no longer exists.`);
+  }
+  const targetVersion = mockPersonaRevision(persona);
+  return {
+    personaId: persona.id,
+    personaName: persona.display_name,
+    targetVersion,
+    agents: mockManagedAgents
+      .filter((agent) => agent.persona_id === persona.id)
+      .map((agent) => ({
+        pubkey: agent.pubkey,
+        name: agent.name,
+        currentVersion: agent.persona_source_version,
+        targetVersion,
+        runningRelays: agent.status === "running" ? [agent.relay_url] : [],
+        eligible: agent.backend.type === "local",
+        blockedReason:
+          agent.backend.type === "local"
+            ? null
+            : "Remote agents cannot be updated safely in this version.",
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name)),
+  };
+}
+
+async function handleApplyAgentTemplateUpdate(args: {
+  input: {
+    personaId: string;
+    expectedVersion: string;
+    selectedPubkeys: string[];
+  };
+}) {
+  const preview = handlePreviewAgentTemplateUpdate({
+    personaId: args.input.personaId,
+  });
+  if (preview.targetVersion !== args.input.expectedVersion) {
+    throw new Error(
+      "This template changed while you were reviewing it. Review the affected agents again.",
+    );
+  }
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  const selected = new Set(args.input.selectedPubkeys);
+  const agents = preview.agents
+    .filter((agent) => selected.has(agent.pubkey))
+    .map((agent) => {
+      const stored = mockManagedAgents.find(
+        (candidate) => candidate.pubkey === agent.pubkey,
+      );
+      if (stored) {
+        stored.persona_source_version = preview.targetVersion;
+        stored.needs_restart = false;
+        stored.updated_at = new Date().toISOString();
+      }
+      return {
+        pubkey: agent.pubkey,
+        name: agent.name,
+        outcome: agent.runningRelays.length > 0 ? "updated" : "updated_stopped",
+        error: null,
+      };
+    });
+  await emit("agents-data-changed");
+  return {
+    personaId: preview.personaId,
+    version: preview.targetVersion,
+    rolledBack: false,
+    agents,
+  };
+}
+
 function ensureMockPersonaIsActive(personaId: string) {
   const persona = mockPersonas.find((candidate) => candidate.id === personaId);
   if (!persona) {
@@ -8134,6 +8228,9 @@ async function handleCreateManagedAgent(
     respond_to: mintRespondTo,
     respond_to_allowlist: [...mintRespondToAllowlist],
     private_key_nsec: `nsec1mock${pubkey.slice(0, 20)}`,
+    persona_source_version: linkedPersona
+      ? mockPersonaRevision(linkedPersona)
+      : null,
     log_lines: [
       `buzz-acp starting: relay=${args.input.relayUrl ?? DEFAULT_RELAY_WS_URL} agent_pubkey=${pubkey} parallelism=${mintParallelism}`,
       args.input.systemPrompt?.trim()
@@ -11116,6 +11213,14 @@ export function maybeInstallE2eTauriMocks() {
         return handleUpdatePersonaAndPublish(
           payload as Parameters<typeof handleUpdatePersonaAndPublish>[0],
           activeConfig,
+        );
+      case "preview_agent_template_update":
+        return handlePreviewAgentTemplateUpdate(
+          payload as Parameters<typeof handlePreviewAgentTemplateUpdate>[0],
+        );
+      case "apply_agent_template_update":
+        return handleApplyAgentTemplateUpdate(
+          payload as Parameters<typeof handleApplyAgentTemplateUpdate>[0],
         );
       case "delete_persona":
         return handleDeletePersona(

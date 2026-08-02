@@ -9,7 +9,10 @@ use buzz_core_pkg::kind::{event_is_shared, KIND_PERSONA};
 use nostr::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
-use super::{AgentDefinition, ManagedAgentRecord};
+use super::{
+    resolve_mint_behavioral_defaults, AgentDefinition, ManagedAgentRecord,
+    PersonaSnapshotHistoryEntry, RespondTo, DEFAULT_AGENT_PARALLELISM,
+};
 use crate::app_state::AppState;
 
 /// The JSON body stored in a persona event's content field.
@@ -361,16 +364,35 @@ fn resign_with_fresh_timestamp(
 
 /// SHA-256 (lowercase hex) of a persona's canonical content JSON.
 ///
-/// The drift indicator compares this digest, not event timestamps, to decide
-/// whether an agent's persona snapshot is stale — timestamps are fragile across
-/// clock skew and export/import round-trips. `PersonaEventContent` field order
-/// is fixed by the struct definition, so `serde_json` produces a stable
-/// canonical encoding.
+/// This is the stable public-content component used by
+/// [`persona_snapshot_version`] and by legacy snapshots. It deliberately
+/// excludes private env values. `PersonaEventContent` field order is fixed by
+/// the struct definition, so `serde_json` produces a stable canonical
+/// encoding.
 pub fn persona_content_hash(content: &PersonaEventContent) -> String {
     use sha2::{Digest, Sha256};
     let json = serde_json::to_vec(content).unwrap_or_default();
     let digest = Sha256::digest(&json);
     hex::encode(digest)
+}
+
+/// Non-secret revision token for a mutable persona head.
+///
+/// Public persona content alone cannot detect an env-only edit because
+/// credential-bearing `env_vars` are intentionally excluded from
+/// [`PersonaEventContent`]. Include the definition's high-resolution
+/// `updated_at` stamp so every saved edit gets a distinct revision without
+/// hashing or otherwise deriving the token from secret env values.
+pub fn persona_snapshot_version(persona: &AgentDefinition) -> String {
+    use sha2::{Digest, Sha256};
+
+    let public_content_hash = persona_content_hash(&persona_event_content(persona));
+    let mut hasher = Sha256::new();
+    hasher.update(b"buzz-persona-revision-v1\0");
+    hasher.update(public_content_hash.as_bytes());
+    hasher.update(b"\0");
+    hasher.update(persona.updated_at.as_bytes());
+    hex::encode(hasher.finalize())
 }
 
 /// Project a `AgentDefinition` onto the content fields published in persona
@@ -399,127 +421,204 @@ pub fn persona_event_content(record: &AgentDefinition) -> PersonaEventContent {
     }
 }
 
-/// A persona's spawn-relevant config, pinned onto a `ManagedAgentRecord` at
-/// create time for display/backward-compat purposes. For a linked instance,
-/// spawn and deploy do NOT read these snapshotted fields — they resolve
-/// model/provider/prompt live from the definition on every spawn (see
-/// `effective_config::resolve_effective_config`), so a definition edit
-/// propagates on the next restart without delete+respawn. The snapshot still
-/// matters for `runtime` (materialized per B5, no live-read path yet) and for
-/// `persona_source_version`, the drift basis the Agents menu compares against
-/// the definition's current content hash.
+/// Maximum number of prior pinned persona revisions retained per instance.
+///
+/// Five revisions keep rollback useful without letting credential-bearing
+/// persona env history grow without bound in `managed-agents.json`.
+pub const MAX_PERSONA_SNAPSHOT_HISTORY: usize = 5;
+
+/// A persona's spawn-relevant config, pinned onto a `ManagedAgentRecord`.
+///
+/// Linked spawn, readiness, deploy, and restart-hash resolution read these
+/// record fields. A later definition edit changes only the mutable definition
+/// head until an explicit [`advance_persona_snapshot`] selects the instance.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersonaSnapshot {
     pub system_prompt: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
-    /// Preferred ACP runtime ID, copied verbatim from the persona (including
-    /// `None`). Unlike `model`/`provider`, there is no record-fallback: the
-    /// materialized instance `runtime` must mirror the definition so that
-    /// definition edits propagate on the next spawn rather than being silently
-    /// shadowed by the stale materialized value.
+    /// Preferred ACP runtime ID, copied verbatim from the selected persona
+    /// revision (including `None`).
     pub runtime: Option<String>,
-    /// `persona_content_hash` of the persona at snapshot time; the drift basis.
+    /// Non-secret persona revision token at snapshot time; the drift basis.
     pub source_version: String,
+    /// Credential-bearing persona env pinned locally with this revision.
+    pub env_vars: BTreeMap<String, String>,
+    pub respond_to: RespondTo,
+    pub respond_to_allowlist: Vec<String>,
+    pub parallelism: u32,
 }
 
 /// Build the pinned snapshot for an agent created from `persona`.
 ///
 /// The persona's `system_prompt` is always present, so it is wrapped in
-/// `Some`. Env vars are deliberately absent: `record.env_vars` holds agent
-/// overrides only, and the live persona env is merged underneath at read
-/// time (spawn / readiness / deploy) — never snapshotted.
-pub fn persona_snapshot(persona: &AgentDefinition) -> PersonaSnapshot {
-    PersonaSnapshot {
+/// `Some`. `record.env_vars` remains a separate instance-override layer.
+pub fn persona_snapshot(persona: &AgentDefinition) -> Result<PersonaSnapshot, String> {
+    let behavior = resolve_mint_behavioral_defaults(None, Vec::new(), None, Some(persona))?;
+    Ok(PersonaSnapshot {
         system_prompt: Some(persona.system_prompt.clone()),
         model: persona.model.clone(),
         provider: persona.provider.clone(),
         runtime: persona.runtime.clone(),
-        source_version: persona_content_hash(&persona_event_content(persona)),
-    }
+        source_version: persona_snapshot_version(persona),
+        env_vars: persona.env_vars.clone(),
+        respond_to: behavior.respond_to,
+        respond_to_allowlist: behavior.respond_to_allowlist,
+        parallelism: behavior.parallelism.unwrap_or(DEFAULT_AGENT_PARALLELISM),
+    })
 }
 
-/// Re-pin `record` to `persona`: build a snapshot via [`persona_snapshot`]
-/// and mirror it onto the record — the definition quad
-/// (`system_prompt`/`model`/`provider`/`runtime`), the env-override
-/// self-heal, and the `persona_source_version` drift basis.
-///
-/// Definition-authoritative: blank definition model/provider produce `None`
-/// on the record. The effective-config resolver falls through to the global
-/// default at read time; stale materialized record bytes are never preserved.
-///
-/// This is the single apply used by every snapshot-apply site: the spawn
-/// re-pin (`start_local_agent_with_preflight`), the launch backfill and
-/// restore re-snapshot (`restore.rs`), and the prospective re-snapshot inside
-/// `spawn_config_hash` — so a future `PersonaSnapshot` field addition
-/// propagates to all of them at once.
-///
-/// Deliberately does NOT touch `updated_at`: persistence stamps are the
-/// caller's concern, and `spawn_config_hash` (which applies this to a clone)
-/// must stay pure.
-pub fn apply_persona_snapshot(record: &mut ManagedAgentRecord, persona: &AgentDefinition) {
-    let snapshot = persona_snapshot(persona);
-    if let Some(prompt) = snapshot.system_prompt {
-        record.system_prompt = Some(prompt);
-    }
+fn install_persona_snapshot(record: &mut ManagedAgentRecord, snapshot: PersonaSnapshot) {
+    record.system_prompt = snapshot.system_prompt;
     record.model = snapshot.model;
     record.provider = snapshot.provider;
     record.runtime = snapshot.runtime;
-    // Drop a stale create-time harness pin when the definition names a
-    // different known runtime; custom commands stay pinned.
-    if let Some(def_runtime) = persona
-        .runtime
-        .as_deref()
-        .map(str::trim)
-        .filter(|r| !r.is_empty())
-        .and_then(crate::managed_agents::known_acp_runtime_exact)
-    {
-        if let Some(pin_runtime) = record
-            .agent_command_override
-            .as_deref()
-            .and_then(crate::managed_agents::known_acp_runtime)
-        {
-            if !std::ptr::eq(pin_runtime, def_runtime) {
-                record.agent_command_override = None;
-            }
-        }
-    }
-    // env_vars stay overrides-only. Self-heal records written before the env
-    // refresh: persona env used to be baked into `record.env_vars`, turning
-    // inherited values into pseudo-overrides that shadow later persona edits.
-    // An override equal to the persona's current value is indistinguishable
-    // from inheritance, so drop it and let the live merge supply it.
-    record
-        .env_vars
-        .retain(|k, v| persona.env_vars.get(k) != Some(v));
     record.persona_source_version = Some(snapshot.source_version);
+    record.pinned_persona_env_vars = Some(snapshot.env_vars);
+    record.respond_to = snapshot.respond_to;
+    record.respond_to_allowlist = snapshot.respond_to_allowlist;
+    record.parallelism = snapshot.parallelism;
 }
 
-/// Preview what `record` would look like immediately after the start/restore
-/// paths re-pin it to its linked persona, without mutating `record` itself.
-///
-/// Every decision made ahead of the real re-pin — the relay-mesh preflight in
-/// `start_local_agent_with_preflight`, the restart-badge hash in
-/// `spawn_config_hash` — needs to reason about spawn-time state, not
-/// pre-snapshot bytes, so a persona edit that flips a field (e.g. `provider`
-/// to/from relay-mesh) between saves is reflected in the decision instead of
-/// the stale value the real [`apply_persona_snapshot`] is about to overwrite
-/// anyway. Idempotent: applying it to an already-current record is a no-op,
-/// so the spawn-time stamp and later recomputes agree when nothing changed.
-///
-/// Orphaned records (persona deleted) pass through unchanged: the caller's
-/// own orphan handling — refusing to spawn, hashing as `(None, None, None)`
-/// — runs on the real record downstream, not on this preview.
-pub fn preview_prospective_persona_snapshot(
-    record: &ManagedAgentRecord,
-    personas: &[AgentDefinition],
-) -> ManagedAgentRecord {
-    let mut preview = record.clone();
-    if let Some(persona_id) = preview.persona_id.clone() {
-        if let Some(persona) = personas.iter().find(|p| p.id == persona_id) {
-            apply_persona_snapshot(&mut preview, persona);
-        }
+fn current_persona_snapshot(record: &ManagedAgentRecord) -> PersonaSnapshotHistoryEntry {
+    PersonaSnapshotHistoryEntry {
+        system_prompt: record.system_prompt.clone(),
+        model: record.model.clone(),
+        provider: record.provider.clone(),
+        runtime: record.runtime.clone(),
+        source_version: record.persona_source_version.clone(),
+        pinned_persona_env_vars: record.pinned_persona_env_vars.clone().unwrap_or_default(),
+        respond_to: record.respond_to,
+        respond_to_allowlist: record.respond_to_allowlist.clone(),
+        parallelism: record.parallelism,
     }
-    preview
 }
+
+fn remove_legacy_inherited_env_overrides(
+    record: &mut ManagedAgentRecord,
+    persona: &AgentDefinition,
+) {
+    // Before persona env had its own persisted layer, inherited values were
+    // copied into `record.env_vars` and became indistinguishable from explicit
+    // overrides. An equal value is the only safe legacy-inheritance signal.
+    record
+        .env_vars
+        .retain(|key, value| persona.env_vars.get(key) != Some(value));
+}
+
+/// Pin `record` to `persona` during create or one-time legacy backfill.
+///
+/// This helper deliberately does not add rollback history. Runtime start paths
+/// must never call it: an ordinary restart must preserve the selected persona
+/// revision rather than silently advancing to the latest definition head.
+///
+/// Definition-authoritative: blank definition model/provider produce `None`
+/// on the record. The effective-config resolver falls through to the global
+/// default at read time.
+///
+/// Deliberately does NOT touch `updated_at`: persistence stamps are the
+/// caller's concern.
+pub fn apply_persona_snapshot(
+    record: &mut ManagedAgentRecord,
+    persona: &AgentDefinition,
+) -> Result<(), String> {
+    let snapshot = persona_snapshot(persona)?;
+    install_persona_snapshot(record, snapshot);
+    // env_vars stay overrides-only. Self-heal records written before the env
+    // refresh: persona env used to be baked into `record.env_vars`, turning
+    // inherited values into pseudo-overrides.
+    // An override equal to the persona's current value is indistinguishable
+    // from inheritance on those legacy records, so drop it and let the pinned
+    // persona layer supply it.
+    remove_legacy_inherited_env_overrides(record, persona);
+    Ok(())
+}
+
+/// Initialize missing persona pins on a legacy linked record.
+///
+/// Records without a source version predate all structured pinning and receive
+/// a complete snapshot. Records that already have a source version but lack
+/// the optional env marker receive only the current persona env. That
+/// env-only path deliberately preserves the selected prompt/model/provider/
+/// runtime/source revision.
+///
+/// Returns `true` when the record changed and must be persisted.
+pub fn backfill_persona_snapshot(
+    record: &mut ManagedAgentRecord,
+    persona: &AgentDefinition,
+) -> Result<bool, String> {
+    let snapshot = persona_snapshot(persona)?;
+    if record.persona_source_version.is_none() {
+        install_persona_snapshot(record, snapshot);
+        remove_legacy_inherited_env_overrides(record, persona);
+        return Ok(true);
+    }
+
+    let mut changed = false;
+    if record.pinned_persona_env_vars.is_none() {
+        record.pinned_persona_env_vars = Some(persona.env_vars.clone());
+        remove_legacy_inherited_env_overrides(record, persona);
+        changed = true;
+    }
+
+    // Older pinned records used the public-content hash as their version.
+    // Upgrade that marker only when every persisted persona-owned field,
+    // including the newly initialized env layer, is byte-for-byte equal to the
+    // current definition head. Otherwise preserve the legacy marker so the
+    // record remains visibly stale and cannot be silently relabelled.
+    let legacy_version = persona_content_hash(&persona_event_content(persona));
+    let pinned_matches_head = record.persona_source_version.as_deref()
+        == Some(legacy_version.as_str())
+        && record.system_prompt.as_deref() == Some(persona.system_prompt.as_str())
+        && record.model == persona.model
+        && record.provider == persona.provider
+        && record.runtime == persona.runtime
+        && record.pinned_persona_env_vars.as_ref() == Some(&persona.env_vars)
+        && record.respond_to == snapshot.respond_to
+        && record.respond_to_allowlist == snapshot.respond_to_allowlist
+        && record.parallelism == snapshot.parallelism;
+    if pinned_matches_head {
+        record.persona_source_version = Some(snapshot.source_version);
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
+/// Explicitly advance a linked instance to the supplied persona revision.
+///
+/// The current pin is pushed onto a bounded rollback stack before the new
+/// revision is installed. Per-instance env and harness overrides are not part
+/// of a persona snapshot and remain untouched.
+pub fn advance_persona_snapshot(
+    record: &mut ManagedAgentRecord,
+    persona: &AgentDefinition,
+) -> Result<(), String> {
+    debug_assert!(
+        record
+            .persona_id
+            .as_deref()
+            .is_none_or(|id| id == persona.id),
+        "cannot advance an instance with an unrelated persona"
+    );
+    let snapshot = persona_snapshot(persona)?;
+    // Be defensive if an explicit update beats the launch backfill. Legacy
+    // records used the current persona head at runtime, so materialize that
+    // effective revision before saving the rollback entry.
+    if record.persona_source_version.is_none() || record.pinned_persona_env_vars.is_none() {
+        backfill_persona_snapshot(record, persona)?;
+    }
+    if record.previous_persona_snapshots.len() >= MAX_PERSONA_SNAPSHOT_HISTORY {
+        let remove_count =
+            record.previous_persona_snapshots.len() + 1 - MAX_PERSONA_SNAPSHOT_HISTORY;
+        record.previous_persona_snapshots.drain(..remove_count);
+    }
+    record
+        .previous_persona_snapshots
+        .push(current_persona_snapshot(record));
+    install_persona_snapshot(record, snapshot);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests;

@@ -209,9 +209,8 @@ pub fn save_global_agent_config(app: &AppHandle, config: &GlobalAgentConfig) -> 
 
 /// Resolve the effective model and provider for an agent.
 ///
-/// Delegates to `effective_config::resolve_effective_config` which enforces
-/// definition-authoritative semantics for linked instances:
-///   - **Linked:** definition → global. Record bytes are never consulted.
+/// Delegates to `effective_config::resolve_effective_config`:
+///   - **Linked:** selected record pin → global, with definition-presence gate.
 ///   - **Definition-less:** instance → global.
 ///   - **Orphaned:** returns `(None, None)`. This function is a display/
 ///     readiness/hash convenience, not the spawn gate — an orphan must never

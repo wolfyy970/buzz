@@ -179,6 +179,8 @@ fn local_agent() -> ManagedAgentRecord {
         model: Some("local-model".to_string()),
         provider: Some("local-provider".to_string()),
         persona_source_version: Some("local-hash".to_string()),
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         env_vars: BTreeMap::from([("API_KEY".to_string(), "localsecret".to_string())]),
         start_on_app_launch: true,
         auto_restart_on_config_change: true,

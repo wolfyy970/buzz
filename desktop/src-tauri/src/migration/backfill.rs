@@ -5,10 +5,7 @@
 
 use std::path::Path;
 
-use crate::managed_agents::{
-    persona_events::{persona_content_hash, persona_event_content},
-    ManagedAgentRecord,
-};
+use crate::managed_agents::{persona_events::apply_persona_snapshot, ManagedAgentRecord};
 
 /// Manufacture definitions for standalone agents (B5 backfill).
 ///
@@ -24,9 +21,9 @@ use crate::managed_agents::{
 /// - **No behavior change**: the definition snapshots the record's own
 ///   values (prompt present-even-if-empty via `to_definition_view`'s
 ///   `unwrap_or_default`, env COPIED so later instances inherit a working
-///   config, quad copied to the definition defaults) and the record gains
-///   `persona_source_version` = the new definition's content hash, so
-///   neither `spawn_config_hash` nor the drift badge moves.
+///   config, quad copied to the definition defaults). The canonical snapshot
+///   helper then pins those same values, including an initialized persona-env
+///   layer, so neither `spawn_config_hash` nor the drift badge moves.
 ///
 /// The manufactured definition's slug is the agent's pubkey: 64-hex passes
 /// the NIP-AP slug grammar on both relay and desktop ends, and agent pubkeys
@@ -115,12 +112,19 @@ fn backfill_standalone_agents_in_dir(base_dir: &Path) -> Result<usize, String> {
             continue;
         };
 
-        // Link the record BEFORE computing the version so the hash covers the
-        // definition exactly as manufactured.
-        let source_version = persona_content_hash(&persona_event_content(&persona_view));
+        // Install through the same canonical path used by newly created
+        // instances. In particular, this initializes
+        // `pinned_persona_env_vars`; a linked `None` is intentionally
+        // fail-closed at spawn and cannot be left behind by this migration.
+        if let Err(error) = apply_persona_snapshot(record, &persona_view) {
+            eprintln!(
+                "buzz-desktop: standalone-backfill: agent {} could not be snapshotted — skipped: {error}",
+                record.pubkey
+            );
+            continue;
+        }
         let definition = persona_view.into_agent_record();
         record.persona_id = Some(record.pubkey.clone());
-        record.persona_source_version = Some(source_version);
         manufactured.push(definition);
         backfilled += 1;
     }

@@ -15,7 +15,6 @@ import { isBuzzAgentRuntime } from "./buzzAgentConfig";
 export function EditAgentAdvancedFields({
   acpCommand,
   agentArgs,
-  autoRestartOnConfigChange,
   disabled,
   envVars,
   fileSatisfiedEnvKeys,
@@ -35,12 +34,10 @@ export function EditAgentAdvancedFields({
   onEnvVarsChange,
   onInheritHarnessChange,
   onParallelismChange,
-  onAutoRestartChange,
   onSystemPromptChange,
 }: {
   acpCommand: string;
   agentArgs: string;
-  autoRestartOnConfigChange: boolean;
   disabled: boolean;
   envVars: EnvVarsValue;
   fileSatisfiedEnvKeys: readonly string[];
@@ -68,7 +65,6 @@ export function EditAgentAdvancedFields({
   onEnvVarsChange: (value: EnvVarsValue) => void;
   onInheritHarnessChange: (value: boolean) => void;
   onParallelismChange: (value: string) => void;
-  onAutoRestartChange: (value: boolean) => void;
   onSystemPromptChange: (value: string) => void;
 }) {
   return (
@@ -97,27 +93,6 @@ export function EditAgentAdvancedFields({
           </p>
         </div>
       ) : null}
-
-      {/* Auto-restart on config change (Chunk F) */}
-      <div className="space-y-1.5">
-        <label
-          className="flex items-center gap-2 text-sm font-medium"
-          htmlFor="edit-agent-auto-restart"
-        >
-          <input
-            checked={autoRestartOnConfigChange}
-            id="edit-agent-auto-restart"
-            onChange={(event) => onAutoRestartChange(event.target.checked)}
-            type="checkbox"
-          />
-          Auto-restart on config change
-        </label>
-        <p className="text-xs text-muted-foreground">
-          {autoRestartOnConfigChange
-            ? "Restarts this agent automatically when its configuration changes, once it is idle and connected."
-            : "Configuration changes only show the restart badge; restart manually to apply them."}
-        </p>
-      </div>
 
       {/* Agent runtime args */}
       <div className="space-y-1.5">

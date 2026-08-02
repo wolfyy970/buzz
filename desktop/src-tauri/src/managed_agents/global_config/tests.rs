@@ -319,6 +319,8 @@ fn bare_record() -> ManagedAgentRecord {
         model: None,
         provider: None,
         persona_source_version: None,
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         env_vars: BTreeMap::new(),
         start_on_app_launch: false,
         runtime_pid: None,
@@ -380,10 +382,10 @@ fn persona(id: &str, model: Option<&str>, provider: Option<&str>) -> AgentDefini
     }
 }
 
-/// Linked instance: definition (persona) wins — stale record bytes are
-/// ignored. This is the core model-inheritance fix.
+/// Linked instance: the selected record pin wins over the mutable definition
+/// head.
 #[test]
-fn resolve_definition_wins_over_stale_record_for_linked_instance() {
+fn resolve_selected_pin_wins_over_mutable_definition_for_linked_instance() {
     let mut record = bare_record();
     record.persona_id = Some("p1".to_string());
     record.model = Some("stale-record-model".to_string());
@@ -403,21 +405,20 @@ fn resolve_definition_wins_over_stale_record_for_linked_instance() {
 
     assert_eq!(
         model.as_deref(),
-        Some("persona-model"),
-        "definition model must win over stale record"
+        Some("stale-record-model"),
+        "selected model must win over mutable definition head"
     );
     assert_eq!(
         provider.as_deref(),
-        Some("persona-provider"),
-        "definition provider must win over stale record"
+        Some("stale-record-provider"),
+        "selected provider must win over mutable definition head"
     );
 }
 
-/// Tier 2 — persona fallback: record has no model/provider; the linked
-/// persona's values must be used. Fails against an implementation that skips
-/// persona lookup and returns global or None directly.
+/// A blank selected value inherits the global default, not the mutable
+/// definition head.
 #[test]
-fn resolve_persona_fallback_when_record_has_none() {
+fn resolve_global_fallback_when_linked_pin_has_none() {
     let mut record = bare_record();
     record.persona_id = Some("p1".to_string());
     // record.model and record.provider are None
@@ -436,13 +437,13 @@ fn resolve_persona_fallback_when_record_has_none() {
 
     assert_eq!(
         model.as_deref(),
-        Some("persona-model"),
-        "persona model must be used when record has none"
+        Some("global-model"),
+        "blank selected model must inherit global"
     );
     assert_eq!(
         provider.as_deref(),
-        Some("persona-provider"),
-        "persona provider must be used when record has none"
+        Some("global-provider"),
+        "blank selected provider must inherit global"
     );
 }
 
@@ -550,9 +551,8 @@ fn resolve_all_none_when_no_source_provides_values() {
     );
 }
 
-/// Each field resolves independently: definition model=None → global fills
-/// model; definition has provider → definition wins for provider. Stale
-/// record bytes are ignored for linked instances.
+/// Each selected field resolves independently: a pinned model wins while a
+/// blank pinned provider inherits global. Mutable definition values are inert.
 #[test]
 fn resolve_each_field_resolves_independently_through_tiers() {
     let mut record = bare_record();
@@ -569,13 +569,13 @@ fn resolve_each_field_resolves_independently_through_tiers() {
 
     assert_eq!(
         model.as_deref(),
-        Some("global-model"),
-        "definition model=None → global fills model; stale record ignored"
+        Some("stale-record-model"),
+        "selected model wins"
     );
     assert_eq!(
         provider.as_deref(),
-        Some("persona-provider"),
-        "definition provider wins"
+        Some("global-provider"),
+        "blank selected provider inherits global"
     );
 }
 

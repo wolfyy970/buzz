@@ -66,10 +66,12 @@ export function AgentCreateAiDefaultsSummary({
 }
 
 export function AgentAiConfigurationModeField({
+  customLabel = "Customize for this agent",
   mode,
   needsProviderSelection = true,
   onModeChange,
 }: {
+  customLabel?: string;
   mode: AgentAiConfigurationMode;
   needsProviderSelection?: boolean;
   onModeChange: (mode: AgentAiConfigurationMode) => void;
@@ -104,7 +106,7 @@ export function AgentAiConfigurationModeField({
             className="relative z-10 h-full rounded-md bg-transparent text-xs font-medium shadow-none transition-colors data-[state=active]:bg-transparent data-[state=active]:shadow-none"
             value="custom"
           >
-            Customize for this agent
+            {customLabel}
           </TabsTrigger>
         </TabsList>
       </Tabs>

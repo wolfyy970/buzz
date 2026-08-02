@@ -22,7 +22,6 @@ import {
   useSetPersonaActiveMutation,
   useStartManagedAgentMutation,
   useStopManagedAgentMutation,
-  useUpdateManagedAgentMutation,
   useUpdatePersonaMutation,
 } from "@/features/agents/hooks";
 import { useGlobalAgentConfig } from "@/features/agents/useGlobalAgentConfig";
@@ -33,13 +32,7 @@ import {
   resolveStartRuntimeForDefinition,
 } from "@/features/agents/lib/instanceInputForDefinition";
 import { describeLogFile } from "@/features/agents/ui/agentUi";
-import { AgentDialog } from "@/features/agents/ui/AgentDialog";
 import { useAgentLifecycleActions } from "@/features/profile/ui/useAgentLifecycleActions";
-import {
-  consumePendingOpenEditAgent,
-  type EditAgentFocusTarget,
-  subscribeOpenEditAgent,
-} from "@/features/agents/openEditAgentEvent";
 import {
   duplicatePersonaDialogState,
   editPersonaDialogState,
@@ -68,6 +61,14 @@ import {
 } from "@/features/profile/ui/UserProfilePanelSections";
 import { AgentConfigurationFocusedView } from "@/features/profile/ui/UserProfilePanelAgentDetails";
 import { UserProfileAgentSettingsMenuSlot } from "@/features/profile/ui/UserProfileAgentActions";
+import {
+  UserProfileAgentEditDialogs,
+  useUserProfileAgentEditDialogs,
+} from "@/features/profile/ui/UserProfileAgentEditDialogs";
+import {
+  UserProfileAgentTemplateUpdateDialog,
+  useProfileAgentTemplateUpdate,
+} from "@/features/profile/ui/UserProfileAgentTemplateUpdate";
 import { useProfileAgentDeletion } from "@/features/profile/ui/UserProfilePanelDeletion";
 import { useProfileFieldBuckets } from "@/features/profile/ui/UserProfilePanelFields";
 import { submitProfilePersonaDialog } from "@/features/profile/ui/UserProfilePanelPersonaSubmit";
@@ -154,28 +155,9 @@ export function UserProfilePanel({
     },
     [onTabChange],
   );
-  const [editAgentOpen, setEditAgentOpen] = React.useState(false);
-  const [editAgentFocus, setEditAgentFocus] = React.useState<
-    EditAgentFocusTarget | undefined
-  >(undefined);
-
-  // Open the Edit Agent dialog when `requestOpenEditAgent(pubkey)` fires from
-  // a card or other non-panel surface (e.g. `ConfigNudgeCard`). Mirrors the
-  // `subscribeOpenCreateAgent` pattern in AgentsView.
-  React.useEffect(() => {
-    if (!pubkey) return;
-    // Consume any pending request that arrived before this panel mounted.
-    const pending = consumePendingOpenEditAgent(pubkey);
-    if (pending !== false) {
-      setEditAgentFocus(pending === true ? undefined : pending);
-      setEditAgentOpen(true);
-    }
-    // Subscribe for events that arrive while the panel is mounted.
-    return subscribeOpenEditAgent(pubkey, (focus) => {
-      setEditAgentFocus(focus);
-      setEditAgentOpen(true);
-    });
-  }, [pubkey]);
+  const agentEditDialogs = useUserProfileAgentEditDialogs(pubkey);
+  const { openInstance: openAgentInstanceEdit, openScope: openAgentEditScope } =
+    agentEditDialogs;
   const [addToChannelOpen, setAddToChannelOpen] = React.useState(false);
   const [personaDialogState, setPersonaDialogState] =
     React.useState<PersonaDialogState | null>(null);
@@ -188,6 +170,9 @@ export function UserProfilePanel({
 
   const personasQuery = usePersonasQuery();
   const managedAgentsQuery = useManagedAgentsQuery({ enabled: true });
+  const templateUpdate = useProfileAgentTemplateUpdate({
+    onAgentsUpdated: managedAgentsQuery.refetch,
+  });
   const managedAgent = React.useMemo(() => {
     const agents = managedAgentsQuery.data ?? [];
     if (pubkey) {
@@ -246,7 +231,6 @@ export function UserProfilePanel({
   const availableRuntimesQuery = useAvailableAcpRuntimes();
   const acpRuntimesQuery = useAcpRuntimesQuery();
   const createAgentMutation = useCreateManagedAgentMutation();
-  const updateManagedAgentMutation = useUpdateManagedAgentMutation();
   const startAgentMutation = useStartManagedAgentMutation();
   const stopAgentMutation = useStopManagedAgentMutation();
   const deleteAgentMutation = useDeleteManagedAgentMutation();
@@ -350,7 +334,6 @@ export function UserProfilePanel({
     managedAgent === undefined;
   const isAgentActionPending =
     createAgentMutation.isPending ||
-    updateManagedAgentMutation.isPending ||
     startAgentMutation.isPending ||
     stopAgentMutation.isPending ||
     deleteAgentMutation.isPending ||
@@ -402,12 +385,23 @@ export function UserProfilePanel({
   });
 
   const handleEditAgent = React.useCallback(() => {
-    if (resolvedPersona) {
-      setPersonaDialogState(editPersonaDialogState(resolvedPersona));
+    if (managedAgent && resolvedPersona) {
+      openAgentEditScope();
       return;
     }
-    setEditAgentOpen(true);
-  }, [resolvedPersona]);
+    if (managedAgent) {
+      openAgentInstanceEdit();
+      return;
+    }
+    if (resolvedPersona) {
+      setPersonaDialogState(editPersonaDialogState(resolvedPersona));
+    }
+  }, [
+    managedAgent,
+    openAgentEditScope,
+    openAgentInstanceEdit,
+    resolvedPersona,
+  ]);
 
   const { deleteManagedAgentRecord, deleteManagedAgentsForPersona } =
     useProfileAgentDeletion({
@@ -520,29 +514,24 @@ export function UserProfilePanel({
 
   const handleSubmitPersona = React.useCallback(
     async (input: CreatePersonaInput | UpdatePersonaInput) => {
-      await submitProfilePersonaDialog({
+      const saved = await submitProfilePersonaDialog({
         createManagedAgentForPersona,
         createPersona: createPersonaMutation.mutateAsync,
         input,
-        managedAgent,
         onDone: () => {
           setPersonaDialogState(null);
           void personasQuery.refetch();
         },
-        previousPersona: resolvedPersona,
-        runtimes: acpRuntimesQuery.data ?? [],
-        updateManagedAgent: updateManagedAgentMutation.mutateAsync,
         updatePersona: updatePersonaMutation.mutateAsync,
       });
+      if (!saved || !("id" in input)) return;
+      await templateUpdate.reviewSavedTemplate(input);
     },
     [
       createPersonaMutation.mutateAsync,
       createManagedAgentForPersona,
-      managedAgent,
       personasQuery.refetch,
-      resolvedPersona,
-      acpRuntimesQuery.data,
-      updateManagedAgentMutation.mutateAsync,
+      templateUpdate.reviewSavedTemplate,
       updatePersonaMutation.mutateAsync,
     ],
   );
@@ -907,24 +896,14 @@ export function UserProfilePanel({
   );
   const editAgentDialog =
     canEditAgent && managedAgent ? (
-      <AgentDialog
+      <UserProfileAgentEditDialogs
+        affectedAgents={personaInstances}
         agent={managedAgent}
-        mode="instance-edit"
-        initialFocus={editAgentFocus}
-        onEditLinkedPersona={
-          resolvedPersona && !resolvedPersona.isBuiltIn
-            ? () => {
-                setEditAgentOpen(false);
-                setEditAgentFocus(undefined);
-                setPersonaDialogState(editPersonaDialogState(resolvedPersona));
-              }
-            : undefined
-        }
-        onOpenChange={(next) => {
-          setEditAgentOpen(next);
-          if (!next) setEditAgentFocus(undefined);
+        controller={agentEditDialogs}
+        onEditTemplate={(selectedPersona) => {
+          setPersonaDialogState(editPersonaDialogState(selectedPersona));
         }}
-        open={editAgentOpen}
+        persona={resolvedPersona}
       />
     ) : null;
   const addAgentToChannelDialog = managedAgent ? (
@@ -939,6 +918,7 @@ export function UserProfilePanel({
     <>
       <UserProfilePersonaDialogs
         cardMintTarget={cardMintTarget}
+        affectedAgents={personaInstances}
         createError={
           createPersonaMutation.error instanceof Error
             ? createPersonaMutation.error
@@ -948,7 +928,6 @@ export function UserProfilePanel({
         isPending={
           createPersonaMutation.isPending ||
           updatePersonaMutation.isPending ||
-          updateManagedAgentMutation.isPending ||
           createAgentMutation.isPending
         }
         linkedAgentPubkey={managedAgent?.pubkey ?? null}
@@ -973,6 +952,7 @@ export function UserProfilePanel({
         onExportSnapshot={setPersonaToExportSnapshot}
         onSubmit={handleSubmitPersona}
       />
+      <UserProfileAgentTemplateUpdateDialog controller={templateUpdate} />
     </>
   );
   return (

@@ -857,6 +857,10 @@ test.describe("global agent config screenshots", () => {
       timeout: 10_000,
     });
     await page.getByTestId("user-profile-edit-agent").click();
+    await expect(page.getByTestId("agent-edit-scope-dialog")).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.getByTestId("agent-edit-scope-template").click();
 
     // The definition dialog opens in EDIT mode ("Save changes"), seeded from
     // the persona — confirm it's the edit path, not create.
@@ -948,6 +952,10 @@ test.describe("global agent config screenshots", () => {
       timeout: 10_000,
     });
     await page.getByTestId("user-profile-edit-agent").click();
+    await expect(page.getByTestId("agent-edit-scope-dialog")).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.getByTestId("agent-edit-scope-template").click();
 
     // Confirm the real EDIT dialog, seeded from the persona.
     await expect(page.getByTestId("persona-dialog")).toBeVisible({

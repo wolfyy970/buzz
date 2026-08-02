@@ -28,7 +28,9 @@ fn bare_agent_record(
         system_prompt: None,
         model: model.map(str::to_string),
         provider: provider.map(str::to_string),
-        persona_source_version: None,
+        persona_source_version: persona_id.map(|_| "selected-v1".to_string()),
+        pinned_persona_env_vars: persona_id.map(|_| BTreeMap::new()),
+        previous_persona_snapshots: Vec::new(),
         env_vars: BTreeMap::new(),
         start_on_app_launch: false,
         runtime_pid: None,
@@ -130,9 +132,10 @@ fn build_agent_archive_request_attaches_owner_auth_and_retired_reason() {
     }));
 }
 
-/// Deploy resolver uses definition model/provider, ignoring stale record.
+/// Deploy resolver uses the selected record revision, ignoring a newer
+/// definition head until the instance is explicitly advanced.
 #[test]
-fn deploy_resolver_uses_definition_over_stale_record() {
+fn deploy_resolver_uses_selected_revision_over_newer_definition() {
     let record = bare_agent_record(Some("p1"), Some("old-model"), Some("old-prov"));
     let personas = vec![persona_record("p1", Some("new-model"), Some("new-prov"))];
     let global = crate::managed_agents::GlobalAgentConfig::default();
@@ -141,22 +144,26 @@ fn deploy_resolver_uses_definition_over_stale_record() {
 
     assert_eq!(
         model.as_deref(),
-        Some("new-model"),
-        "deploy must use definition model, not stale record snapshot"
+        Some("old-model"),
+        "deploy must use the selected model, not silently advance"
     );
     assert_eq!(
         provider.as_deref(),
-        Some("new-prov"),
-        "deploy must use definition provider, not stale record snapshot"
+        Some("old-prov"),
+        "deploy must use the selected provider, not silently advance"
     );
 }
 
-/// When a linked definition has blank model/provider (inherit), the deploy
-/// resolver must fall through to global — stale record bytes are inert.
+/// A selected revision with blank model/provider inherits global defaults,
+/// regardless of what the mutable definition head now contains.
 #[test]
-fn deploy_resolver_inherits_global_when_definition_blank() {
-    let record = bare_agent_record(Some("p1"), Some("stale-model"), Some("stale-prov"));
-    let personas = vec![persona_record("p1", None, None)];
+fn deploy_resolver_inherits_global_when_selected_revision_blank() {
+    let record = bare_agent_record(Some("p1"), None, None);
+    let personas = vec![persona_record(
+        "p1",
+        Some("new-definition-model"),
+        Some("new-definition-provider"),
+    )];
     let global = crate::managed_agents::GlobalAgentConfig {
         model: Some("global-model".to_string()),
         provider: Some("global-prov".to_string()),
@@ -168,12 +175,12 @@ fn deploy_resolver_inherits_global_when_definition_blank() {
     assert_eq!(
         model.as_deref(),
         Some("global-model"),
-        "definition blank → global; stale record ignored"
+        "selected blank model must inherit global"
     );
     assert_eq!(
         provider.as_deref(),
         Some("global-prov"),
-        "definition blank → global; stale record ignored"
+        "selected blank provider must inherit global"
     );
 }
 

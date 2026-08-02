@@ -469,6 +469,8 @@ fn make_agent(name: &str, persona_id: Option<&str>) -> ManagedAgentRecord {
         model: None,
         provider: None,
         persona_source_version: None,
+        pinned_persona_env_vars: Default::default(),
+        previous_persona_snapshots: Vec::new(),
         start_on_app_launch: false,
         auto_restart_on_config_change: true,
         runtime_pid: None,

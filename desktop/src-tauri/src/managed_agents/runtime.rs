@@ -73,8 +73,8 @@ pub use lifecycle::{kill_stale_tracked_processes, sync_managed_agent_processes};
 /// drift indicator. Returns `(out_of_date, orphaned)`.
 ///
 /// Drift basis is the RECORD's `persona_source_version`, never the engram:
-/// - persona_id set + persona present: out_of_date when the snapshot hash
-///   differs from the persona's current content hash.
+/// - persona_id set + persona present: out_of_date when the snapshot revision
+///   differs from the persona's current non-secret revision token.
 /// - persona_id set + persona gone: orphaned (no current hash to respawn into,
 ///   so never out_of_date — we must not tell the user to respawn into nothing).
 /// - no persona_id: neither — a hand-built agent has no persona to drift from.
@@ -88,9 +88,7 @@ fn persona_drift_state(
     let Some(persona) = personas.iter().find(|p| p.id == persona_id) else {
         return (false, true);
     };
-    let current = crate::managed_agents::persona_events::persona_content_hash(
-        &crate::managed_agents::persona_events::persona_event_content(persona),
-    );
+    let current = crate::managed_agents::persona_events::persona_snapshot_version(persona);
     let out_of_date = record
         .persona_source_version
         .as_deref()
@@ -269,8 +267,9 @@ pub fn build_managed_agent_summary(
             restart_eligible(persona_orphaned, hash_drift, availability_drift)
         });
 
-    // Resolve the effective harness via the single typed descriptor — same resolver
-    // as spawn, so the UI reflects the persona's current harness (or explicit pin).
+    // Resolve the effective harness via the single typed descriptor — same
+    // resolver as spawn, so the UI reflects the selected revision (or explicit
+    // per-instance pin).
     let descriptor = crate::managed_agents::resolve_effective_harness_descriptor(
         record,
         personas,
@@ -461,11 +460,9 @@ pub fn spawn_agent_child(
         return Err(error);
     }
     let runtime_key = ManagedAgentRuntimeKey::new(record.pubkey.clone(), relay_url)?;
-    // Resolve the effective harness (agent command) from the linked persona, so
-    // persona harness edits propagate on the next spawn; an explicit per-agent
-    // override wins. `agent_args` and `mcp_command` are pure derivations of the
-    // command, so we recompute them from the effective value rather than the
-    // frozen record snapshot. Mirrors the model resolution below.
+    // Resolve the effective harness from the selected record revision; an
+    // explicit per-agent override wins. `agent_args` and `mcp_command` are
+    // derivations of that effective command.
     let personas = super::load_personas(app).unwrap_or_default();
     let teams = super::load_teams(app).unwrap_or_default();
     // Load global config once; used for runtime_metadata_env_vars (model/provider fallback)
@@ -474,11 +471,8 @@ pub fn spawn_agent_child(
 
     // Resolve model/provider/prompt ONCE, here, at the shared spawn boundary —
     // the single source both the env writes below and `spawn_config_hash`
-    // read from. Previously prompt was read from the record's own (possibly
-    // stale, Phase-A-snapshot) bytes while model/provider were resolved live
-    // from `personas`; a definition edit landing between a caller's snapshot
-    // apply and this spawn could hand a fresh model/provider to a stale
-    // prompt. This also folds in orphan refusal via `require_resolved`: every
+    // read from. The mutable persona head is consulted only for the orphan
+    // gate. This also folds in orphan refusal via `require_resolved`: every
     // caller (interactive start, launch restore, `start_managed_agent_process`)
     // inherits it — no caller can bypass this by reaching `spawn_agent_child`
     // directly. Checked before any side effect (log marker, log file, process
@@ -626,6 +620,9 @@ pub fn spawn_agent_child(
             env: descriptor.env.clone(),
             config_file_path: runtime_meta.and_then(|r| r.config_file_path),
             effective_command: descriptor.command.clone(),
+            // The descriptor resolver rejects an uninitialized linked env pin
+            // before any spawn side effect.
+            persona_env_snapshot_initialized: true,
         };
         // Compute the optional payload before touching the command.
         let setup_payload_json =
@@ -633,6 +630,9 @@ pub fn spawn_agent_child(
                 let reqs: Vec<serde_json::Value> = requirements
                     .into_iter()
                     .map(|r| match r {
+                        Requirement::PersonaSnapshotUninitialized => serde_json::json!({
+                            "surface": "persona_snapshot_uninitialized",
+                        }),
                         Requirement::NormalizedField { field } => serde_json::json!({
                             "surface": "normalized_field",
                             "field": field,
@@ -848,11 +848,11 @@ pub fn spawn_agent_child(
         );
     }
 
-    // ── User env vars: definition floor + global + live persona + agent overrides ──
+    // ── User env vars: harness floor + global + pinned persona + agent overrides ──
     //
     // `descriptor.env` is the fully-layered result from `resolve_effective_harness_descriptor`:
     // baked floor → runtime metadata → definition env (harness author defaults) →
-    // global → live persona → per-agent, with reserved-key and malformed-key filtering
+    // global → pinned persona → per-agent, with reserved-key and malformed-key filtering
     // applied. Writing it last lets user-provided values win over every Buzz-set env
     // written above — reserved keys were already stripped from descriptor.env so they
     // cannot clobber BUZZ_PRIVATE_KEY, NOSTR_PRIVATE_KEY, etc.

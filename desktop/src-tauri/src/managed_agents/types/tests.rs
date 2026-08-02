@@ -91,6 +91,28 @@ fn managed_agent_record_with_auth_tag_round_trips() {
     assert_eq!(record.auth_tag, record2.auth_tag);
 }
 
+#[test]
+fn pinned_persona_env_marker_distinguishes_legacy_from_intentionally_empty() {
+    let legacy = sample_agent_record();
+    assert_eq!(legacy.pinned_persona_env_vars, None);
+    let legacy_json = serde_json::to_value(&legacy).unwrap();
+    assert!(
+        legacy_json.get("pinned_persona_env_vars").is_none(),
+        "legacy-uninitialized marker must stay absent"
+    );
+
+    let mut initialized = legacy;
+    initialized.pinned_persona_env_vars = Some(Default::default());
+    let initialized_json = serde_json::to_value(&initialized).unwrap();
+    assert_eq!(
+        initialized_json.get("pinned_persona_env_vars"),
+        Some(&serde_json::json!({})),
+        "Some(empty) must persist as an intentional selected revision"
+    );
+    let round_trip: ManagedAgentRecord = serde_json::from_value(initialized_json).unwrap();
+    assert_eq!(round_trip.pinned_persona_env_vars, Some(Default::default()));
+}
+
 // ── Inbound author gate tests ────────────────────────────────────────
 
 use super::{validate_respond_to_allowlist, RespondTo};
@@ -549,6 +571,7 @@ fn persona_into_agent_record_is_keyless_and_slugged() {
     assert_eq!(record.runtime.as_deref(), Some("goose"));
     assert_eq!(record.source_team.as_deref(), Some("team-1"));
     assert_eq!(record.env_vars.get("K").map(String::as_str), Some("v"));
+    assert_eq!(record.pinned_persona_env_vars, None);
 }
 
 #[test]

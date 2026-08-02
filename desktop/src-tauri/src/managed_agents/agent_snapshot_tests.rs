@@ -4,7 +4,9 @@
 //! 1000-line gate; `#[path]`-included from there.
 
 use super::*;
-use crate::managed_agents::types::{BackendKind, ManagedAgentRecord, RespondTo};
+use crate::managed_agents::types::{
+    BackendKind, ManagedAgentRecord, PersonaSnapshotHistoryEntry, RespondTo,
+};
 use std::collections::BTreeMap;
 
 /// Build a minimal `ManagedAgentRecord` for testing. Only the fields
@@ -33,6 +35,24 @@ fn minimal_record() -> ManagedAgentRecord {
         model: Some("claude-opus-4".to_string()),
         provider: Some("anthropic".to_string()),
         persona_source_version: Some("v1.0".to_string()), // MUST NOT appear
+        pinned_persona_env_vars: Some(BTreeMap::from([(
+            "PINNED_PERSONA_SECRET_KEY".to_string(),
+            "pinned-persona-secret-value".to_string(),
+        )])),
+        previous_persona_snapshots: vec![PersonaSnapshotHistoryEntry {
+            system_prompt: Some("old private prompt".to_string()),
+            model: None,
+            provider: None,
+            runtime: None,
+            source_version: Some("old-source".to_string()),
+            pinned_persona_env_vars: BTreeMap::from([(
+                "HISTORICAL_PERSONA_SECRET_KEY".to_string(),
+                "historical-persona-secret-value".to_string(),
+            )]),
+            respond_to: RespondTo::OwnerOnly,
+            respond_to_allowlist: Vec::new(),
+            parallelism: 10,
+        }],
         env_vars: {
             let mut m = BTreeMap::new();
             m.insert("API_KEY".to_string(), "secret123".to_string()); // MUST NOT appear
@@ -354,6 +374,17 @@ fn secret_exclusion_env_vars_absent() {
         !json.contains("envVars") && !json.contains("env_vars"),
         "envVars field must not appear in snapshot"
     );
+    assert!(
+        !json.contains("PINNED_PERSONA_SECRET_KEY")
+            && !json.contains("pinned-persona-secret-value")
+            && !json.contains("HISTORICAL_PERSONA_SECRET_KEY")
+            && !json.contains("historical-persona-secret-value"),
+        "pinned persona env and rollback history must not appear in snapshot"
+    );
+    assert!(!json.contains("pinnedPersonaEnvVars"));
+    assert!(!json.contains("pinned_persona_env_vars"));
+    assert!(!json.contains("previousPersonaSnapshots"));
+    assert!(!json.contains("previous_persona_snapshots"));
 }
 
 #[test]
