@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use tauri::AppHandle;
 
+use super::super::ensure_managed_agent_runtime_pairs_unclaimed;
 use super::{
     append_log_marker, current_instance_id, now_iso, process_belongs_to_us,
     process_has_buzz_marker, process_is_running, terminate_process, ManagedAgentPairRuntime,
@@ -37,12 +38,13 @@ pub(crate) fn managed_agent_runtime_relay_urls<T>(
 /// runtime is reinserted so the pair stays visible and stoppable instead of
 /// becoming an invisible orphan. Touches no other pair for the agent and
 /// does no record-level stop bookkeeping — callers own that.
-fn stop_managed_agent_pair(
+pub(crate) fn stop_managed_agent_pair(
     app: &AppHandle,
     record: &mut ManagedAgentRecord,
     runtimes: &mut HashMap<ManagedAgentRuntimeKey, ManagedAgentPairRuntime>,
     key: &ManagedAgentRuntimeKey,
 ) -> Result<(), String> {
+    ensure_managed_agent_runtime_pairs_unclaimed(runtimes, std::slice::from_ref(key))?;
     let Some(mut runtime) = runtimes.remove(key) else {
         return Ok(());
     };
@@ -162,6 +164,9 @@ pub fn stop_managed_agent_process(
     if keys.is_empty() {
         return stop_legacy_scalar_pid(app, record);
     }
+    // Preflight the complete agent-wide set before terminating any pair. A
+    // claimed pair makes the whole normal stop fail without partial teardown.
+    ensure_managed_agent_runtime_pairs_unclaimed(runtimes, &keys)?;
 
     let mut errors = Vec::new();
     for key in keys {

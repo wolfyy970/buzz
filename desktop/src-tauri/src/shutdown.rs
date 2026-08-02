@@ -144,8 +144,10 @@ pub(crate) fn shutdown_managed_agents(app: &tauri::AppHandle) -> Result<(), Stri
         &managed_agents::current_instance_id(app),
     );
 
-    // Stop all tracked agents. Send SIGTERM to all process
-    // groups first, then wait for exits in parallel to avoid serial 1s waits.
+    // Stop all tracked agents. App shutdown is authoritative over update
+    // claims: no update can safely outlive the Desktop process that owns it.
+    // Send SIGTERM to all process groups first, then wait for exits in parallel
+    // to avoid serial 1s waits.
     struct AgentToStop {
         idx: usize,
         pid: u32,

@@ -60,6 +60,12 @@ pub fn sync_managed_agent_processes(
     let mut exited = Vec::new();
 
     for (key, runtime) in runtimes.iter_mut() {
+        // Planned-update ownership consumes this exact generation through
+        // `take_exited_claimed_managed_agent_runtime`; normal reconciliation
+        // must not remove it first, even after the child exits.
+        if runtime.update_claim.is_some() {
+            continue;
+        }
         let status = match runtime.child.try_wait() {
             Ok(status) => status,
             Err(error) => {
@@ -122,4 +128,75 @@ pub fn sync_managed_agent_processes(
     }
 
     (changed, exited_pubkeys)
+}
+
+#[cfg(test)]
+mod update_claim_tests {
+    use super::*;
+    use crate::managed_agents::{
+        claim_managed_agent_runtime_pairs, take_exited_claimed_managed_agent_runtime,
+        ManagedAgentProcess,
+    };
+    use std::process::{Command, Stdio};
+
+    #[test]
+    fn normal_lifecycle_sync_does_not_consume_a_claimed_exit() {
+        #[cfg(unix)]
+        let child = Command::new("/usr/bin/true")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("test child");
+        #[cfg(windows)]
+        let child = Command::new("cmd")
+            .args(["/C", "exit 0"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("test child");
+        let process = ManagedAgentProcess {
+            child,
+            log_path: std::path::PathBuf::new(),
+            spawn_config_hash: 0,
+            setup_mode: false,
+            adapter_availability: None,
+            start_nonce: "claimed-generation".to_string(),
+            #[cfg(windows)]
+            job: None,
+            connection_config_path: None,
+            connection_generation_hash: 0,
+        };
+        let key =
+            ManagedAgentRuntimeKey::new("a".repeat(64), "wss://one.example").expect("runtime key");
+        let mut runtimes =
+            HashMap::from([(key.clone(), ManagedAgentPairRuntime::starting(process))]);
+        claim_managed_agent_runtime_pairs(
+            &mut runtimes,
+            std::slice::from_ref(&key),
+            "operation-one",
+        )
+        .expect("claim");
+        let mut records = Vec::new();
+
+        let (changed, exited) =
+            sync_managed_agent_processes(&mut records, &mut runtimes, "desktop");
+
+        assert!(!changed);
+        assert!(exited.is_empty());
+        assert!(runtimes.contains_key(&key));
+        let mut taken = false;
+        for _ in 0..100 {
+            if take_exited_claimed_managed_agent_runtime(&mut runtimes, &key, "operation-one")
+                .expect("exact take")
+                .is_some()
+            {
+                taken = true;
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+        assert!(taken, "claimed exit should remain available to its owner");
+    }
 }

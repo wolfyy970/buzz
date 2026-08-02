@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use tauri::AppHandle;
 
 use crate::{
-    managed_agents::{ManagedAgentPairRuntime, ManagedAgentRecord, ManagedAgentRuntimeKey},
+    managed_agents::{
+        normal_runtime_start_disposition, ManagedAgentPairRuntime, ManagedAgentRecord,
+        ManagedAgentRuntimeKey, NormalRuntimeStartDisposition,
+    },
     util::now_iso,
 };
 
@@ -33,13 +36,9 @@ pub fn start_managed_agent_process(
     };
     let key = ManagedAgentRuntimeKey::new(record.pubkey.clone(), &relay_url)?;
     if let Some(runtime) = runtimes.get_mut(&key) {
-        if runtime
-            .child
-            .try_wait()
-            .map_err(|error| format!("failed to inspect running process: {error}"))?
-            .is_none()
-        {
-            return Ok(());
+        match normal_runtime_start_disposition(runtime)? {
+            NormalRuntimeStartDisposition::AlreadyRunning => return Ok(()),
+            NormalRuntimeStartDisposition::ReplaceExited => {}
         }
 
         runtimes.remove(&key);

@@ -3,13 +3,14 @@ use std::sync::atomic::Ordering;
 use tauri::{AppHandle, Emitter, Manager};
 
 use super::{
-    agent_readiness, append_log_marker, current_instance_id, find_managed_agent_mut,
-    load_global_agent_config, load_managed_agents, load_personas, managed_agent_runtime_log_path,
-    process_is_running, record_agent_command, resolve_effective_agent_env, save_managed_agents,
-    spawn_agent_child, terminate_process, terminate_untracked_pair_runtime,
-    write_agent_runtime_receipt, AgentReadiness, BackendKind, ManagedAgentPairRuntime,
-    ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle, ManagedAgentRuntimeReceipt,
-    ManagedAgentRuntimeStatus,
+    agent_readiness, append_log_marker, current_instance_id,
+    ensure_managed_agent_runtime_pairs_unclaimed, find_managed_agent_mut, load_global_agent_config,
+    load_managed_agents, load_personas, managed_agent_runtime_log_path,
+    normal_runtime_start_disposition, process_is_running, record_agent_command,
+    resolve_effective_agent_env, save_managed_agents, spawn_agent_child, terminate_process,
+    terminate_untracked_pair_runtime, write_agent_runtime_receipt, AgentReadiness, BackendKind,
+    ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
+    ManagedAgentRuntimeReceipt, ManagedAgentRuntimeStatus, NormalRuntimeStartDisposition,
 };
 use crate::app_state::AppState;
 
@@ -162,9 +163,14 @@ pub fn list_managed_agent_runtimes(
         .map_err(|e| e.to_string())?;
     let exited_keys: Vec<_> = runtimes
         .iter_mut()
-        .filter_map(|(key, runtime)| match runtime.child.try_wait() {
-            Ok(Some(_)) | Err(_) => Some(key.clone()),
-            Ok(None) => None,
+        .filter_map(|(key, runtime)| {
+            if runtime.update_claim.is_some() {
+                return None;
+            }
+            match runtime.child.try_wait() {
+                Ok(Some(_)) | Err(_) => Some(key.clone()),
+                Ok(None) => None,
+            }
         })
         .collect();
     let records_changed = !exited_keys.is_empty();
@@ -268,12 +274,14 @@ fn start_pair(
         .managed_agent_processes
         .lock()
         .map_err(|e| e.to_string())?;
-    if runtimes
-        .get_mut(&key)
-        .is_some_and(|runtime| runtime.child.try_wait().ok().flatten().is_none())
-    {
-        let status = status_for(&app, record, &key, runtimes.get(&key), None);
-        return Ok(status);
+    if let Some(runtime) = runtimes.get_mut(&key) {
+        match normal_runtime_start_disposition(runtime)? {
+            NormalRuntimeStartDisposition::AlreadyRunning => {
+                let status = status_for(&app, record, &key, runtimes.get(&key), None);
+                return Ok(status);
+            }
+            NormalRuntimeStartDisposition::ReplaceExited => {}
+        }
     }
     runtimes.remove(&key);
     terminate_untracked_pair_runtime(&app, &key)?;
@@ -331,6 +339,7 @@ pub fn stop_managed_agent_runtime(
         .managed_agent_processes
         .lock()
         .map_err(|e| e.to_string())?;
+    ensure_managed_agent_runtime_pairs_unclaimed(&runtimes, std::slice::from_ref(&key))?;
     if let Some(mut runtime) = runtimes.remove(&key) {
         let stop_result = if process_is_running(runtime.child.id()) {
             terminate_process(runtime.child.id())
