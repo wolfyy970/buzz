@@ -90,6 +90,12 @@ pub(super) async fn update_persona_with<R: Send + 'static>(
                 crate::managed_agents::validate_user_env_keys(&env_vars)?;
                 persona.env_vars = env_vars;
             }
+            if let Some(tool_requirements) = input.tool_requirements {
+                crate::managed_agents::project_connections::validate_tool_requirements(
+                    &tool_requirements,
+                )?;
+                persona.tool_requirements = tool_requirements;
+            }
             apply_persona_behavior(persona, input.behavior)?;
             persona.updated_at = now_iso();
 

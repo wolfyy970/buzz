@@ -10,7 +10,7 @@ use nostr::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    resolve_mint_behavioral_defaults, AgentDefinition, ManagedAgentRecord,
+    resolve_mint_behavioral_defaults, AgentDefinition, AgentToolRequirement, ManagedAgentRecord,
     PersonaSnapshotHistoryEntry, RespondTo, DEFAULT_AGENT_PARALLELISM,
 };
 use crate::app_state::AppState;
@@ -51,6 +51,10 @@ pub struct PersonaEventContent {
     pub respond_to_allowlist: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parallelism: Option<u32>,
+    /// Portable tool capabilities required by this template. Concrete
+    /// connections and credentials are local Project configuration.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_requirements: Vec<AgentToolRequirement>,
 }
 
 /// Derive the d-tag (persona slug) from a `AgentDefinition`.
@@ -200,6 +204,7 @@ pub fn persona_from_event(event: &nostr::Event) -> Result<AgentDefinition, Strin
         source_team_persona_slug: Some(d_tag),
         catalog_source: None,
         env_vars: BTreeMap::new(),
+        tool_requirements: content.tool_requirements,
         respond_to: content.respond_to,
         respond_to_allowlist: content.respond_to_allowlist,
         parallelism: content.parallelism,
@@ -418,6 +423,7 @@ pub fn persona_event_content(record: &AgentDefinition) -> PersonaEventContent {
         respond_to: record.respond_to.clone(),
         respond_to_allowlist: record.respond_to_allowlist.clone(),
         parallelism: record.parallelism,
+        tool_requirements: record.tool_requirements.clone(),
     }
 }
 
@@ -447,6 +453,7 @@ pub struct PersonaSnapshot {
     pub respond_to: RespondTo,
     pub respond_to_allowlist: Vec<String>,
     pub parallelism: u32,
+    pub tool_requirements: Vec<AgentToolRequirement>,
 }
 
 /// Build the pinned snapshot for an agent created from `persona`.
@@ -465,6 +472,7 @@ pub fn persona_snapshot(persona: &AgentDefinition) -> Result<PersonaSnapshot, St
         respond_to: behavior.respond_to,
         respond_to_allowlist: behavior.respond_to_allowlist,
         parallelism: behavior.parallelism.unwrap_or(DEFAULT_AGENT_PARALLELISM),
+        tool_requirements: persona.tool_requirements.clone(),
     })
 }
 
@@ -478,6 +486,7 @@ fn install_persona_snapshot(record: &mut ManagedAgentRecord, snapshot: PersonaSn
     record.respond_to = snapshot.respond_to;
     record.respond_to_allowlist = snapshot.respond_to_allowlist;
     record.parallelism = snapshot.parallelism;
+    record.pinned_tool_requirements = snapshot.tool_requirements;
 }
 
 fn current_persona_snapshot(record: &ManagedAgentRecord) -> PersonaSnapshotHistoryEntry {
@@ -491,6 +500,7 @@ fn current_persona_snapshot(record: &ManagedAgentRecord) -> PersonaSnapshotHisto
         respond_to: record.respond_to,
         respond_to_allowlist: record.respond_to_allowlist.clone(),
         parallelism: record.parallelism,
+        tool_requirements: record.pinned_tool_requirements.clone(),
     }
 }
 
@@ -576,7 +586,8 @@ pub fn backfill_persona_snapshot(
         && record.pinned_persona_env_vars.as_ref() == Some(&persona.env_vars)
         && record.respond_to == snapshot.respond_to
         && record.respond_to_allowlist == snapshot.respond_to_allowlist
-        && record.parallelism == snapshot.parallelism;
+        && record.parallelism == snapshot.parallelism
+        && record.pinned_tool_requirements == snapshot.tool_requirements;
     if pinned_matches_head {
         record.persona_source_version = Some(snapshot.source_version);
         changed = true;

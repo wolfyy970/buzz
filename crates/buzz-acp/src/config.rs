@@ -131,13 +131,16 @@ pub fn legacy_mcp_server_name(command: &str) -> String {
         .to_string()
 }
 
-fn read_mcp_config(path: &std::path::Path) -> Result<Vec<u8>, ConfigError> {
+fn read_mcp_config(
+    path: &std::path::Path,
+    delete_after_read: bool,
+) -> Result<Vec<u8>, ConfigError> {
     let mut options = std::fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.custom_flags(nix::libc::O_NONBLOCK);
+        options.custom_flags(nix::libc::O_NONBLOCK | nix::libc::O_NOFOLLOW);
     }
     let file = options.open(path).map_err(|error| {
         ConfigError::ConfigFile(format!(
@@ -173,6 +176,14 @@ fn read_mcp_config(path: &std::path::Path) -> Result<Vec<u8>, ConfigError> {
             MCP_CONFIG_MAX_BYTES
         )));
     }
+    if delete_after_read {
+        std::fs::remove_file(path).map_err(|error| {
+            ConfigError::ConfigFile(format!(
+                "failed to remove ephemeral MCP config {} after reading: {error}",
+                path.display()
+            ))
+        })?;
+    }
     Ok(content)
 }
 
@@ -194,8 +205,9 @@ fn valid_mcp_env_name(name: &str) -> bool {
 fn load_mcp_config(
     path: &std::path::Path,
     legacy_mcp_command: &str,
+    delete_after_read: bool,
 ) -> Result<Vec<ConfiguredMcpServer>, ConfigError> {
-    let content = read_mcp_config(path)?;
+    let content = read_mcp_config(path, delete_after_read)?;
     let document: McpConfigDocument = serde_json::from_slice(&content).map_err(|error| {
         ConfigError::ConfigFile(format!("invalid MCP config {}: {error}", path.display()))
     })?;
@@ -509,6 +521,16 @@ pub struct CliArgs {
     /// Path to a versioned JSON document defining additional local MCP servers.
     #[arg(long, env = "BUZZ_ACP_MCP_CONFIG")]
     pub mcp_config: Option<PathBuf>,
+
+    /// Remove the structured MCP configuration immediately after reading it.
+    /// Used by Buzz Desktop for generated credential-bearing launch files.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_MCP_CONFIG_DELETE_AFTER_READ",
+        default_value_t = false,
+        hide = true
+    )]
+    pub mcp_config_delete_after_read: bool,
 
     /// Idle timeout: max seconds of silence before killing a turn.
     /// Resets on any agent stdout activity.
@@ -1178,7 +1200,9 @@ impl Config {
 
         let agent_args = normalize_agent_args(&agent_command, args.agent_args);
         let configured_mcp_servers = match args.mcp_config.as_deref() {
-            Some(path) => load_mcp_config(path, &args.mcp_command)?,
+            Some(path) => {
+                load_mcp_config(path, &args.mcp_command, args.mcp_config_delete_after_read)?
+            }
             None => Vec::new(),
         };
 
@@ -3367,9 +3391,24 @@ channels = "ALL"
         let path = std::env::temp_dir().join(format!("buzz-acp-mcp-config-dir-{}", Uuid::new_v4()));
         std::fs::create_dir(&path).expect("create temporary MCP config directory");
 
-        let error = read_mcp_config(&path).expect_err("directories must not be read as MCP config");
+        let error =
+            read_mcp_config(&path, false).expect_err("directories must not be read as MCP config");
         let _ = std::fs::remove_dir(&path);
         assert!(error.to_string().contains("must be a regular file"));
+    }
+
+    #[test]
+    fn ephemeral_mcp_config_is_removed_immediately_after_reading() {
+        let file = TempMcpConfig::write(&document_json(vec![server_json("analytics")]));
+
+        let content =
+            read_mcp_config(&file.path, true).expect("ephemeral MCP config should be readable");
+
+        assert!(!file.path.exists());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&content).unwrap()["version"],
+            MCP_CONFIG_VERSION
+        );
     }
 
     #[test]

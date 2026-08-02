@@ -12,7 +12,10 @@ import {
 import type { UpdatePersonaInput } from "@/shared/api/types";
 
 export type ProfileAgentTemplateUpdateController = {
-  apply: (selectedPubkeys: string[]) => Promise<void>;
+  apply: (
+    selectedPubkeys: string[],
+    connectionBindingsByPubkey: Record<string, Record<string, string>>,
+  ) => Promise<void>;
   error: string | null;
   isPending: boolean;
   onOpenChange: (open: boolean) => void;
@@ -54,7 +57,10 @@ export function useProfileAgentTemplateUpdate({
   );
 
   const apply = React.useCallback(
-    async (selectedPubkeys: string[]) => {
+    async (
+      selectedPubkeys: string[],
+      connectionBindingsByPubkey: Record<string, Record<string, string>>,
+    ) => {
       if (!preview || isPending) return;
       setError(null);
       setIsPending(true);
@@ -63,6 +69,7 @@ export function useProfileAgentTemplateUpdate({
           personaId: preview.personaId,
           expectedVersion: preview.targetVersion,
           selectedPubkeys,
+          connectionBindingsByPubkey,
         });
         setResult(nextResult);
         void onAgentsUpdated();
@@ -109,8 +116,8 @@ export function UserProfileAgentTemplateUpdateDialog({
     <AgentTemplateUpdateDialog
       error={controller.error}
       isPending={controller.isPending}
-      onApply={(selectedPubkeys) => {
-        void controller.apply(selectedPubkeys);
+      onApply={(selectedPubkeys, connectionBindingsByPubkey) => {
+        void controller.apply(selectedPubkeys, connectionBindingsByPubkey);
       }}
       onOpenChange={controller.onOpenChange}
       open={controller.preview !== null}

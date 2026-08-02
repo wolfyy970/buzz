@@ -64,6 +64,7 @@ import {
 import {
   resolveCreateIntent,
   type AgentCreateIntent,
+  type AgentLaunchContext,
 } from "./agentCreateIntent";
 import { resolveManagedAgentAvatarUrl } from "./managedAgentAvatar";
 import {
@@ -192,6 +193,7 @@ export function usePersonaActions() {
     input: CreatePersonaInput | UpdatePersonaInput,
     intent?: AgentCreateIntent,
     backendIntent?: BackendIntent | null,
+    launchContext?: AgentLaunchContext,
     targetChannel?: Pick<Channel, "id" | "name"> | null,
     options?: { publishCatalogUpdates?: boolean },
   ): Promise<boolean> {
@@ -272,6 +274,7 @@ export function usePersonaActions() {
           runtime,
           undefined,
           startIntent ?? undefined,
+          launchContext,
         );
 
         try {
@@ -314,7 +317,10 @@ export function usePersonaActions() {
     }
   }
 
-  async function handleApplyTemplateUpdate(selectedPubkeys: string[]) {
+  async function handleApplyTemplateUpdate(
+    selectedPubkeys: string[],
+    connectionBindingsByPubkey: Record<string, Record<string, string>>,
+  ) {
     const preview = templateUpdatePreview;
     if (!preview || isTemplateUpdatePending) return;
     setTemplateUpdateError(null);
@@ -324,6 +330,7 @@ export function usePersonaActions() {
         personaId: preview.personaId,
         expectedVersion: preview.targetVersion,
         selectedPubkeys,
+        connectionBindingsByPubkey,
       });
       setTemplateUpdateResult(result);
       await queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey });

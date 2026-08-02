@@ -2,6 +2,7 @@ import type { ReactNode } from "react";
 
 import type {
   AcpRuntimeCatalogEntry,
+  AgentToolRequirement,
   CreatePersonaInput,
   ManagedAgent,
   UpdatePersonaInput,
@@ -30,8 +31,17 @@ export type AgentDefinitionDialogProps = {
   publishCatalogUpdatesOnSave?: boolean;
   /** Managed instances currently linked to the edited template. */
   affectedAgents?: ManagedAgent[];
-  /** Rendered below the form fields in create mode only ("Where to run"). */
-  createRunSection?: ReactNode;
+  /** Rendered below the form fields in create mode only. */
+  createRunSection?:
+    | ReactNode
+    | ((toolRequirements: AgentToolRequirement[]) => ReactNode);
   /** Extra create-mode submit gate (e.g. incomplete provider config). */
-  createSubmitBlocked?: boolean;
+  createSubmitBlocked?:
+    | boolean
+    | ((toolRequirements: AgentToolRequirement[]) => boolean);
+  /** User-facing recovery for the extra create-mode submit gate. */
+  createSubmitBlockReason?:
+    | string
+    | null
+    | ((toolRequirements: AgentToolRequirement[]) => string | null);
 };

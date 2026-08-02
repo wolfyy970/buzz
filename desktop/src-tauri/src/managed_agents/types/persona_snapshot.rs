@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use super::RespondTo;
+use super::{AgentToolRequirement, RespondTo};
 
 /// One prior, locally pinned persona revision for a managed-agent instance.
 ///
@@ -31,4 +31,8 @@ pub struct PersonaSnapshotHistoryEntry {
     pub respond_to_allowlist: Vec<String>,
     #[serde(default = "super::default_agent_parallelism")]
     pub parallelism: u32,
+    /// Portable requirements pinned with this template revision. Connection
+    /// bindings remain instance-owned and are not rollback material here.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_requirements: Vec<AgentToolRequirement>,
 }

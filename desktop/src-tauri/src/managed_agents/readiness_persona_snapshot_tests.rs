@@ -58,6 +58,9 @@ fn record() -> ManagedAgentRecord {
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
         relay_mesh: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 

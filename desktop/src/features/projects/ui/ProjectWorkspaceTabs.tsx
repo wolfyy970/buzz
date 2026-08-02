@@ -17,6 +17,8 @@ import type {
   ProjectRepoDiff,
   ProjectRepoSnapshot,
 } from "@/features/projects/hooks";
+import { useCommunities } from "@/features/communities/useCommunities";
+import { useIdentityQuery } from "@/shared/api/hooks";
 import {
   commitAuthorPubkeysFromPullRequests,
   type ViewerGitIdentity,
@@ -32,6 +34,7 @@ import { ActivityPanel, ContributorsPanel } from "./ProjectDetailFeedPanels";
 import { ProjectIssuesPanel } from "./ProjectIssuesPanel";
 import type { OpenMergeRecoveryTerminal } from "./MergePullRequestButton";
 import { ProjectOverviewPanel } from "./ProjectOverviewPanel";
+import { ProjectConnectionsPanel } from "./ProjectConnectionsPanel";
 import {
   PullRequestDetailHeader,
   PullRequestMetaRail,
@@ -180,6 +183,19 @@ export function WorkspaceTabs({
   terminalTitle?: string;
   viewerGitIdentity?: ViewerGitIdentity | null;
 }) {
+  const { activeCommunity } = useCommunities();
+  const identityQuery = useIdentityQuery();
+  const projectScope =
+    activeCommunity?.relayUrl &&
+    identityQuery.data?.pubkey &&
+    project.projectChannelId
+      ? {
+          relayUrl: activeCommunity.relayUrl,
+          operatorPubkey: identityQuery.data.pubkey,
+          repoAddress: project.repoAddress,
+          channelId: project.projectChannelId,
+        }
+      : null;
   const localCheckoutSnapshot = localSnapshot?.snapshot ?? null;
   const displayedSnapshot =
     repoSource === "local" ? localCheckoutSnapshot : snapshot;
@@ -488,6 +504,19 @@ export function WorkspaceTabs({
           profiles={profiles}
           repoContributors={displayedContributors}
         />
+      </TabsContent>
+      <TabsContent className="m-0" value="connections">
+        {projectScope ? (
+          <ProjectConnectionsPanel
+            project={project}
+            projectScope={projectScope}
+          />
+        ) : (
+          <div className={PROJECT_DETAIL_PANEL_MESSAGE_CLASS}>
+            Couldn't identify this Project's connection scope. Reconnect to the
+            community and try again.
+          </div>
+        )}
       </TabsContent>
       {createPullRequestAction && createPullRequestOpen ? (
         <CreatePullRequestDialog

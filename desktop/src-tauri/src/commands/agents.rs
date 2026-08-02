@@ -771,6 +771,10 @@ pub async fn create_managed_agent(
         let snapshot_model = persona_snapshot.as_ref().and_then(|s| s.model.clone());
         let snapshot_provider = persona_snapshot.as_ref().and_then(|s| s.provider.clone());
         let snapshot_runtime = persona_snapshot.as_ref().and_then(|s| s.runtime.clone());
+        let pinned_tool_requirements = persona_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.tool_requirements.clone())
+            .unwrap_or_default();
         let snapshot_source_version = persona_snapshot.as_ref().map(|s| s.source_version.clone());
         let pinned_persona_env_vars = persona_snapshot.as_ref().map(|s| s.env_vars.clone());
         let effective_provider = snapshot_provider
@@ -793,6 +797,11 @@ pub async fn create_managed_agent(
             input.parallelism,
             linked_persona.as_ref(),
         )?;
+        let project_scope = input
+            .project_scope
+            .as_ref()
+            .map(crate::managed_agents::project_connections::canonical_project_scope)
+            .transpose()?;
 
         let record = crate::managed_agents::ManagedAgentRecord {
             pubkey: pubkey.clone(),
@@ -835,6 +844,9 @@ pub async fn create_managed_agent(
             persona_source_version: snapshot_source_version,
             pinned_persona_env_vars,
             previous_persona_snapshots: Vec::new(),
+            project_scope,
+            pinned_tool_requirements,
+            connection_bindings: input.connection_bindings.clone(),
             // Provider agents are managed externally — force false.
             start_on_app_launch: if input.backend != BackendKind::Local {
                 false
@@ -882,6 +894,9 @@ pub async fn create_managed_agent(
             },
         };
 
+        crate::managed_agents::project_connections::validate_agent_project_connections(
+            &app, &record,
+        )?;
         records.push(record);
 
         save_managed_agents(&app, &records)?;

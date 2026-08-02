@@ -28,6 +28,7 @@ fn definition(
         parallelism: None,
         created_at: "".to_string(),
         updated_at: "".to_string(),
+        tool_requirements: Vec::new(),
     }
 }
 
@@ -94,6 +95,9 @@ fn record(
         definition_respond_to: None,
         definition_respond_to_allowlist: vec![],
         definition_parallelism: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 

@@ -183,6 +183,9 @@ fn fixture(
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
         relay_mesh: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 
@@ -306,6 +309,7 @@ fn persona_with_provider(
         parallelism: None,
         created_at: "2026-06-09T00:00:00Z".to_string(),
         updated_at: "2026-06-09T00:00:00Z".to_string(),
+        tool_requirements: Vec::new(),
     }
 }
 
@@ -1074,6 +1078,8 @@ fn make_pair_runtime_placeholder() -> crate::managed_agents::ManagedAgentPairRun
         start_nonce: "test-nonce".to_string(),
         #[cfg(windows)]
         job: None,
+        connection_config_path: None,
+        connection_generation_hash: 0,
     };
     crate::managed_agents::ManagedAgentPairRuntime::starting(process)
 }

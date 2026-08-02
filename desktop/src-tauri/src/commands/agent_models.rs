@@ -5,8 +5,6 @@ use serde::Deserialize;
 use tauri::{AppHandle, State};
 
 use super::agent_model_process::run_agent_models_command;
-// The map-only lookup is reached solely from the base-URL helpers that exist for
-// their unit tests; discovery itself always goes through the process-env variant.
 #[cfg(test)]
 use super::agent_models_env::env_value;
 use super::agent_models_env::{
@@ -29,9 +27,6 @@ use crate::{
 };
 
 /// Query available models from an agent via `buzz-acp models --json`.
-///
-/// Spawns a short-lived subprocess (no relay connection needed). The subprocess
-/// starts the agent, queries its model catalog, and exits. ~2-5s total.
 #[tauri::command]
 pub async fn get_agent_models(
     pubkey: String,
@@ -71,10 +66,7 @@ pub async fn get_agent_models(
         let personas = load_personas(&app).unwrap_or_default();
         let global = load_global_agent_config(&app).unwrap_or_default();
 
-        // Single pure helper — descriptor + authoritative model/provider
-        // resolver, packaged so the linked-agent regression test binds the
-        // exact values this command consumes. Returns Err on dangling harness
-        // id, propagating it to the caller.
+        // Resolve the descriptor and authoritative model/provider together.
         let discovery = agent_model_discovery_config(record, &personas, &global)
             .map_err(|e| model_discovery_error(&pubkey, &e))?;
 
@@ -83,7 +75,7 @@ pub async fn get_agent_models(
             .unwrap_or_else(|| discovery.command.clone());
 
         (resolved, resolved_agent, discovery)
-    }; // store lock released — subprocess runs without holding the lock
+    };
 
     let AgentModelDiscoveryConfig {
         args: agent_args,
@@ -95,8 +87,7 @@ pub async fn get_agent_models(
     } = discovery;
 
     let merged_env = discovery_env_with_baked_floor(merged_env);
-    // Resolve against the baked/process env when the record saved no provider,
-    // so a build-provided provider still gets live discovery.
+    // Include a build-provided provider when the record has none.
     let effective_provider =
         effective_discovery_provider(saved_provider.as_deref(), provider_env_var, &merged_env);
     if let Some(models) = discover_openrouter_models(
@@ -153,11 +144,7 @@ pub async fn get_agent_models(
     .await
 }
 
-/// Error copy for a failed harness resolution during model discovery.
-///
-/// Routes through `user_facing_harness_error` so a dangling harness id renders
-/// as a sentence, never as the raw `DANGLING_HARNESS_ID:` sentinel — the same
-/// contract spawn and summary rows honor.
+/// Render harness resolution failures without exposing internal sentinels.
 fn model_discovery_error(pubkey: &str, error: &str) -> String {
     format!(
         "cannot discover models for {pubkey}: {}",
@@ -170,7 +157,6 @@ mod discovery_config;
 use discovery_config::{
     agent_model_discovery_config, draft_agent_model_discovery_env, AgentModelDiscoveryConfig,
 };
-
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiscoverAgentModelsInput {
@@ -890,6 +876,15 @@ pub async fn update_managed_agent(
             crate::managed_agents::validate_user_env_keys(&env_vars)?;
             record.env_vars = env_vars;
         }
+        if let Some(project_scope) = input.project_scope {
+            record.project_scope = project_scope
+                .as_ref()
+                .map(crate::managed_agents::project_connections::canonical_project_scope)
+                .transpose()?;
+        }
+        if let Some(connection_bindings) = input.connection_bindings {
+            record.connection_bindings = connection_bindings;
+        }
 
         // Native provider/model fields are authoritative. Keep the typed marker
         // derived for new records while retaining legacy typed records for
@@ -929,6 +924,9 @@ pub async fn update_managed_agent(
             record.respond_to_allowlist = prospective_allowlist;
         }
 
+        crate::managed_agents::project_connections::validate_agent_project_connections(
+            &app, record,
+        )?;
         record.updated_at = now_iso();
 
         save_managed_agents(&app, &records)?;

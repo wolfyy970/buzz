@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 use serde::Deserialize;
 
 use super::{
-    default_start_on_app_launch, validate_respond_to_allowlist, AgentDefinition, BackendKind,
-    CatalogSource, RelayMeshConfig, RespondTo,
+    default_start_on_app_launch, validate_respond_to_allowlist, AgentDefinition, AgentProjectScope,
+    AgentToolRequirement, BackendKind, CatalogSource, RelayMeshConfig, RespondTo,
 };
 
 /// The NIP-AP behavioral group as one grouped request field.
@@ -88,6 +88,10 @@ pub struct CreatePersonaRequest {
     /// Environment variables for agents created from this persona.
     #[serde(default)]
     pub env_vars: BTreeMap<String, String>,
+    /// Portable tool requirements. Concrete Project connections are selected
+    /// only when an instance is launched.
+    #[serde(default)]
+    pub tool_requirements: Vec<AgentToolRequirement>,
     /// NIP-AP behavioral group. Absent = behavior group stays unset.
     #[serde(default)]
     pub behavior: Option<PersonaBehaviorRequest>,
@@ -120,6 +124,10 @@ pub struct UpdatePersonaRequest {
     /// stored credentials when an unrelated field is edited.
     #[serde(default)]
     pub env_vars: Option<BTreeMap<String, String>>,
+    /// Absent means the caller did not edit Tools. Present replaces the full
+    /// requirement set, including an empty list to clear it.
+    #[serde(default)]
+    pub tool_requirements: Option<Vec<AgentToolRequirement>>,
     /// NIP-AP behavioral group. Same absent-vs-present contract as `env_vars`:
     /// absent = don't touch the stored behavior group (legacy callers don't send it),
     /// present = validate and replace the fields as a unit.
@@ -170,6 +178,12 @@ pub struct CreateManagedAgentRequest {
     /// Environment variables for this agent. Layered on top of persona env.
     #[serde(default)]
     pub env_vars: BTreeMap<String, String>,
+    /// Canonical Project and discussion-channel boundary for this instance.
+    #[serde(default)]
+    pub project_scope: Option<AgentProjectScope>,
+    /// Requirement id to Project connection id.
+    #[serde(default)]
+    pub connection_bindings: BTreeMap<String, String>,
     #[serde(default)]
     pub spawn_after_create: bool,
     #[serde(default = "default_start_on_app_launch")]
@@ -211,6 +225,13 @@ pub struct UpdateManagedAgentRequest {
     /// Absent = don't touch. Present = replace the env_vars map entirely.
     #[serde(default)]
     pub env_vars: Option<BTreeMap<String, String>>,
+    /// Absent means no change. Null removes Project assignment, which is only
+    /// allowed when the agent has no tool requirements or bindings.
+    #[serde(default, deserialize_with = "crate::util::double_option")]
+    pub project_scope: Option<Option<AgentProjectScope>>,
+    /// Absent means no change. Present replaces the complete binding map.
+    #[serde(default)]
+    pub connection_bindings: Option<BTreeMap<String, String>>,
     #[serde(default)]
     pub parallelism: Option<u32>,
     /// Accepted for wire compatibility; not applied to the stored record.
@@ -289,6 +310,7 @@ mod tests {
             parallelism: None,
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
+            tool_requirements: Vec::new(),
         }
     }
 

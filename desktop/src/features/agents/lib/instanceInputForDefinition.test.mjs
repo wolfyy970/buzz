@@ -181,6 +181,27 @@ test("no backend intent is byte-identical to the pre-intent mapping", async () =
   });
 });
 
+test("launch context carries the durable Project scope and tool bindings", async () => {
+  const launchContext = {
+    projectScope: {
+      relayUrl: "wss://buzz.example",
+      operatorPubkey: "b".repeat(64),
+      repoAddress: `30617:${"a".repeat(64)}:buzz`,
+      channelId: "project-discussion",
+    },
+    connectionBindings: { analytics: "ga-connection" },
+  };
+  const input = await buildInstanceInputForDefinition(
+    persona(),
+    gooseRuntime,
+    undefined,
+    undefined,
+    launchContext,
+  );
+  assert.deepEqual(input.projectScope, launchContext.projectScope);
+  assert.deepEqual(input.connectionBindings, launchContext.connectionBindings);
+});
+
 test("Buzz shared compute definition carries native provider and auto model", async () => {
   const input = await buildInstanceInputForDefinition(
     persona({

@@ -153,6 +153,33 @@ with a TypeScript lookup table or an id comparison in a component.
    themselves. Never synthesize a run location a surface doesn't have. Don't
    expose `respond-to`, `allowlist`, Nostr, or harness jargon in primary UI
    copy.
+12. **Templates declare tools; Projects own connections.** A template stores
+    only portable `AgentToolRequirement` values. An agent instance binds those
+    stable requirement ids to local Project Connections. Commands, arguments,
+    endpoints, connection ids, and credential references never enter persona
+    or team events. Secret values live only in the system keyring. Product copy
+    uses Tools, Connections, Project, agent template, and agent. MCP is reserved
+    for technical details.
+13. **Tool access is a Project boundary.** Every MCP-enabled agent has one
+    canonical `AgentProjectScope`: relay URL, operator pubkey, NIP-34 repository
+    address, and Project discussion channel. Local desktop Project ids are not
+    persisted. The runtime sets `BUZZ_ACP_CHANNELS` to that discussion channel
+    so Project tools cannot be used from another channel. Remote agents with
+    Project Connections remain unsupported until the provider contract can
+    broker scoped secrets safely.
+14. **Connection and template changes use controlled restarts.** Required
+    unresolved tools block launch. A connection must initialize, return its
+    tool list, and be Ready before it can satisfy a requirement. Editing a
+    connection or applying a template update restarts affected running agents,
+    checks that they become ready, and rolls back the template update if the
+    replacement launch fails. Do not introduce an "apply when idle" state or
+    describe a process restart as reconnecting.
+15. **Template rollout is explicit and impact-aware.** Agents retain their
+    pinned template snapshot until the operator chooses Update agents. The
+    preview shows each affected agent, its own added, changed, and removed tool
+    requirements, and any connection choices that must be resolved. The apply
+    request carries the complete binding map for every selected agent and the
+    backend validates it again under the update transaction.
 
 ## The tests that enforce this
 
@@ -180,6 +207,11 @@ with a TypeScript lookup table or an id comparison in a component.
 - Rust: `runtime_metadata_env_vars` tests pin spawn-time key application.
 - Rust: persona sharing/retention tests pin relay+owner scoping, durable
   enqueue errors, relay rejection/unavailability, and accepted publication.
+- Rust: `managed_agents::project_connections` tests pin Project boundaries,
+  binding validity, connection health, and remote-agent rejection.
+- `ui/agentToolRequirements.test.mjs` and
+  `ui/agentProjectAccessPolicy.test.mjs` pin template requirement validation and
+  launch readiness.
 
 ## Keep this file true
 

@@ -134,6 +134,7 @@ fn definition_from_snapshot(
         source_team_persona_slug: None,
         catalog_source: None,
         env_vars: Default::default(),
+        tool_requirements: member.definition.tool_requirements.clone(),
         respond_to,
         respond_to_allowlist: behavior.respond_to_allowlist,
         parallelism: behavior.parallelism,
@@ -577,6 +578,7 @@ pub async fn confirm_team_snapshot_import(
             pinned_persona_env_vars: Some(pinned_snapshot.env_vars),
             previous_persona_snapshots: Vec::new(),
             env_vars: std::collections::BTreeMap::new(),
+            pinned_tool_requirements: pinned_snapshot.tool_requirements,
             start_on_app_launch: false,
             auto_restart_on_config_change: true,
             runtime_pid: None,
@@ -614,6 +616,8 @@ pub async fn confirm_team_snapshot_import(
             relay_mesh: None,
             runtime: member.definition.runtime.clone(),
             name_pool: member.definition.name_pool.clone(),
+            connection_bindings: std::collections::BTreeMap::new(),
+            project_scope: None,
         };
 
         minted.push(MintedMember {

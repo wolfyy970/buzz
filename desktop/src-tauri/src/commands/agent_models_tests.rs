@@ -406,6 +406,7 @@ fn model_discovery_uses_selected_revision_for_linked_agent() {
         parallelism: None,
         created_at: "".to_string(),
         updated_at: "".to_string(),
+        tool_requirements: Vec::new(),
     };
 
     // agent_model_discovery_config is the single helper get_agent_models

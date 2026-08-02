@@ -392,6 +392,7 @@ export function AgentsView() {
               undefined,
               undefined,
               undefined,
+              undefined,
               options,
             )
           }
@@ -409,8 +410,11 @@ export function AgentsView() {
       <AgentTemplateUpdateDialog
         error={personas.templateUpdateError}
         isPending={personas.isTemplateUpdatePending}
-        onApply={(selectedPubkeys) => {
-          void personas.handleApplyTemplateUpdate(selectedPubkeys);
+        onApply={(selectedPubkeys, connectionBindingsByPubkey) => {
+          void personas.handleApplyTemplateUpdate(
+            selectedPubkeys,
+            connectionBindingsByPubkey,
+          );
         }}
         onOpenChange={(open) => {
           if (!open) personas.closeTemplateUpdateDialog();

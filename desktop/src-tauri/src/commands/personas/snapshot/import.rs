@@ -1,10 +1,4 @@
-//! Import-side helpers for `buzz-agent-snapshot v1`.
-//!
-//! Extracted from `snapshot.rs` to keep that file under the 1000-line gate.
-//! The Tauri commands here (`preview_agent_snapshot_import`,
-//! `confirm_agent_snapshot_import`) are re-exported from `snapshot.rs` and
-//! registered in `lib.rs` through the same `personas::` path as the export
-//! commands.
+//! Import helpers and Tauri commands for `buzz-agent-snapshot v1`.
 
 use nostr::ToBech32;
 use serde::{Deserialize, Serialize};
@@ -46,8 +40,6 @@ pub(super) fn reject_legacy_persona_filename(file_name: &str) -> Result<(), Stri
     Ok(())
 }
 
-// ── Import preview types ──────────────────────────────────────────────────────
-
 /// Materialized preview returned to the UI before any write is committed.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -63,6 +55,8 @@ pub struct AgentSnapshotImportPreview {
     pub runtime: Option<String>,
     /// System prompt, if any.
     pub system_prompt: Option<String>,
+    /// Portable tools the imported template expects.
+    pub tool_requirements: Vec<crate::managed_agents::AgentToolRequirement>,
     /// Effective avatar: data URL if present, otherwise the source URL fallback.
     /// The UI renders this as a single avatar source.
     pub avatar_url: Option<String>,
@@ -417,6 +411,7 @@ pub(crate) fn build_agent_snapshot_import_preview(
         model: snapshot.definition.model.clone(),
         runtime: snapshot.definition.runtime.clone(),
         system_prompt: snapshot.definition.system_prompt.clone(),
+        tool_requirements: snapshot.definition.tool_requirements.clone(),
         // Effective avatar: data URL wins; URL fallback if no data URL.
         avatar_url: snapshot
             .profile
@@ -579,6 +574,7 @@ pub async fn confirm_agent_snapshot_import(
             source_team_persona_slug: None,
             catalog_source: None,
             env_vars: std::collections::BTreeMap::new(),
+            tool_requirements: snapshot.definition.tool_requirements.clone(),
             respond_to: respond_to_wire.clone(),
             respond_to_allowlist: minted.respond_to_allowlist.clone(),
             parallelism: minted_parallelism,
@@ -623,6 +619,7 @@ pub async fn confirm_agent_snapshot_import(
             pinned_persona_env_vars: Some(persona.env_vars.clone()),
             previous_persona_snapshots: Vec::new(),
             env_vars: std::collections::BTreeMap::new(),
+            pinned_tool_requirements: snapshot.definition.tool_requirements.clone(),
             start_on_app_launch: false,
             auto_restart_on_config_change: true,
             runtime_pid: None,
@@ -656,6 +653,8 @@ pub async fn confirm_agent_snapshot_import(
             relay_mesh: None,
             runtime: snapshot.definition.runtime.clone(),
             name_pool: snapshot.definition.name_pool.clone(),
+            connection_bindings: std::collections::BTreeMap::new(),
+            project_scope: None,
         };
 
         records.push(record.clone());

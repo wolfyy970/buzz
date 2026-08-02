@@ -70,7 +70,15 @@ The `content` field is a **plaintext** (unencrypted) JSON object:
   "name_pool": ["<string>", ...],
   "respond_to": "<string | null>",
   "respond_to_allowlist": ["<64-hex pubkey>", ...],
-  "parallelism": "<integer | null>"
+  "parallelism": "<integer | null>",
+  "tool_requirements": [
+    {
+      "id": "<stable template-local id>",
+      "label": "<user-facing name>",
+      "capability": "mcp.tool.<tool-name>",
+      "required": true
+    }
+  ]
 }
 ```
 
@@ -93,6 +101,7 @@ The `content` field is a **plaintext** (unencrypted) JSON object:
 | `respond_to` | string \| null | `null` | **Reserved.** Default respond-to policy for instances spawned from this definition: `"anyone"`, `"owner-only"`, or `"allowlist"`. `null` defers to the client default. |
 | `respond_to_allowlist` | string[] | `[]` | **Reserved.** Allowlisted author pubkeys (64-char lowercase hex) when `respond_to` is `"allowlist"`. Ignored otherwise. |
 | `parallelism` | integer \| null | `null` | **Reserved.** Default max concurrent turns for spawned instances. `null` defers to the client default. |
+| `tool_requirements` | object[] | `[]` | Portable logical tools needed by the definition. `id` is stable within the definition, `label` is user-facing, `capability` identifies the MCP tool, and `required` controls whether an instance may start without a matching connection. |
 
 The behavioral fields (`respond_to`, `respond_to_allowlist`,
 `parallelism`) are definition-level *defaults*: a spawned instance copies them
@@ -110,11 +119,18 @@ survive a local edit-and-republish cycle.
 
 Unknown fields MUST be ignored by readers (forward compatibility).
 
+Tool requirements describe what an agent needs, not how to reach it. A reader
+MUST NOT interpret a requirement as authority to connect to a service. The
+operator binds each requirement to a compatible connection when creating or
+updating an instance.
+
 ### Prohibited: secrets in content
 
-The content body is **public and unencrypted**. It MUST NOT contain secrets (API keys, tokens, credentials, or any sensitive environment variables). In particular, an `env_vars` field MUST NOT appear in the content body.
+The content body is **public and unencrypted**. It MUST NOT contain secrets (API keys, tokens, credentials, or any sensitive environment variables). It also MUST NOT contain connection ids, commands, arguments, endpoints, filesystem paths, credential references, or an `env_vars` field.
 
-Secrets required by agents spawned from a persona MUST be conveyed through a separate encrypted channel — specifically, the [NIP-AE](NIP-AE.md) engram at `mem/persona` (which is NIP-44 encrypted to the agent↔owner conversation key) or through out-of-band injection at spawn time.
+Secrets required by agents spawned from a persona MUST be conveyed separately,
+such as through an encrypted [NIP-AE](NIP-AE.md) engram or local secure storage
+at spawn time. They are never part of a portable persona.
 
 ## Encryption rationale
 
@@ -239,7 +255,12 @@ Kind `30178` is the **shareable projection of a team**: owner-authored, paramete
 
 **The `d` tag is a team id, not a persona slug.** It is either a UUID or a built-in identifier such as `builtin-team:welcome`. The colon is illegal under the persona slug grammar, and rewriting ids to fit would break NIP-33 addressing against the team's own `kind:30176` head — so the relay applies a laxer rule (see below) to `30178` than to `30175`.
 
-**Content carries only sanitized fields.** No environment variables, no `respond_to` allowlist pubkeys, no source or local ids, no filesystem paths, no secrets. Sharing a team makes the team's and every member's instructions community-readable plaintext.
+**Content carries only sanitized fields.** Logical tool requirements may be
+included because they are portable definition data. No connection bindings,
+environment variables, `respond_to` allowlist pubkeys, source or local ids,
+commands, endpoints, filesystem paths, credential references, or secrets are
+allowed. Sharing a team makes the team's and every member's instructions and
+logical tool requirements community-readable plaintext.
 
 ## Relay behavior
 

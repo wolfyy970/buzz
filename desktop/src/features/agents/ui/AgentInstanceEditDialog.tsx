@@ -93,6 +93,7 @@ import {
   runtimeDropdownAction,
   usePendingHarnessSelection,
 } from "./addCustomHarness";
+import { useAgentConnectionBindingsDraft } from "./useAgentConnectionBindingsDraft";
 
 export function AgentInstanceEditDialog({
   agent,
@@ -141,6 +142,11 @@ export function AgentInstanceEditDialog({
   const [isCustomProviderEditing, setIsCustomProviderEditing] =
     React.useState(false);
   const [envVars, setEnvVars] = React.useState<EnvVarsValue>(agent.envVars);
+  const connectionsDraft = useAgentConnectionBindingsDraft({
+    agent,
+    disabled: updateMutation.isPending,
+    open,
+  });
   const personasQuery = usePersonasQuery();
   const linkedPersona = React.useMemo(
     () =>
@@ -607,6 +613,7 @@ export function AgentInstanceEditDialog({
       requiredEnvKeyMissing,
     }) &&
     providerValid &&
+    connectionsDraft.valid &&
     !updateMutation.isPending &&
     !isAvatarUploadPending;
 
@@ -707,6 +714,7 @@ export function AgentInstanceEditDialog({
         envVars: envVarsEqual(submitEnvVars, agent.envVars)
           ? undefined
           : submitEnvVars,
+        connectionBindings: connectionsDraft.update,
         respondTo: respondTo !== agent.respondTo ? respondTo : undefined,
         // The allowlist is preserved across mode toggles in local UI state
         // (so a user can flip away from allowlist and back without losing
@@ -940,8 +948,9 @@ export function AgentInstanceEditDialog({
               onModeChange={setRespondTo}
               variant="persona"
             />
-
             <RunOnSummarySection backend={agent.backend} />
+
+            {connectionsDraft.section}
 
             {/* Provider (runtime) */}
             <div className="space-y-1.5">

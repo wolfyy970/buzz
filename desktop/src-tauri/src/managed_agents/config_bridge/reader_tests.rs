@@ -119,6 +119,9 @@ fn test_record() -> ManagedAgentRecord {
         pinned_persona_env_vars: Default::default(),
         previous_persona_snapshots: Vec::new(),
         provider: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 

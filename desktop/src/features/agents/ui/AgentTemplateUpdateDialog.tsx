@@ -16,11 +16,20 @@ import {
   DialogTitle,
 } from "@/shared/ui/dialog";
 import { cn } from "@/shared/lib/cn";
+import {
+  AgentTemplateToolBindings,
+  AgentTemplateToolChangesSummary,
+  bindingsForToolRequirements,
+  commonAgentToolChanges,
+} from "./AgentTemplateToolUpdateFields";
 
 type AgentTemplateUpdateDialogProps = {
   error: string | null;
   isPending: boolean;
-  onApply: (selectedPubkeys: string[]) => void;
+  onApply: (
+    selectedPubkeys: string[],
+    connectionBindingsByPubkey: Record<string, Record<string, string>>,
+  ) => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
   preview: AgentTemplateUpdatePreview | null;
@@ -41,6 +50,12 @@ export function AgentTemplateUpdateDialog({
   result,
 }: AgentTemplateUpdateDialogProps) {
   const [selected, setSelected] = React.useState<Set<string>>(new Set());
+  const [bindingsByPubkey, setBindingsByPubkey] = React.useState<
+    Record<string, Record<string, string>>
+  >({});
+  const [bindingsValidByPubkey, setBindingsValidByPubkey] = React.useState<
+    Record<string, boolean>
+  >({});
 
   React.useEffect(() => {
     if (!open || !preview) return;
@@ -54,7 +69,27 @@ export function AgentTemplateUpdateDialog({
           .map((agent) => agent.pubkey),
       ),
     );
+    setBindingsByPubkey(
+      Object.fromEntries(
+        preview.agents.map((agent) => [
+          agent.pubkey,
+          bindingsForToolRequirements(
+            agent.connectionBindings,
+            preview.targetToolRequirements,
+          ),
+        ]),
+      ),
+    );
+    setBindingsValidByPubkey({});
   }, [open, preview]);
+  const handleBindingsValidityChange = React.useCallback(
+    (pubkey: string, valid: boolean) => {
+      setBindingsValidByPubkey((current) =>
+        current[pubkey] === valid ? current : { ...current, [pubkey]: valid },
+      );
+    },
+    [],
+  );
 
   if (!preview) return null;
 
@@ -67,6 +102,14 @@ export function AgentTemplateUpdateDialog({
   const rollbackFailed =
     result?.agents.some((agent) => agent.outcome === "rollback_failed") ??
     false;
+  const commonToolChanges = commonAgentToolChanges(changedAgents);
+  const bindingsReady = changedAgents
+    .filter((agent) => selected.has(agent.pubkey))
+    .every(
+      (agent) =>
+        preview.targetToolRequirements.length === 0 ||
+        bindingsValidByPubkey[agent.pubkey] === true,
+    );
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -99,6 +142,10 @@ export function AgentTemplateUpdateDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {!isComplete && commonToolChanges ? (
+          <AgentTemplateToolChangesSummary changes={commonToolChanges} />
+        ) : null}
+
         {isPending ? (
           <div
             aria-live="polite"
@@ -113,7 +160,7 @@ export function AgentTemplateUpdateDialog({
               <div>
                 <p className="text-sm font-medium">Updating agents</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Starting the new configuration and checking each connection.
+                  Starting the updated agents and checking they&apos;re ready.
                   If a check fails, Buzz attempts to restore the previous
                   version.
                 </p>
@@ -128,7 +175,7 @@ export function AgentTemplateUpdateDialog({
               );
               const checked = selected.has(agent.pubkey);
               const isCurrent = agent.currentVersion === preview.targetVersion;
-              const Row = isComplete ? "div" : "label";
+              const Row = "div";
               return (
                 <Row
                   className={cn(
@@ -222,6 +269,39 @@ export function AgentTemplateUpdateDialog({
                         {agent.blockedReason}
                       </p>
                     ) : null}
+                    {!isComplete && !commonToolChanges && !isCurrent ? (
+                      <div className="mt-3">
+                        <AgentTemplateToolChangesSummary
+                          changes={agent.toolChanges}
+                        />
+                      </div>
+                    ) : null}
+                    {!isComplete && checked && agent.eligible && !isCurrent ? (
+                      <AgentTemplateToolBindings
+                        agent={agent}
+                        bindings={bindingsByPubkey[agent.pubkey] ?? {}}
+                        disabled={isPending}
+                        onBindingsChange={(bindings) =>
+                          setBindingsByPubkey((current) => ({
+                            ...current,
+                            [agent.pubkey]: bindings,
+                          }))
+                        }
+                        onValidityChange={(valid) =>
+                          handleBindingsValidityChange(agent.pubkey, valid)
+                        }
+                        requirements={preview.targetToolRequirements}
+                      />
+                    ) : null}
+                    {!isComplete &&
+                    bindingsValidByPubkey[agent.pubkey] !== true &&
+                    agent.toolBindingIssues.length > 0 ? (
+                      <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-destructive">
+                        {agent.toolBindingIssues.map((issue) => (
+                          <li key={issue}>{issue}</li>
+                        ))}
+                      </ul>
+                    ) : null}
                   </div>
                 </Row>
               );
@@ -232,6 +312,11 @@ export function AgentTemplateUpdateDialog({
         {error ? (
           <p className="text-sm text-destructive" role="alert">
             {error}
+          </p>
+        ) : null}
+        {!isComplete && selectedCount > 0 && !bindingsReady ? (
+          <p className="text-sm text-destructive" role="alert">
+            Choose a ready connection for each required tool before updating.
           </p>
         ) : null}
 
@@ -269,9 +354,12 @@ export function AgentTemplateUpdateDialog({
               <Button
                 data-testid="template-publish-and-update"
                 disabled={
-                  isPending || selectedCount === 0 || changedAgents.length === 0
+                  isPending ||
+                  selectedCount === 0 ||
+                  changedAgents.length === 0 ||
+                  !bindingsReady
                 }
-                onClick={() => onApply([...selected])}
+                onClick={() => onApply([...selected], bindingsByPubkey)}
                 type="button"
               >
                 Update {selectedCount}{" "}

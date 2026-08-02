@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use super::overrides::{divergent_agent_command_override, update_time_agent_command_override};
 use super::{
     apply_agent_command_update, classify_runtime, codex_adapter_availability,
@@ -11,11 +9,11 @@ use super::{
     GOOSE_AVATAR_URL,
 };
 use crate::managed_agents::AcpAvailabilityStatus;
+use std::path::PathBuf;
 
 #[test]
 fn resolves_known_avatar_for_bare_command() {
     let avatar_url = managed_agent_avatar_url("goose").expect("goose avatar should resolve");
-
     assert_eq!(avatar_url, GOOSE_AVATAR_URL);
 }
 
@@ -99,7 +97,6 @@ fn login_shell_lookup_treats_command_as_data() {
     let marker =
         std::env::temp_dir().join(format!("buzz-discovery-marker-{}", uuid::Uuid::new_v4()));
     let payload = format!("doesnotexist; touch {} #", marker.display());
-
     let resolved = find_via_login_shell(&payload);
 
     assert!(
@@ -209,6 +206,7 @@ fn persona_with_runtime(id: &str, runtime: Option<&str>) -> crate::managed_agent
         parallelism: None,
         created_at: "2026-06-09T00:00:00Z".to_string(),
         updated_at: "2026-06-09T00:00:00Z".to_string(),
+        tool_requirements: Vec::new(),
     }
 }
 
@@ -285,13 +283,15 @@ fn record_with(
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
         relay_mesh: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 
 #[test]
 fn record_agent_command_own_runtime_wins_over_persona() {
-    // A record with its own materialized runtime never consults the
-    // persona list — the unified-model resolution.
+    // A materialized runtime never consults the persona list.
     let personas = vec![persona_with_runtime("p1", Some("goose"))];
     let record = record_with(Some("claude"), Some("p1"), None);
     assert_eq!(record_agent_command(&record, &personas), "claude-agent-acp");

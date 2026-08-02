@@ -66,6 +66,9 @@ fn stop_managed_agent_pair(
             .child
             .wait()
             .map_err(|error| format!("failed to wait for agent shutdown: {error}"))?;
+        if let Some(path) = runtime.connection_config_path.take() {
+            super::super::project_connections::remove_runtime_mcp_config(&path);
+        }
         record.last_exit_code = status.code();
         super::super::remove_agent_runtime_receipt(app, key);
         if let Err(error) = append_log_marker(

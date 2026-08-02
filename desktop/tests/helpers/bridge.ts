@@ -1,5 +1,6 @@
 import type { Page } from "@playwright/test";
 import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
+import type { ProjectConnection } from "../../src/shared/api/tauriProjectConnections";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
 
 export const TEST_IDENTITIES = {
@@ -60,6 +61,9 @@ type MockManagedAgentSeed = {
   autoRestartOnConfigChange?: boolean;
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
+  projectScope?: ProjectConnection["projectScope"];
+  toolRequirements?: NonNullable<MockPersonaSeed["toolRequirements"]>;
+  connectionBindings?: Record<string, string>;
 };
 
 type MockSearchProfileSeed = {
@@ -79,6 +83,12 @@ type MockRelayAgentSeed = {
   capabilities?: string[];
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
+  toolRequirements?: Array<{
+    id: string;
+    label: string;
+    capability: string;
+    required: boolean;
+  }>;
   channelNames?: string[];
   channelIds?: string[];
   status?: "online" | "away" | "offline";
@@ -169,6 +179,8 @@ type MockBridgeOptions = {
   pocketVoiceImportResult?: "success" | "cancel" | "invalid";
   /** Advertised HEAD for the first mock project without adding that branch. */
   projectHeadBranch?: string;
+  /** Optional discussion channel attached to the first mock project. */
+  projectChannelId?: string;
   /** Relay NIP-11 identity used to sign authoritative repository state. */
   relaySelf?: string | null;
   /** Native-like huddle state seeded from authoritative role-bearing membership. */
@@ -230,6 +242,7 @@ type MockBridgeOptions = {
     mcp?: MockCommandAvailability;
   };
   managedAgents?: MockManagedAgentSeed[];
+  projectConnections?: ProjectConnection[];
   /** Result returned by the mocked `add_agent_to_huddle` command. */
   addAgentToHuddleResult?: {
     ephemeral_added: boolean;

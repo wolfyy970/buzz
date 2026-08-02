@@ -59,6 +59,9 @@ fn record() -> ManagedAgentRecord {
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
         relay_mesh: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 
@@ -84,6 +87,7 @@ fn persona(id: &str, runtime: Option<&str>, prompt: &str) -> AgentDefinition {
         parallelism: None,
         created_at: "now".into(),
         updated_at: "now".into(),
+        tool_requirements: Vec::new(),
     }
 }
 

@@ -12,7 +12,10 @@ import {
 } from "../lib/agentAccessWarning";
 import { AgentRunLocationProvider } from "./AgentRunLocationContext";
 import type { BackendIntent } from "../lib/instanceInputForDefinition";
-import type { AgentCreateIntent } from "./agentCreateIntent";
+import type {
+  AgentCreateIntent,
+  AgentLaunchContext,
+} from "./agentCreateIntent";
 import type { EditAgentFocusTarget } from "@/features/agents/openEditAgentEvent";
 import { AgentInstanceEditDialog } from "./AgentInstanceEditDialog";
 import { createPersonaDialogState } from "./personaDialogState";
@@ -26,6 +29,14 @@ import {
   emptyWhereToRunDraft,
   resolveBackendIntent,
 } from "./whereToRunIntent";
+import { useProjectsQuery } from "@/features/projects/hooks";
+import { useCommunities } from "@/features/communities/useCommunities";
+import { useIdentityQuery } from "@/shared/api/hooks";
+import {
+  AgentProjectAccessSection,
+  emptyAgentProjectAccessDraft,
+  type AgentProjectAccessReadiness,
+} from "./AgentProjectAccessSection";
 
 type AgentDialogCreateProps = {
   mode: "definition";
@@ -39,6 +50,7 @@ type AgentDialogCreateProps = {
     input: CreatePersonaInput | UpdatePersonaInput,
     intent: AgentCreateIntent,
     backendIntent: BackendIntent | null,
+    launchContext?: AgentLaunchContext,
   ) => Promise<boolean>;
 };
 
@@ -131,6 +143,27 @@ function AgentCreateDialogRouter({
   onSubmitDefinition,
 }: AgentDialogCreateProps) {
   const [runDraft, setRunDraft] = React.useState(emptyWhereToRunDraft);
+  const [projectAccessDraft, setProjectAccessDraft] = React.useState(
+    emptyAgentProjectAccessDraft,
+  );
+  const [projectAccessReadiness, setProjectAccessReadiness] =
+    React.useState<AgentProjectAccessReadiness>({
+      ready: false,
+      reason: "Choose a Project for this agent.",
+    });
+  const projectsQuery = useProjectsQuery();
+  const { activeCommunity } = useCommunities();
+  const identityQuery = useIdentityQuery();
+  const handleProjectAccessReadinessChange = React.useCallback(
+    (readiness: AgentProjectAccessReadiness) => {
+      setProjectAccessReadiness((current) =>
+        current.ready === readiness.ready && current.reason === readiness.reason
+          ? current
+          : readiness,
+      );
+    },
+    [],
+  );
   const initialValues = React.useMemo(
     () => providedInitialValues ?? createPersonaDialogState().initialValues,
     [providedInitialValues],
@@ -143,24 +176,85 @@ function AgentCreateDialogRouter({
     // because it owns the "Run on" draft.
     <AgentRunLocationProvider runLocation={runLocationForRunOn(runDraft.runOn)}>
       <AgentDefinitionDialog
-        createRunSection={
-          <WhereToRunSection
-            draft={runDraft}
-            isPending={isDefinitionPending}
-            onDraftChange={setRunDraft}
-          />
+        createRunSection={(toolRequirements) => (
+          <>
+            {toolRequirements.length > 0 ? (
+              <AgentProjectAccessSection
+                disabled={isDefinitionPending}
+                draft={projectAccessDraft}
+                onDraftChange={setProjectAccessDraft}
+                onReadinessChange={handleProjectAccessReadinessChange}
+                operatorPubkey={identityQuery.data?.pubkey ?? null}
+                projects={projectsQuery.data ?? []}
+                projectsLoading={projectsQuery.isPending}
+                relayUrl={activeCommunity?.relayUrl ?? null}
+                toolRequirements={toolRequirements}
+              />
+            ) : null}
+            <WhereToRunSection
+              draft={runDraft}
+              isPending={isDefinitionPending}
+              onDraftChange={setRunDraft}
+            />
+            {runDraft.runOn !== "local" && toolRequirements.length > 0 ? (
+              <p className="text-xs text-amber-700 dark:text-amber-300">
+                Project Connections currently run on this computer. Choose This
+                computer to launch an agent with connected tools.
+              </p>
+            ) : null}
+          </>
+        )}
+        createSubmitBlocked={(toolRequirements) =>
+          !canSubmitWhereToRun(runDraft) ||
+          (toolRequirements.length > 0 && !projectAccessReadiness.ready) ||
+          (runDraft.runOn !== "local" && toolRequirements.length > 0)
         }
-        createSubmitBlocked={!canSubmitWhereToRun(runDraft)}
+        createSubmitBlockReason={(toolRequirements) =>
+          !canSubmitWhereToRun(runDraft)
+            ? "Complete the provider setup."
+            : runDraft.runOn !== "local" && toolRequirements.length > 0
+              ? "Choose This computer to launch with Project Connections."
+              : toolRequirements.length > 0
+                ? projectAccessReadiness.reason
+                : null
+        }
         description={copy.description}
         error={definitionError}
         initialValues={initialValues}
         isPending={isDefinitionPending}
         onOpenChange={onOpenChange}
         onSubmit={async (input) => {
+          if ((input.toolRequirements?.length ?? 0) === 0) {
+            const submitted = await onSubmitDefinition(
+              input,
+              "definition_start",
+              resolveBackendIntent(runDraft),
+            );
+            if (submitted) onOpenChange(false);
+            return;
+          }
+          const selectedProject = (projectsQuery.data ?? []).find(
+            (project) => project.id === projectAccessDraft.projectId,
+          );
+          if (
+            !selectedProject?.projectChannelId ||
+            !activeCommunity?.relayUrl ||
+            !identityQuery.data?.pubkey
+          )
+            return;
           const submitted = await onSubmitDefinition(
             input,
             "definition_start",
             resolveBackendIntent(runDraft),
+            {
+              projectScope: {
+                relayUrl: activeCommunity.relayUrl,
+                operatorPubkey: identityQuery.data.pubkey,
+                repoAddress: selectedProject.repoAddress,
+                channelId: selectedProject.projectChannelId,
+              },
+              connectionBindings: projectAccessDraft.connectionBindings,
+            },
           );
           if (submitted) {
             onOpenChange(false);

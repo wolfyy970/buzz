@@ -303,6 +303,7 @@ function publicationToPersona(
     shared: true,
     sourceTeam: null,
     envVars: {},
+    toolRequirements: [],
     respondTo: publication.agent.respondTo,
     respondToAllowlist: [],
     parallelism: publication.agent.parallelism,

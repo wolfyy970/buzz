@@ -52,6 +52,7 @@ fn minimal_record() -> ManagedAgentRecord {
             respond_to: RespondTo::OwnerOnly,
             respond_to_allowlist: Vec::new(),
             parallelism: 10,
+            tool_requirements: Vec::new(),
         }],
         env_vars: {
             let mut m = BTreeMap::new();
@@ -92,6 +93,9 @@ fn minimal_record() -> ManagedAgentRecord {
         definition_respond_to_allowlist: vec!["abc123def".to_string()],
         definition_parallelism: Some(4),
         relay_mesh: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 

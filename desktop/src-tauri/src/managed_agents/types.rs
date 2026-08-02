@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, path::PathBuf, process::Child};
+use std::{collections::BTreeMap, path::PathBuf};
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -77,6 +77,10 @@ pub struct AgentDefinition {
     /// Stored as a BTreeMap for deterministic on-disk ordering.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env_vars: BTreeMap<String, String>,
+    /// Portable tool requirements. Concrete connections and credentials live
+    /// at the Project and agent-binding layers, never in this definition.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tool_requirements: Vec<AgentToolRequirement>,
     /// NIP-AP behavioral defaults, stored in WIRE shape (kebab-case string,
     /// not the `RespondTo` enum) so `persona_event_content` is a verbatim
     /// copy and quad-absent records serialize byte-identically to the
@@ -122,6 +126,8 @@ impl AgentDefinition {
             pinned_persona_env_vars: None,
             previous_persona_snapshots: Vec::new(),
             env_vars: self.env_vars,
+            pinned_tool_requirements: self.tool_requirements,
+            connection_bindings: BTreeMap::new(),
             start_on_app_launch: false,
             auto_restart_on_config_change: true,
             runtime_pid: None,
@@ -155,6 +161,7 @@ impl AgentDefinition {
             definition_respond_to_allowlist: self.respond_to_allowlist,
             definition_parallelism: self.parallelism,
             relay_mesh: None,
+            project_scope: None,
         }
     }
 }
@@ -186,6 +193,7 @@ impl ManagedAgentRecord {
             source_team_persona_slug: self.source_team_persona_slug.clone(),
             catalog_source: self.catalog_source.clone(),
             env_vars: self.env_vars.clone(),
+            tool_requirements: self.pinned_tool_requirements.clone(),
             respond_to: self.definition_respond_to.clone(),
             respond_to_allowlist: self.definition_respond_to_allowlist.clone(),
             parallelism: self.definition_parallelism,
@@ -314,6 +322,17 @@ pub struct ManagedAgentRecord {
     /// To "override" a persona env var: set the same key here.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env_vars: BTreeMap<String, String>,
+    /// Buzz Project this agent works in. Required before binding Project
+    /// connections. `None` preserves existing agents until they are assigned.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_scope: Option<AgentProjectScope>,
+    /// Tool requirements pinned with the selected template version.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_tool_requirements: Vec<AgentToolRequirement>,
+    /// Requirement id to Project connection id. Secret values are never stored
+    /// here; the connection resolver reads them from the OS keyring at launch.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub connection_bindings: BTreeMap<String, String>,
     #[serde(default = "default_start_on_app_launch")]
     pub start_on_app_launch: bool,
     /// Auto-restart this agent when its effective spawn config drifts from
@@ -456,44 +475,12 @@ pub struct RelayMeshConfig {
     pub model_ref: String,
 }
 
-#[derive(Debug)]
-pub struct ManagedAgentProcess {
-    pub child: Child,
-    pub log_path: PathBuf,
-    /// Digest of the effective spawn config at launch (see
-    /// `spawn_hash::spawn_config_hash`). Runtime-only — never persisted. The
-    /// summary builder recomputes the hash from current disk state and flags
-    /// `needs_restart` on mismatch. Agents adopted via a persisted
-    /// `runtime_pid` have no `ManagedAgentProcess` entry, so their spawn
-    /// config is unknown and the badge stays off.
-    pub spawn_config_hash: u64,
-    /// Whether this process was spawned in setup-listener mode (i.e.
-    /// `BUZZ_ACP_SETUP_PAYLOAD` was set at launch because the agent was
-    /// `NotReady`). Runtime-only — never persisted. Used by
-    /// `install_acp_runtime` to target only stuck agents for auto-restart,
-    /// excluding healthy in-pool agents.
-    pub setup_mode: bool,
-    /// Adapter availability status stamped at spawn time for runtimes with a
-    /// version gate (currently codex only; `None` for all others). Runtime-only
-    /// — never persisted. The summary builder compares this against the current
-    /// cached availability and sets `needs_restart` on drift, catching out-of-
-    /// band adapter changes that Phase-1 auto-restart doesn't cover.
-    pub adapter_availability: Option<AcpAvailabilityStatus>,
-    /// Unpredictable identity shared only with this harness generation.
-    pub start_nonce: String,
-    /// Win32 Job Object owning the harness + its entire process tree. Closing
-    /// the handle (via `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) kills the whole
-    /// tree — the Windows mirror of the Unix process-group teardown. `None`
-    /// if job creation/assignment failed (we fall back to `Child::kill()`).
-    #[cfg(windows)]
-    pub job: Option<crate::managed_agents::JobHandle>,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ManagedAgentSummary {
     pub pubkey: String,
     pub name: String,
     pub persona_id: Option<String>,
+    pub project_scope: Option<AgentProjectScope>,
     /// The record's harness/runtime id (mirror of `ManagedAgentRecord.runtime`).
     /// Lets the UI count agents referencing a harness definition (e.g. in the
     /// delete-confirmation flow). `None` = inherit from the linked persona.
@@ -548,6 +535,8 @@ pub struct ManagedAgentSummary {
     pub needs_restart: bool,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env_vars: BTreeMap<String, String>,
+    pub tool_requirements: Vec<AgentToolRequirement>,
+    pub connection_bindings: BTreeMap<String, String>,
     pub backend: BackendKind,
     pub backend_agent_id: Option<String>,
     pub status: String,
@@ -990,8 +979,12 @@ pub fn resolve_mint_behavioral_defaults(
 
 mod catalog_source;
 pub use catalog_source::CatalogSource;
+mod managed_process;
+pub use managed_process::ManagedAgentProcess;
 mod persona_snapshot;
 pub use persona_snapshot::PersonaSnapshotHistoryEntry;
+mod project_tools;
+pub use project_tools::{AgentProjectScope, AgentToolRequirement};
 mod requests;
 pub use requests::*;
 

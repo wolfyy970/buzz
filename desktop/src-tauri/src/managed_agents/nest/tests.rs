@@ -444,6 +444,7 @@ fn make_persona(id: &str, display_name: &str) -> AgentDefinition {
         parallelism: None,
         created_at: String::new(),
         updated_at: String::new(),
+        tool_requirements: Vec::new(),
     }
 }
 
@@ -504,6 +505,9 @@ fn make_agent(name: &str, persona_id: Option<&str>) -> ManagedAgentRecord {
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
         relay_mesh: None,
+        connection_bindings: std::collections::BTreeMap::new(),
+        pinned_tool_requirements: Vec::new(),
+        project_scope: None,
     }
 }
 
