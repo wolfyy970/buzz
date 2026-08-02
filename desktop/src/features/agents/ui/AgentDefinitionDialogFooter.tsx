@@ -26,12 +26,14 @@ export function AgentDefinitionDialogFooter({
   submitLabel,
 }: AgentDefinitionDialogFooterProps) {
   return (
-    <div className="flex w-full flex-wrap items-center justify-between gap-3">
+    <div className="flex w-full flex-wrap items-center justify-end gap-3">
       <div className="flex min-h-9 min-w-0 flex-wrap items-center gap-3">
         {submitBlockReason ? (
           <p
+            aria-live="polite"
             className="text-2xs text-muted-foreground"
             data-testid="persona-dialog-submit-reason"
+            role="status"
           >
             {submitBlockReason}
           </p>
@@ -43,15 +45,6 @@ export function AgentDefinitionDialogFooter({
           >
             This agent is in the community catalog. Your changes will be
             published when you save.
-          </p>
-        ) : null}
-        {isTemplateEdit ? (
-          <p
-            className="max-w-md text-xs text-muted-foreground"
-            data-testid="persona-dialog-template-version-notice"
-          >
-            Publishing creates a version you can use to update agents. Running
-            agents do not change.
           </p>
         ) : null}
       </div>
@@ -75,7 +68,7 @@ export function AgentDefinitionDialogFooter({
           >
             {isPending && pendingAction === "save"
               ? "Saving..."
-              : "Save template"}
+              : "Save changes"}
           </Button>
         ) : null}
         <Button

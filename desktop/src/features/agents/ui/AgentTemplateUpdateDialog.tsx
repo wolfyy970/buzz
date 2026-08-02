@@ -1,5 +1,5 @@
-import * as React from "react";
 import { Check, Minus, RefreshCw, RotateCcw, XCircle } from "lucide-react";
+import * as React from "react";
 
 import type {
   AgentTemplateUpdateProgressStage,
@@ -9,8 +9,8 @@ import type {
 import { agentTemplateUpdateProgressLabel } from "@/shared/api/tauriAgentTemplateUpdates";
 import type { AgentTemplateVersionRef } from "@/shared/api/types";
 import { shortAgentTemplateVersionToken } from "../lib/agentTemplateUpdatePreview";
-import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
+import { Checkbox } from "@/shared/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -34,6 +34,11 @@ import {
   AgentTemplateInstructionChangesSummary,
   commonAgentInstructionChange,
 } from "./AgentTemplateInstructionUpdateFields";
+import {
+  AgentTemplateOverridesPreservedSummary,
+  AgentTemplateVersionChangesSummary,
+  commonAgentVersionChanges,
+} from "./AgentTemplateVersionUpdateFields";
 
 type AgentTemplateUpdateDialogProps = {
   error: string | null;
@@ -42,6 +47,7 @@ type AgentTemplateUpdateDialogProps = {
     selectedPubkeys: string[],
     connectionBindingsByPubkey: Record<string, Record<string, string>>,
   ) => void;
+  onOpenAgent?: (pubkey: string) => void;
   onOpenChange: (open: boolean) => void;
   open: boolean;
   preview: AgentTemplateUpdatePreview | null;
@@ -57,6 +63,7 @@ export function AgentTemplateUpdateDialog({
   error,
   isPending,
   onApply,
+  onOpenAgent,
   onOpenChange,
   open,
   preview,
@@ -120,6 +127,7 @@ export function AgentTemplateUpdateDialog({
   const commonInstructionChange = commonAgentInstructionChange(changedAgents);
   const commonToolChanges = commonAgentToolChanges(changedAgents);
   const commonSkillChanges = commonAgentSkillChanges(changedAgents);
+  const commonVersionChanges = commonAgentVersionChanges(changedAgents);
   const bindingsReady = changedAgents
     .filter((agent) => selected.has(agent.pubkey))
     .every(
@@ -129,6 +137,15 @@ export function AgentTemplateUpdateDialog({
     );
   const activeProgressStage = progressStage ?? "preparing_update";
   const progressComplete = activeProgressStage === "updated";
+
+  function setAgentSelected(pubkey: string, checked: boolean) {
+    setSelected((current) => {
+      const next = new Set(current);
+      if (checked) next.add(pubkey);
+      else next.delete(pubkey);
+      return next;
+    });
+  }
 
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
@@ -144,7 +161,7 @@ export function AgentTemplateUpdateDialog({
                 : result.rolledBack
                   ? "Update rolled back"
                   : "Agents updated"
-              : `Update agents using ${preview.personaName}?`}
+              : "Update agents"}
           </DialogTitle>
           <DialogDescription>
             {isComplete
@@ -157,7 +174,7 @@ export function AgentTemplateUpdateDialog({
                     } updated.`
               : `${preview.personaName} is used by ${preview.agents.length} ${
                   preview.agents.length === 1 ? "agent" : "agents"
-                }. Choose which agents should use the new version now.`}
+                }. Choose who should get this version now.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -165,6 +182,11 @@ export function AgentTemplateUpdateDialog({
           {!isComplete && commonInstructionChange ? (
             <AgentTemplateInstructionChangesSummary
               change={commonInstructionChange}
+            />
+          ) : null}
+          {!isComplete && commonVersionChanges ? (
+            <AgentTemplateVersionChangesSummary
+              changes={commonVersionChanges}
             />
           ) : null}
           {!isComplete && commonToolChanges ? (
@@ -184,12 +206,12 @@ export function AgentTemplateUpdateDialog({
                 {progressComplete ? (
                   <Check
                     aria-hidden="true"
-                    className="size-5 text-emerald-500"
+                    className="size-5 text-status-added"
                   />
                 ) : (
                   <RefreshCw
                     aria-hidden="true"
-                    className="size-5 animate-spin text-primary"
+                    className="size-5 text-primary motion-safe:animate-spin"
                   />
                 )}
                 <p className="text-sm font-medium">
@@ -202,7 +224,7 @@ export function AgentTemplateUpdateDialog({
               </p>
             </div>
           ) : (
-            <div className="space-y-2">
+            <div className="overflow-hidden rounded-xl border border-border">
               {preview.agents.map((agent) => {
                 const agentResult = result?.agents.find(
                   (candidate) => candidate.pubkey === agent.pubkey,
@@ -210,16 +232,37 @@ export function AgentTemplateUpdateDialog({
                 const checked = selected.has(agent.pubkey);
                 const isCurrent =
                   agent.currentVersion === preview.targetVersionToken;
+                const checkboxId = `template-update-checkbox-${agent.pubkey}`;
                 const Row = "div";
+                const headerContent = (
+                  <>
+                    <span
+                      className="truncate text-sm font-medium"
+                      title={agent.name}
+                    >
+                      {agent.name}
+                    </span>
+                    {!isComplete ? (
+                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                        <span
+                          aria-hidden="true"
+                          className={cn(
+                            "size-1.5 rounded-full",
+                            agent.runningRelays.length > 0
+                              ? "bg-status-added"
+                              : "bg-muted-foreground/50",
+                          )}
+                        />
+                        {agent.runningRelays.length > 0 ? "Running" : "Stopped"}
+                      </span>
+                    ) : null}
+                  </>
+                );
                 return (
                   <Row
                     className={cn(
-                      "flex items-center gap-3 rounded-xl border border-border px-4 py-3",
-                      !isComplete &&
-                        agent.eligible &&
-                        !isCurrent &&
-                        "cursor-pointer hover:bg-muted/30",
-                      (!agent.eligible || isCurrent) && "opacity-70",
+                      "flex items-start gap-3 border-b border-border px-4 py-3 last:border-b-0",
+                      (!agent.eligible || isCurrent) && "bg-muted/10",
                     )}
                     data-testid={`template-update-agent-${agent.pubkey}`}
                     key={agent.pubkey}
@@ -234,12 +277,12 @@ export function AgentTemplateUpdateDialog({
                         agentResult.outcome === "updated_stopped" ? (
                         <Check
                           aria-label="Updated"
-                          className="size-4 text-emerald-500"
+                          className="size-4 text-status-added"
                         />
                       ) : agentResult.outcome === "rolled_back" ? (
                         <RotateCcw
                           aria-label="Rolled back"
-                          className="size-4 text-amber-500"
+                          className="size-4 text-status-modified"
                         />
                       ) : (
                         <XCircle
@@ -248,32 +291,34 @@ export function AgentTemplateUpdateDialog({
                         />
                       )
                     ) : (
-                      <input
+                      <Checkbox
                         aria-label={`Update ${agent.name}`}
                         checked={checked}
                         disabled={!agent.eligible || isCurrent}
-                        onChange={(event) => {
-                          setSelected((current) => {
-                            const next = new Set(current);
-                            if (event.target.checked) next.add(agent.pubkey);
-                            else next.delete(agent.pubkey);
-                            return next;
-                          });
-                        }}
-                        type="checkbox"
+                        id={checkboxId}
+                        onCheckedChange={(nextChecked) =>
+                          setAgentSelected(agent.pubkey, nextChecked === true)
+                        }
                       />
                     )}
                     <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-sm font-medium">
-                          {agent.name}
-                        </span>
-                        {agent.runningRelays.length > 0 ? (
-                          <Badge variant="secondary">Running</Badge>
-                        ) : (
-                          <Badge variant="outline">Stopped</Badge>
-                        )}
-                      </div>
+                      {isComplete ? (
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                          {headerContent}
+                        </div>
+                      ) : (
+                        <label
+                          className={cn(
+                            "flex flex-wrap items-center gap-x-3 gap-y-1",
+                            agent.eligible &&
+                              !isCurrent &&
+                              "cursor-pointer rounded-sm hover:text-foreground/80",
+                          )}
+                          htmlFor={checkboxId}
+                        >
+                          {headerContent}
+                        </label>
+                      )}
                       <p className="mt-1 text-xs text-muted-foreground">
                         {agentResult
                           ? agentResult.outcome === "updated"
@@ -282,13 +327,12 @@ export function AgentTemplateUpdateDialog({
                               ? "Updated · starts on this version next time"
                               : agentResult.outcome === "rolled_back"
                                 ? "Previous version restored"
-                                : (agentResult.error ??
-                                  "Rollback needs attention")
+                                : "Previous version was not restored"
                           : isComplete
                             ? "Not updated"
                             : isCurrent
                               ? `Already using ${shortPublishedVersion(preview.targetVersion)}`
-                              : `${shortAgentTemplateVersionToken(agent.currentVersion)} → ${shortPublishedVersion(
+                              : `Version ${shortAgentTemplateVersionToken(agent.currentVersion)} → ${shortPublishedVersion(
                                   preview.targetVersion,
                                 )}`}
                       </p>
@@ -296,13 +340,40 @@ export function AgentTemplateUpdateDialog({
                         <p
                           className={cn(
                             "mt-1 text-xs",
-                            isComplete
-                              ? "text-muted-foreground"
-                              : "text-destructive",
+                            "text-muted-foreground",
                           )}
                         >
                           {agent.blockedReason}
                         </p>
+                      ) : null}
+                      {agentResult?.outcome === "rollback_failed" ? (
+                        <div className="mt-3 space-y-2">
+                          <p className="text-xs text-destructive">
+                            Buzz could not restore the previous version.
+                          </p>
+                          <div className="flex flex-wrap items-center gap-2">
+                            {onOpenAgent ? (
+                              <Button
+                                onClick={() => onOpenAgent(agent.pubkey)}
+                                size="xs"
+                                type="button"
+                                variant="outline"
+                              >
+                                Open agent
+                              </Button>
+                            ) : null}
+                            {agentResult.error ? (
+                              <details className="text-xs text-muted-foreground">
+                                <summary className="cursor-pointer">
+                                  Technical details
+                                </summary>
+                                <p className="mt-1 break-words">
+                                  {agentResult.error}
+                                </p>
+                              </details>
+                            ) : null}
+                          </div>
+                        </div>
                       ) : null}
                       {!isComplete &&
                       !commonInstructionChange &&
@@ -311,6 +382,13 @@ export function AgentTemplateUpdateDialog({
                         <div className="mt-3">
                           <AgentTemplateInstructionChangesSummary
                             change={agent.instructionChange}
+                          />
+                        </div>
+                      ) : null}
+                      {!isComplete && !commonVersionChanges && !isCurrent ? (
+                        <div className="mt-3">
+                          <AgentTemplateVersionChangesSummary
+                            changes={agent.versionChanges}
                           />
                         </div>
                       ) : null}
@@ -327,6 +405,11 @@ export function AgentTemplateUpdateDialog({
                             changes={agent.skillChanges}
                           />
                         </div>
+                      ) : null}
+                      {!isComplete && !isCurrent ? (
+                        <AgentTemplateOverridesPreservedSummary
+                          overrides={agent.overridesPreserved}
+                        />
                       ) : null}
                       {!isComplete &&
                       checked &&
@@ -382,18 +465,36 @@ export function AgentTemplateUpdateDialog({
               selected.has(agent.pubkey) && agent.runningRelays.length > 0,
           ) ? (
             <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Safe to update now. Buzz stops new work and lets the current task
-              finish. If it cannot, the new version recovers it after the
-              update.
+              Buzz finishes current work before switching versions. If the
+              update fails, it restores the previous version.
             </p>
           ) : null}
         </div>
 
         <DialogFooter className="shrink-0">
           {isComplete ? (
-            <Button onClick={() => onOpenChange(false)} type="button">
-              Done
-            </Button>
+            result.rolledBack && !rollbackFailed ? (
+              <>
+                <Button
+                  onClick={() => onOpenChange(false)}
+                  type="button"
+                  variant="outline"
+                >
+                  Done
+                </Button>
+                <Button
+                  disabled={selectedCount === 0 || !bindingsReady}
+                  onClick={() => onApply([...selected], bindingsByPubkey)}
+                  type="button"
+                >
+                  Try update again
+                </Button>
+              </>
+            ) : (
+              <Button onClick={() => onOpenChange(false)} type="button">
+                Done
+              </Button>
+            )
           ) : !hasEligibleChanges ? (
             <Button onClick={() => onOpenChange(false)} type="button">
               Done
@@ -405,7 +506,7 @@ export function AgentTemplateUpdateDialog({
                 type="button"
                 variant="outline"
               >
-                {isPending ? "Continue working" : "Update later"}
+                {isPending ? "Continue working" : "Not now"}
               </Button>
               <Button
                 data-testid="template-publish-and-update"

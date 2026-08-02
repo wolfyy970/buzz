@@ -60,6 +60,7 @@ type UnifiedAgentsSectionProps = {
     linkedAgent: ManagedAgent | undefined,
     effectiveAvatarUrl: string | null,
   ) => void;
+  onUpdatePersonaAgents: (persona: AgentPersona) => void;
   onDeactivatePersona: (persona: AgentPersona) => void;
   onDeletePersona: (persona: AgentPersona) => void;
   onImportSnapshotFile: (fileBytes: number[], fileName: string) => void;
@@ -96,6 +97,7 @@ export function UnifiedAgentsSection(props: UnifiedAgentsSectionProps) {
     onDuplicatePersona,
     onEditPersona,
     onSharePersona,
+    onUpdatePersonaAgents,
     onDeactivatePersona,
     onDeletePersona,
     onImportSnapshotFile,
@@ -156,6 +158,9 @@ export function UnifiedAgentsSection(props: UnifiedAgentsSectionProps) {
           <div className={IDENTITY_CARD_GRID_CLASS}>
             {groups.map((group) => {
               const profileAgent = pickProfileAgent(group.agents);
+              const updateCount = group.agents.filter(
+                (agent) => agent.personaOutOfDate,
+              ).length;
               return (
                 <AgentPersonaCard
                   actions={(effectiveAvatarUrl, isEffectiveAvatarLoading) => (
@@ -170,6 +175,8 @@ export function UnifiedAgentsSection(props: UnifiedAgentsSectionProps) {
                       onDelete={onDeletePersona}
                       onDuplicate={onDuplicatePersona}
                       onEdit={onEditPersona}
+                      onUpdateAgents={onUpdatePersonaAgents}
+                      updateCount={updateCount}
                       onShare={(persona, linkedAgent) =>
                         onSharePersona(persona, linkedAgent, effectiveAvatarUrl)
                       }
@@ -179,6 +186,7 @@ export function UnifiedAgentsSection(props: UnifiedAgentsSectionProps) {
                   defaultModel={defaultModel}
                   key={group.persona.id}
                   persona={group.persona}
+                  updateCount={updateCount}
                   startingAgentPubkey={startingAgentPubkey}
                   startingPersonaIds={startingPersonaIds}
                   onOpenAgentProfile={onOpenAgentProfile}
@@ -254,6 +262,7 @@ function AgentPersonaCard({
   onOpenPersonaProfile,
   onStartAgent,
   onStartPersona,
+  updateCount,
 }: {
   actions?: (
     effectiveAvatarUrl: string | null,
@@ -271,6 +280,7 @@ function AgentPersonaCard({
   onOpenPersonaProfile: (persona: AgentPersona) => void;
   onStartAgent: (pubkey: string) => void;
   onStartPersona: (persona: AgentPersona) => void;
+  updateCount: number;
 }) {
   const title = persona.displayName;
   const modelLabel = resolveAgentCardModelLabel({
@@ -338,7 +348,13 @@ function AgentPersonaCard({
         onOpenPersonaProfile(persona);
       }}
       statusBadge={
-        agent?.personaOrphaned ? (
+        updateCount > 0 ? (
+          <Badge className="gap-1" variant="warning">
+            <RefreshCw className="h-3 w-3" />
+            {updateCount} {updateCount === 1 ? "agent needs" : "agents need"}{" "}
+            update
+          </Badge>
+        ) : agent?.personaOrphaned ? (
           <Badge className="gap-1" variant="warning">
             <AlertTriangle className="h-3 w-3" />
             Configuration missing

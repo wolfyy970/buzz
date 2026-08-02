@@ -5,6 +5,17 @@ import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import { cn } from "@/shared/lib/cn";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/shared/ui/alert-dialog";
+import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
 import { Textarea } from "@/shared/ui/textarea";
 import { AgentCreationPreview } from "./AgentCreationPreview";
@@ -27,7 +38,6 @@ import {
   personaBehaviorDraftValid,
 } from "./personaBehaviorDraft";
 import {
-  ADVANCED_FIELDS_MOTION_TRANSITION,
   AUTO_MODEL_DROPDOWN_VALUE,
   AUTO_PROVIDER_DROPDOWN_VALUE,
   BLOCK_BUILD_HIDDEN_PROVIDER_IDS,
@@ -38,7 +48,6 @@ import {
   getDefaultPersonaRuntime,
   getPersonaModelOptions,
   getPersonaProviderOptions,
-  getProviderApiKeyLabel,
   getRuntimePersonaModelOptions,
   NO_RUNTIME_DROPDOWN_VALUE,
   runtimeSupportsLlmProviderSelection,
@@ -87,10 +96,16 @@ import {
   usePendingHarnessSelection,
 } from "./addCustomHarness";
 import { AgentTemplateImpactPreview } from "./AgentTemplateImpactPreview";
+import { AgentTemplateContentsNav } from "./AgentTemplateContentsNav";
 import { useAgentTemplateResourcesDraft } from "./useAgentTemplateResourcesDraft";
 import { useAgentDefinitionSubmission } from "./useAgentDefinitionSubmission";
 import type { AgentDefinitionDialogProps } from "./AgentDefinitionDialogTypes";
 export type { AgentDefinitionSubmitOptions } from "./AgentDefinitionDialogTypes";
+
+const ADVANCED_FIELDS_MOTION_TRANSITION = {
+  duration: 0.18,
+  ease: [0.23, 1, 0.32, 1],
+} as const;
 
 export function AgentDefinitionDialog({
   open,
@@ -145,6 +160,7 @@ export function AgentDefinitionDialog({
   const [isAvatarUploadPending, setIsAvatarUploadPending] =
     React.useState(false);
   const [hasUserChanges, setHasUserChanges] = React.useState(false);
+  const [discardConfirmOpen, setDiscardConfirmOpen] = React.useState(false);
   const submission = useAgentDefinitionSubmission(onSubmit);
   const resourcesDraft = useAgentTemplateResourcesDraft({
     createSubmitBlocked,
@@ -279,29 +295,39 @@ export function AgentDefinitionDialog({
     }
   }, [defaultRuntime, isCreateMode, open, runtime, runtimesLoading]);
 
-  function handleOpenChange(next: boolean) {
-    if (!next) {
-      setDisplayName("");
-      setAvatarUrl("");
-      setSystemPrompt("");
-      setRuntime("");
-      setModel("");
-      setIsCustomModelEditing(false);
-      setProvider("");
-      setAiConfigurationMode("defaults");
-      setIsCustomProviderEditing(false);
-      setNamePoolText("");
-      setEnvVars({});
-      setBehaviorDraft(emptyPersonaBehaviorDraft);
-      behaviorSeedRef.current = emptyPersonaBehaviorDraft;
-      setShowAdvancedFields(false);
-      setIsAvatarUploadPending(false);
-      setHasUserChanges(false);
-      setIsAddHarnessOpen(false);
-      // The open effect resets both runtime-seeding refs when the dialog reopens.
-    }
+  function closeAndReset() {
+    setDisplayName("");
+    setAvatarUrl("");
+    setSystemPrompt("");
+    setRuntime("");
+    setModel("");
+    setIsCustomModelEditing(false);
+    setProvider("");
+    setAiConfigurationMode("defaults");
+    setIsCustomProviderEditing(false);
+    setNamePoolText("");
+    setEnvVars({});
+    setBehaviorDraft(emptyPersonaBehaviorDraft);
+    behaviorSeedRef.current = emptyPersonaBehaviorDraft;
+    setShowAdvancedFields(false);
+    setIsAvatarUploadPending(false);
+    setHasUserChanges(false);
+    setIsAddHarnessOpen(false);
+    setDiscardConfirmOpen(false);
+    // The open effect resets both runtime-seeding refs when the dialog reopens.
+    onOpenChange(false);
+  }
 
-    onOpenChange(next);
+  function handleOpenChange(next: boolean) {
+    if (next) {
+      onOpenChange(true);
+      return;
+    }
+    if (hasUserChanges) {
+      setDiscardConfirmOpen(true);
+      return;
+    }
+    closeAndReset();
   }
 
   async function handleSubmit(action: "save" | "publish") {
@@ -607,6 +633,41 @@ export function AgentDefinitionDialog({
   const advancedFieldsTransition = shouldReduceMotion
     ? { duration: 0 }
     : ADVANCED_FIELDS_MOTION_TRANSITION;
+  const avatarEditor = (
+    <AgentCreationPreview
+      avatarUrl={previewAvatarUrl}
+      disabled={isPending || isAvatarUploadPending}
+      label={previewLabel}
+      onClearAvatar={() => {
+        setHasUserChanges(true);
+        setAvatarUrl("");
+      }}
+      onUploadPendingChange={setIsAvatarUploadPending}
+      onSelectAvatar={(nextAvatarUrl) => {
+        setHasUserChanges(true);
+        setAvatarUrl(nextAvatarUrl);
+      }}
+      variant={isCreateMode ? "default" : "compact"}
+    />
+  );
+
+  function navigateToTemplateSection(id: string) {
+    if (
+      id === "persona-behavior-section" ||
+      id === "persona-environment-section"
+    ) {
+      setShowAdvancedFields(true);
+    }
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        document.getElementById(id)?.scrollIntoView({
+          behavior: shouldReduceMotion ? "auto" : "smooth",
+          block: "start",
+        });
+        document.getElementById(id)?.focus({ preventScroll: true });
+      });
+    });
+  }
 
   React.useEffect(() => {
     if (
@@ -711,331 +772,418 @@ export function AgentDefinitionDialog({
   }
 
   return (
-    <Dialog
-      onOpenChange={(nextOpen) => {
-        if (!nextOpen && (isPending || isAvatarUploadPending)) return;
-        handleOpenChange(nextOpen);
-      }}
-      open={open}
-    >
-      <ChooserDialogContent
-        className="max-w-3xl border-0"
-        contentClassName="pt-3"
-        data-testid="persona-dialog"
-        description={description}
-        footerClassName="border-t-0 pt-0"
-        headerClassName="pb-2"
-        title={title}
-        footer={
-          <AgentDefinitionDialogFooter
-            canSubmit={canSubmit}
-            isAvatarUploadPending={isAvatarUploadPending}
-            isPending={isPending}
-            isTemplateEdit={!isCreateMode}
-            onCancel={() => handleOpenChange(false)}
-            onSaveTemplate={() => void handleSubmit("save")}
-            pendingAction={submission.pendingAction}
-            publishesCatalogUpdates={
-              publishCatalogUpdatesOnSave && hasUserChanges
-            }
-            submitBlockReason={resourcesDraft.submitBlockReason}
-            submitLabel={submitLabel}
-          />
-        }
+    <>
+      <Dialog
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && (isPending || isAvatarUploadPending)) return;
+          handleOpenChange(nextOpen);
+        }}
+        open={open}
       >
-        <form
-          className="grid gap-5 lg:grid-cols-[220px_minmax(0,1fr)]"
-          id="persona-dialog-form"
-          onChangeCapture={() => setHasUserChanges(true)}
-          onSubmit={handleSubmitForm}
-        >
-          {affectedAgents ? (
-            <AgentTemplateImpactPreview
-              agents={affectedAgents}
-              className="lg:col-span-2"
+        <ChooserDialogContent
+          className="max-w-3xl border-0"
+          contentClassName="pt-3"
+          data-testid="persona-dialog"
+          description={description}
+          footerClassName="border-t-0 pt-0"
+          headerClassName="pb-2"
+          title={title}
+          footer={
+            <AgentDefinitionDialogFooter
+              canSubmit={canSubmit}
+              isAvatarUploadPending={isAvatarUploadPending}
+              isPending={isPending}
+              isTemplateEdit={!isCreateMode}
+              onCancel={() => handleOpenChange(false)}
+              onSaveTemplate={() => void handleSubmit("save")}
+              pendingAction={submission.pendingAction}
+              publishesCatalogUpdates={
+                publishCatalogUpdatesOnSave && hasUserChanges
+              }
+              submitBlockReason={resourcesDraft.submitBlockReason}
+              submitLabel={submitLabel}
             />
-          ) : null}
-          <AgentCreationPreview
-            avatarUrl={previewAvatarUrl}
-            disabled={isPending || isAvatarUploadPending}
-            label={previewLabel}
-            onClearAvatar={() => {
-              setHasUserChanges(true);
-              setAvatarUrl("");
-            }}
-            onUploadPendingChange={setIsAvatarUploadPending}
-            onSelectAvatar={(nextAvatarUrl) => {
-              setHasUserChanges(true);
-              setAvatarUrl(nextAvatarUrl);
-            }}
-          />
-
-          <div className="space-y-5">
-            <div className="space-y-1.5">
-              <label
-                className="text-sm font-medium text-foreground"
-                htmlFor="persona-display-name"
-              >
-                {isCreateMode ? "Agent name" : "Template name"}
-              </label>
-              <div
-                className={cn(
-                  "flex min-h-11 items-center px-3",
-                  PERSONA_FIELD_SHELL_CLASS,
-                )}
-              >
-                <Input
-                  autoCorrect="off"
-                  className={cn(
-                    "h-8 px-0 py-0 leading-6",
-                    PERSONA_FIELD_CONTROL_CLASS,
-                  )}
-                  disabled={isPending}
-                  id="persona-display-name"
-                  onChange={(event) => setDisplayName(event.target.value)}
-                  placeholder="Fizz"
-                  value={displayName}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-1.5">
-              <label
-                className="text-sm font-medium text-foreground"
-                htmlFor="persona-system-prompt"
-              >
-                Agent instructions
-              </label>
-              <div className={PERSONA_FIELD_SHELL_CLASS}>
-                <Textarea
-                  className={cn(
-                    "min-h-40 resize-y px-3 py-3 leading-5",
-                    PERSONA_FIELD_CONTROL_CLASS,
-                  )}
-                  disabled={isPending}
-                  id="persona-system-prompt"
-                  onChange={(event) => setSystemPrompt(event.target.value)}
-                  placeholder="Describe what this agent should do."
-                  value={systemPrompt}
-                />
-              </div>
-            </div>
-
-            {modelFieldVisible ? (
-              <AgentAiConfigurationModeField
-                customLabel={
-                  isCreateMode
-                    ? "Customize for this agent"
-                    : "Customize this template"
-                }
-                mode={aiConfigurationMode}
-                needsProviderSelection={runtimeCanChooseLlmProvider}
-                onModeChange={handleAiConfigurationModeChange}
-              />
+          }
+        >
+          <form
+            className={cn(
+              "grid gap-5",
+              isCreateMode && "lg:grid-cols-[220px_minmax(0,1fr)]",
+            )}
+            id="persona-dialog-form"
+            onChangeCapture={() => setHasUserChanges(true)}
+            onSubmit={handleSubmitForm}
+          >
+            {affectedAgents ? (
+              <AgentTemplateImpactPreview agents={affectedAgents} />
             ) : null}
-
-            <div
-              className="space-y-5"
-              data-testid={`agent-${aiConfigurationMode}-configuration-section`}
-            >
-              {aiConfigurationMode === "custom" ? (
-                <AgentHarnessField
-                  disabled={isPending || runtimesLoading}
-                  onValueChange={handleRuntimeDropdownChange}
-                  options={runtimeDropdownOptions}
-                  placeholder={blankRuntimeOptionLabel}
-                  value={runtimeDropdownValue}
-                  warning={runtimeWarning}
+            {!isCreateMode ? (
+              <>
+                <AgentTemplateContentsNav
+                  model={
+                    model.trim() ||
+                    inheritedModelDefault.value ||
+                    "Default model"
+                  }
+                  onNavigate={navigateToTemplateSection}
+                  runtime={runtimeSummaryLabel}
+                  skillCount={resourcesDraft.skills.length}
+                  toolCount={resourcesDraft.requirements.length}
                 />
-              ) : null}
+                <p
+                  className="rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
+                  data-testid="persona-dialog-template-version-notice"
+                >
+                  Save changes without affecting running agents. Publish a
+                  version when you are ready to update them.
+                </p>
+              </>
+            ) : null}
+            {isCreateMode ? avatarEditor : null}
 
-              {llmProviderFieldVisible && aiConfigurationMode === "custom" ? (
-                <div className="space-y-1.5">
-                  <RequiredFieldLabel
-                    htmlFor="persona-llm-provider"
-                    isRequired={providerIsRequired}
-                  >
-                    LLM provider
-                    {!providerIsRequired ? (
-                      <span className={PERSONA_LABEL_OPTIONAL_CLASS}>
-                        Optional
-                      </span>
-                    ) : null}
-                  </RequiredFieldLabel>
-                  <PersonaDropdownField
-                    disabled={isPending}
-                    id="persona-llm-provider"
-                    onValueChange={handleProviderDropdownChange}
-                    options={providerDropdownOptions}
-                    placeholder="Choose a provider"
-                    value={providerSelectValue}
-                  />
-                  {showCustomProviderInput ? (
+            <div className="space-y-5">
+              <div
+                className="scroll-mt-4 space-y-1.5"
+                id="persona-identity-section"
+                tabIndex={-1}
+              >
+                <h3 className="text-base font-semibold text-foreground">
+                  Identity
+                </h3>
+                <div className={cn(!isCreateMode && "flex items-end gap-4")}>
+                  {!isCreateMode ? avatarEditor : null}
+                  <div className="min-w-0 flex-1 space-y-1.5">
+                    <label
+                      className="text-sm font-medium text-foreground"
+                      htmlFor="persona-display-name"
+                    >
+                      {isCreateMode ? "Agent name" : "Template name"}
+                    </label>
                     <div
                       className={cn(
-                        "mt-2 flex min-h-11 items-center px-3",
+                        "flex min-h-11 items-center px-3",
                         PERSONA_FIELD_SHELL_CLASS,
                       )}
                     >
                       <Input
-                        aria-label="Custom provider ID"
                         autoCorrect="off"
                         className={cn(
                           "h-8 px-0 py-0 leading-6",
                           PERSONA_FIELD_CONTROL_CLASS,
                         )}
                         disabled={isPending}
-                        id="persona-custom-provider"
-                        onChange={(event) => setProvider(event.target.value)}
-                        placeholder="Custom provider ID"
-                        value={provider}
+                        id="persona-display-name"
+                        onChange={(event) => setDisplayName(event.target.value)}
+                        placeholder="Fizz"
+                        value={displayName}
                       />
                     </div>
-                  ) : null}
+                  </div>
                 </div>
-              ) : null}
+              </div>
 
-              {llmProviderFieldVisible &&
-              aiConfigurationMode === "custom" &&
-              topLevelSecretEnvVar ? (
-                <PersonaProviderApiKeyField
-                  disabled={isPending}
-                  envVarName={topLevelSecretEnvVar}
-                  isInherited={apiKeyIsInherited}
-                  inheritedLabel={apiKeyInheritedLabel}
-                  isRequired={apiKeyIsRequired}
-                  label={getProviderApiKeyLabel(effectiveProvider) ?? "API key"}
-                  onValueChange={(next) => {
-                    setEnvVars((prev) => ({
-                      ...prev,
-                      [topLevelSecretEnvVar]: next,
-                    }));
-                  }}
-                  value={apiKeyValue}
-                />
-              ) : null}
-
-              <AnimatePresence initial={false}>
-                {modelFieldVisible && aiConfigurationMode === "custom" ? (
-                  <PersonaModelField
+              <div
+                className="scroll-mt-4 space-y-1.5"
+                id="persona-instructions-section"
+                tabIndex={-1}
+              >
+                <h3 className="text-base font-semibold text-foreground">
+                  Instructions
+                </h3>
+                <label
+                  className="text-sm font-medium text-foreground"
+                  htmlFor="persona-system-prompt"
+                >
+                  Agent instructions
+                </label>
+                <div className={PERSONA_FIELD_SHELL_CLASS}>
+                  <Textarea
+                    className={cn(
+                      "min-h-40 resize-y px-3 py-3 leading-5",
+                      PERSONA_FIELD_CONTROL_CLASS,
+                    )}
                     disabled={isPending}
-                    isExplicitModelRequired={isExplicitModelRequired}
-                    model={model}
-                    modelDiscoveryStatus={modelDiscoveryStatus}
-                    modelDropdownOptions={modelDropdownOptions}
-                    modelSelectValue={modelSelectValue}
-                    onCustomModelChange={setModel}
-                    showSharedComputeAutoHint={
-                      isRelayMesh &&
-                      modelSelectValue === AUTO_MODEL_DROPDOWN_VALUE
+                    id="persona-system-prompt"
+                    onChange={(event) => setSystemPrompt(event.target.value)}
+                    placeholder="Describe what this agent should do."
+                    value={systemPrompt}
+                  />
+                </div>
+              </div>
+
+              <div
+                className="space-y-5"
+                data-testid={`agent-${aiConfigurationMode}-configuration-section`}
+                id="persona-model-section"
+                tabIndex={-1}
+              >
+                {modelFieldVisible ? (
+                  <AgentAiConfigurationModeField
+                    customLabel={
+                      isCreateMode
+                        ? "Customize for this agent"
+                        : "Customize this template"
                     }
-                    onModelValueChange={handleModelDropdownChange}
-                    showCustomModelInput={showCustomModelInput}
-                    transition={advancedFieldsTransition}
+                    mode={aiConfigurationMode}
+                    needsProviderSelection={runtimeCanChooseLlmProvider}
+                    onModeChange={handleAiConfigurationModeChange}
                   />
                 ) : null}
-              </AnimatePresence>
+                {aiConfigurationMode === "custom" ? (
+                  <AgentHarnessField
+                    disabled={isPending || runtimesLoading}
+                    onValueChange={handleRuntimeDropdownChange}
+                    options={runtimeDropdownOptions}
+                    placeholder={blankRuntimeOptionLabel}
+                    value={runtimeDropdownValue}
+                    warning={runtimeWarning}
+                  />
+                ) : null}
 
-              {aiConfigurationMode === "defaults" ? (
-                <AgentCreateAiDefaultsSummary
-                  canChooseProvider={runtimeCanChooseLlmProvider}
-                  harness={runtimeSummaryLabel}
-                  inheritedModel={inheritedModelDefault}
-                  inheritedProvider={inheritedProviderDefault}
-                  isConfigured={localModeGate.satisfied}
-                  model={runtimeFileConfig?.model}
-                  onEditDefaults={() => setAiDefaultsOpen(true)}
-                  triggerRef={aiDefaultsTriggerRef}
-                />
+                {llmProviderFieldVisible && aiConfigurationMode === "custom" ? (
+                  <div className="space-y-1.5">
+                    <RequiredFieldLabel
+                      htmlFor="persona-llm-provider"
+                      isRequired={providerIsRequired}
+                    >
+                      LLM provider
+                      {!providerIsRequired ? (
+                        <span className={PERSONA_LABEL_OPTIONAL_CLASS}>
+                          Optional
+                        </span>
+                      ) : null}
+                    </RequiredFieldLabel>
+                    <PersonaDropdownField
+                      disabled={isPending}
+                      id="persona-llm-provider"
+                      onValueChange={handleProviderDropdownChange}
+                      options={providerDropdownOptions}
+                      placeholder="Choose a provider"
+                      value={providerSelectValue}
+                    />
+                    {showCustomProviderInput ? (
+                      <div
+                        className={cn(
+                          "mt-2 flex min-h-11 items-center px-3",
+                          PERSONA_FIELD_SHELL_CLASS,
+                        )}
+                      >
+                        <Input
+                          aria-label="Custom provider ID"
+                          autoCorrect="off"
+                          className={cn(
+                            "h-8 px-0 py-0 leading-6",
+                            PERSONA_FIELD_CONTROL_CLASS,
+                          )}
+                          disabled={isPending}
+                          id="persona-custom-provider"
+                          onChange={(event) => setProvider(event.target.value)}
+                          placeholder="Custom provider ID"
+                          value={provider}
+                        />
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
+
+                {llmProviderFieldVisible &&
+                aiConfigurationMode === "custom" &&
+                topLevelSecretEnvVar ? (
+                  <PersonaProviderApiKeyField
+                    disabled={isPending}
+                    isInherited={apiKeyIsInherited}
+                    inheritedLabel={apiKeyInheritedLabel}
+                    isRequired={apiKeyIsRequired}
+                    label={
+                      effectiveProvider === "anthropic"
+                        ? "Anthropic API key"
+                        : "OpenAI API key"
+                    }
+                    onValueChange={(next) => {
+                      setEnvVars((prev) => ({
+                        ...prev,
+                        [topLevelSecretEnvVar]: next,
+                      }));
+                    }}
+                    value={apiKeyValue}
+                  />
+                ) : null}
+
+                <AnimatePresence initial={false}>
+                  {modelFieldVisible && aiConfigurationMode === "custom" ? (
+                    <PersonaModelField
+                      disabled={isPending}
+                      isExplicitModelRequired={isExplicitModelRequired}
+                      model={model}
+                      modelDiscoveryStatus={modelDiscoveryStatus}
+                      modelDropdownOptions={modelDropdownOptions}
+                      modelSelectValue={modelSelectValue}
+                      onCustomModelChange={setModel}
+                      showSharedComputeAutoHint={
+                        isRelayMesh &&
+                        modelSelectValue === AUTO_MODEL_DROPDOWN_VALUE
+                      }
+                      onModelValueChange={handleModelDropdownChange}
+                      showCustomModelInput={showCustomModelInput}
+                      transition={advancedFieldsTransition}
+                    />
+                  ) : null}
+                </AnimatePresence>
+
+                {aiConfigurationMode === "defaults" ? (
+                  <AgentCreateAiDefaultsSummary
+                    canChooseProvider={runtimeCanChooseLlmProvider}
+                    harness={runtimeSummaryLabel}
+                    inheritedModel={inheritedModelDefault}
+                    inheritedProvider={inheritedProviderDefault}
+                    isConfigured={localModeGate.satisfied}
+                    model={runtimeFileConfig?.model}
+                    onEditDefaults={() => setAiDefaultsOpen(true)}
+                    triggerRef={aiDefaultsTriggerRef}
+                  />
+                ) : null}
+              </div>
+
+              <AgentDefaultsDialog
+                onOpenChange={setAiDefaultsOpen}
+                open={runtimeCanChooseLlmProvider && aiDefaultsOpen}
+                returnFocusRef={aiDefaultsTriggerRef}
+              />
+
+              <AddCustomHarnessDialog
+                onOpenChange={setIsAddHarnessOpen}
+                onSaved={selectSavedHarness}
+                open={isAddHarnessOpen}
+              />
+              {resourcesDraft.section}
+              {isCreateMode
+                ? typeof createRunSection === "function"
+                  ? createRunSection(resourcesDraft.requirements)
+                  : createRunSection
+                : null}
+
+              <div
+                className="scroll-mt-4 space-y-3"
+                id="persona-behavior-section"
+                tabIndex={-1}
+              >
+                <div>
+                  <h3>
+                    <button
+                      aria-expanded={showAdvancedFields}
+                      className="flex w-full items-center justify-between gap-3 rounded-lg py-1 text-left text-base font-semibold text-foreground transition-colors hover:text-foreground/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
+                      onClick={() =>
+                        setShowAdvancedFields((current) => !current)
+                      }
+                      type="button"
+                    >
+                      <span>Advanced settings</span>
+                      <span className="flex items-center gap-1.5">
+                        {localModeGate.missingEnvKeys.some((key) =>
+                          advancedRequiredEnvKeys.includes(key),
+                        ) ? (
+                          <span
+                            aria-hidden="true"
+                            className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs text-destructive"
+                            data-testid="persona-advanced-required-badge"
+                          >
+                            Required
+                          </span>
+                        ) : null}
+                        <ChevronDown
+                          className={cn(
+                            "h-4 w-4 text-muted-foreground transition-transform duration-150 ease-out",
+                            showAdvancedFields && "rotate-180",
+                          )}
+                        />
+                      </span>
+                    </button>
+                  </h3>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    Behavior, local environment, and model tuning
+                  </p>
+                </div>
+                <AnimatePresence initial={false}>
+                  {showAdvancedFields ? (
+                    <motion.div
+                      animate={{ height: "auto", opacity: 1, scale: 1 }}
+                      className="origin-top overflow-hidden"
+                      exit={{ height: 0, opacity: 0, scale: 0.98 }}
+                      initial={{ height: 0, opacity: 0, scale: 0.98 }}
+                      key="persona-advanced-fields"
+                      transition={advancedFieldsTransition}
+                    >
+                      <PersonaAdvancedFields
+                        behaviorDraft={behaviorDraft}
+                        disabled={isPending}
+                        envVars={envVars}
+                        fileSatisfiedEnvKeys={
+                          localModeGate.fileSatisfiedEnvKeys
+                        }
+                        hiddenEnvKeys={
+                          topLevelSecretEnvVar ? [topLevelSecretEnvVar] : []
+                        }
+                        inheritedEnvVars={inheritedEnvVarsForAdvanced}
+                        model={model}
+                        modelTuningRuntimeId={runtime}
+                        namePoolText={namePoolText}
+                        onBehaviorDraftChange={(nextBehaviorDraft) => {
+                          setHasUserChanges(true);
+                          setBehaviorDraft(nextBehaviorDraft);
+                        }}
+                        onEnvVarsChange={setEnvVars}
+                        onNamePoolTextChange={setNamePoolText}
+                        provider={effectiveProvider}
+                        requiredEnvKeys={advancedRequiredEnvKeys}
+                      />
+                    </motion.div>
+                  ) : null}
+                </AnimatePresence>
+              </div>
+
+              {error ? (
+                <p
+                  aria-live="assertive"
+                  className="text-sm text-destructive"
+                  role="alert"
+                >
+                  {error.message}
+                </p>
               ) : null}
             </div>
-
-            <AgentDefaultsDialog
-              onOpenChange={setAiDefaultsOpen}
-              open={runtimeCanChooseLlmProvider && aiDefaultsOpen}
-              returnFocusRef={aiDefaultsTriggerRef}
-            />
-
-            <AddCustomHarnessDialog
-              onOpenChange={setIsAddHarnessOpen}
-              onSaved={selectSavedHarness}
-              open={isAddHarnessOpen}
-            />
-            {resourcesDraft.section}
-            {isCreateMode
-              ? typeof createRunSection === "function"
-                ? createRunSection(resourcesDraft.requirements)
-                : createRunSection
-              : null}
-
-            <div className="space-y-3">
-              <button
-                aria-expanded={showAdvancedFields}
-                className="inline-flex h-9 items-center gap-1.5 text-sm font-medium text-foreground transition-colors hover:text-foreground/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                onClick={() => setShowAdvancedFields((current) => !current)}
+          </form>
+        </ChooserDialogContent>
+      </Dialog>
+      <AlertDialog
+        onOpenChange={setDiscardConfirmOpen}
+        open={discardConfirmOpen}
+      >
+        <AlertDialogContent data-testid="persona-discard-confirmation">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your changes to this {isCreateMode ? "agent" : "template"} will be
+              lost.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel asChild>
+              <Button type="button" variant="outline">
+                Keep editing
+              </Button>
+            </AlertDialogCancel>
+            <AlertDialogAction asChild>
+              <Button
+                onClick={closeAndReset}
                 type="button"
+                variant="destructive"
               >
-                <span>Advanced</span>
-                {localModeGate.missingEnvKeys.some((key) =>
-                  advancedRequiredEnvKeys.includes(key),
-                ) ? (
-                  <span
-                    aria-hidden="true"
-                    className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs text-destructive"
-                    data-testid="persona-advanced-required-badge"
-                  >
-                    Required
-                  </span>
-                ) : null}
-                <ChevronDown
-                  className={cn(
-                    "h-4 w-4 text-muted-foreground transition-transform duration-150 ease-out",
-                    showAdvancedFields && "rotate-180",
-                  )}
-                />
-              </button>
-              <AnimatePresence initial={false}>
-                {showAdvancedFields ? (
-                  <motion.div
-                    animate={{ height: "auto", opacity: 1, scale: 1 }}
-                    className="origin-top overflow-hidden"
-                    exit={{ height: 0, opacity: 0, scale: 0.98 }}
-                    initial={{ height: 0, opacity: 0, scale: 0.98 }}
-                    key="persona-advanced-fields"
-                    transition={advancedFieldsTransition}
-                  >
-                    <PersonaAdvancedFields
-                      behaviorDraft={behaviorDraft}
-                      disabled={isPending}
-                      envVars={envVars}
-                      fileSatisfiedEnvKeys={localModeGate.fileSatisfiedEnvKeys}
-                      hiddenEnvKeys={
-                        topLevelSecretEnvVar ? [topLevelSecretEnvVar] : []
-                      }
-                      inheritedEnvVars={inheritedEnvVarsForAdvanced}
-                      model={model}
-                      modelTuningRuntimeId={runtime}
-                      namePoolText={namePoolText}
-                      onBehaviorDraftChange={(nextBehaviorDraft) => {
-                        setHasUserChanges(true);
-                        setBehaviorDraft(nextBehaviorDraft);
-                      }}
-                      onEnvVarsChange={setEnvVars}
-                      onNamePoolTextChange={setNamePoolText}
-                      provider={effectiveProvider}
-                      requiredEnvKeys={advancedRequiredEnvKeys}
-                    />
-                  </motion.div>
-                ) : null}
-              </AnimatePresence>
-            </div>
-
-            {error ? (
-              <p className="text-sm text-destructive">{error.message}</p>
-            ) : null}
-          </div>
-        </form>
-      </ChooserDialogContent>
-    </Dialog>
+                Discard changes
+              </Button>
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
   );
 }

@@ -2,6 +2,7 @@ import {
   CopyPlus,
   EllipsisVertical,
   Pencil,
+  RefreshCw,
   Share2,
   Trash2,
 } from "lucide-react";
@@ -23,6 +24,8 @@ export function PersonaActionsMenu({
   onDuplicate,
   onEdit,
   onShare,
+  onUpdateAgents,
+  updateCount,
   onDeactivate,
   onDelete,
 }: {
@@ -37,6 +40,8 @@ export function PersonaActionsMenu({
     persona: AgentPersona,
     linkedAgent: ManagedAgent | undefined,
   ) => void;
+  onUpdateAgents: (persona: AgentPersona) => void;
+  updateCount: number;
   onDeactivate: (persona: AgentPersona) => void;
   onDelete: (persona: AgentPersona) => void;
 }) {
@@ -66,6 +71,16 @@ export function PersonaActionsMenu({
           >
             <Pencil className="h-4 w-4" />
             Edit template
+          </DropdownMenuItem>
+        ) : null}
+        {updateCount > 0 ? (
+          <DropdownMenuItem
+            data-testid={`persona-actions-update-agents-${persona.id}`}
+            disabled={disabled}
+            onClick={() => onUpdateAgents(persona)}
+          >
+            <RefreshCw className="h-4 w-4" />
+            Update {updateCount} {updateCount === 1 ? "agent" : "agents"}
           </DropdownMenuItem>
         ) : null}
         <DropdownMenuItem

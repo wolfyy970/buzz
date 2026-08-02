@@ -5,6 +5,7 @@ import type {
   AgentProjectScope,
   AgentTemplateVersionRef,
   AgentToolRequirement,
+  RespondToMode,
 } from "@/shared/api/types";
 import type { AgentSkill } from "@/shared/api/agentSkillTypes";
 
@@ -21,6 +22,8 @@ export type AgentTemplateUpdateTarget = {
   instructionChange: AgentTemplateInstructionChange | null;
   toolChanges: AgentTemplateToolChanges;
   skillChanges: AgentTemplateSkillChanges;
+  versionChanges: AgentTemplateVersionChanges;
+  overridesPreserved: AgentTemplateOverridesPreserved;
   toolBindingIssues: string[];
 };
 
@@ -35,6 +38,9 @@ export type AgentTemplateToolChanges = {
   changed: Array<{
     before: AgentToolRequirement;
     after: AgentToolRequirement;
+    labelChanged: boolean;
+    capabilityChanged: boolean;
+    requiredChanged: boolean;
   }>;
   removed: AgentToolRequirement[];
 };
@@ -44,8 +50,68 @@ export type AgentTemplateSkillChanges = {
   changed: Array<{
     before: AgentSkill;
     after: AgentSkill;
+    fileChanges: AgentTemplateSkillFileChanges;
   }>;
   removed: AgentSkill[];
+};
+
+export type AgentTemplateSkillFileContent = {
+  path: string;
+  content: string;
+};
+
+export type AgentTemplateSkillFileContentChange = {
+  path: string;
+  before: string;
+  after: string;
+};
+
+export type AgentTemplateSkillFileChanges = {
+  added: AgentTemplateSkillFileContent[];
+  changed: AgentTemplateSkillFileContentChange[];
+  removed: AgentTemplateSkillFileContent[];
+};
+
+export type AgentTemplateOptionalStringChange = {
+  before: string | null;
+  after: string | null;
+};
+
+export type AgentTemplateParallelismChange = {
+  before: number;
+  after: number;
+};
+
+export type AgentTemplateAccessChange = {
+  before: RespondToMode;
+  after: RespondToMode;
+  allowlistAdded: string[];
+  allowlistRemoved: string[];
+};
+
+export type AgentTemplateEnvironmentChanges = {
+  addedKeys: string[];
+  changedKeys: string[];
+  removedKeys: string[];
+};
+
+export type AgentTemplateVersionChanges = {
+  runtime: AgentTemplateOptionalStringChange | null;
+  provider: AgentTemplateOptionalStringChange | null;
+  model: AgentTemplateOptionalStringChange | null;
+  access: AgentTemplateAccessChange | null;
+  parallelism: AgentTemplateParallelismChange | null;
+  environment: AgentTemplateEnvironmentChanges;
+};
+
+export type AgentTemplateOverridesPreserved = {
+  instructions: boolean;
+  runtime: boolean;
+  model: boolean;
+  provider: boolean;
+  skills: boolean;
+  localEnvironment: boolean;
+  localEnvironmentKeys: string[];
 };
 
 export type AgentTemplateUpdatePreview = {
@@ -92,6 +158,30 @@ export type AgentTemplateUpdateProgress = {
   stage: AgentTemplateUpdateProgressStage;
 };
 
+function fallbackSkillFileChanges(
+  before: AgentSkill,
+  after: AgentSkill,
+): AgentTemplateSkillFileChanges {
+  const beforeByPath = new Map(before.files.map((file) => [file.path, file]));
+  const afterByPath = new Map(after.files.map((file) => [file.path, file]));
+  return {
+    added: after.files.filter((file) => !beforeByPath.has(file.path)),
+    changed: after.files.flatMap((file) => {
+      const previous = beforeByPath.get(file.path);
+      return previous && previous.content !== file.content
+        ? [
+            {
+              path: file.path,
+              before: previous.content,
+              after: file.content,
+            },
+          ]
+        : [];
+    }),
+    removed: before.files.filter((file) => !afterByPath.has(file.path)),
+  };
+}
+
 export const AGENT_TEMPLATE_UPDATE_PROGRESS_EVENT =
   "agent-template-update-progress";
 
@@ -120,13 +210,34 @@ export async function previewAgentTemplateUpdate(
   personaId: string,
   targetVersion?: AgentTemplateVersionRef,
 ): Promise<AgentTemplateUpdatePreview> {
+  type RawTarget = Omit<
+    AgentTemplateUpdateTarget,
+    | "projectScope"
+    | "connectionBindings"
+    | "instructionChange"
+    | "toolChanges"
+    | "skillChanges"
+    | "versionChanges"
+    | "overridesPreserved"
+    | "toolBindingIssues"
+  > & {
+    projectScope?: AgentProjectScope | null;
+    connectionBindings?: Record<string, string>;
+    instructionChange?: AgentTemplateInstructionChange | null;
+    toolChanges?: AgentTemplateToolChanges;
+    skillChanges?: AgentTemplateSkillChanges;
+    versionChanges?: AgentTemplateVersionChanges;
+    overridesPreserved?: AgentTemplateOverridesPreserved;
+    toolBindingIssues?: string[];
+  };
   const preview = await invokeTauri<
     Omit<
       AgentTemplateUpdatePreview,
-      "targetToolRequirements" | "targetSkills"
+      "targetToolRequirements" | "targetSkills" | "agents"
     > & {
       targetToolRequirements?: AgentToolRequirement[];
       targetSkills?: AgentSkill[];
+      agents: RawTarget[];
     }
   >("preview_agent_template_update", { personaId, targetVersion });
   return {
@@ -138,15 +249,51 @@ export async function previewAgentTemplateUpdate(
       projectScope: agent.projectScope ?? null,
       connectionBindings: agent.connectionBindings ?? {},
       instructionChange: agent.instructionChange ?? null,
-      toolChanges: agent.toolChanges ?? {
-        added: [],
-        changed: [],
-        removed: [],
+      toolChanges: {
+        added: agent.toolChanges?.added ?? [],
+        changed: (agent.toolChanges?.changed ?? []).map((change) => ({
+          ...change,
+          labelChanged:
+            change.labelChanged ?? change.before.label !== change.after.label,
+          capabilityChanged:
+            change.capabilityChanged ??
+            change.before.capability !== change.after.capability,
+          requiredChanged:
+            change.requiredChanged ??
+            change.before.required !== change.after.required,
+        })),
+        removed: agent.toolChanges?.removed ?? [],
       },
-      skillChanges: agent.skillChanges ?? {
-        added: [],
-        changed: [],
-        removed: [],
+      skillChanges: {
+        added: agent.skillChanges?.added ?? [],
+        changed: (agent.skillChanges?.changed ?? []).map((change) => ({
+          ...change,
+          fileChanges:
+            change.fileChanges ??
+            fallbackSkillFileChanges(change.before, change.after),
+        })),
+        removed: agent.skillChanges?.removed ?? [],
+      },
+      versionChanges: agent.versionChanges ?? {
+        runtime: null,
+        provider: null,
+        model: null,
+        access: null,
+        parallelism: null,
+        environment: {
+          addedKeys: [],
+          changedKeys: [],
+          removedKeys: [],
+        },
+      },
+      overridesPreserved: agent.overridesPreserved ?? {
+        instructions: false,
+        runtime: false,
+        model: false,
+        provider: false,
+        skills: false,
+        localEnvironment: false,
+        localEnvironmentKeys: [],
       },
       toolBindingIssues: agent.toolBindingIssues ?? [],
     })),

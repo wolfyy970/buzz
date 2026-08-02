@@ -1,6 +1,6 @@
 import * as React from "react";
 
-import { agentSkillsValidationError } from "@/shared/api/agentSkillTypes";
+import { agentSkillsValidationIssue } from "@/shared/api/agentSkillTypes";
 import type { AgentSkill } from "@/shared/api/agentSkillTypes";
 import type {
   AgentPersona,
@@ -135,12 +135,12 @@ export function useAgentInstanceTemplateOverridesDraft({
   const skillsOverride =
     !resetSkills &&
     (agent.skillsChangedForAgent || !skillsEqual(skills, template.skills));
-  const skillsValidationError = agentSkillsValidationError(skills);
-  const valid = skillsValidationError === null;
+  const skillsValidationIssue = agentSkillsValidationIssue(skills);
+  const valid = skillsValidationIssue === null;
 
   return {
     valid,
-    submitBlockReason: skillsValidationError,
+    submitBlockReason: skillsValidationIssue?.message ?? null,
     update: agentTemplateOverrideUpdate({
       agent,
       instructions,
@@ -230,6 +230,7 @@ export function useAgentInstanceTemplateOverridesDraft({
           description={`Add Skills only ${agent.name} can use.`}
           disabled={disabled}
           emptyMessage="This agent does not have any Skills."
+          headingLevel="h4"
           onChange={(nextSkills) => {
             skillsTouched.current = true;
             setResetSkills(false);
@@ -240,6 +241,7 @@ export function useAgentInstanceTemplateOverridesDraft({
               <Badge variant="secondary">Changed for this agent</Badge>
             ) : null
           }
+          validationIssue={skillsValidationIssue}
           value={skills}
         />
       </section>

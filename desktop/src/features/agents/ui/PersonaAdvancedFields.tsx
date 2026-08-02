@@ -6,7 +6,6 @@ import type { PersonaBehaviorDraft } from "./personaBehaviorDraft";
 import { isBuzzAgentRuntime } from "./buzzAgentConfig";
 import { BuzzAgentModelTuningFields } from "./buzzAgentModelTuningFields";
 import {
-  CARD_MINT_KEY_ANNOTATIONS,
   PERSONA_FIELD_CONTROL_CLASS,
   PERSONA_FIELD_SHELL_CLASS,
   PERSONA_LABEL_OPTIONAL_CLASS,
@@ -50,29 +49,76 @@ export function PersonaAdvancedFields({
 }) {
   return (
     <div className="space-y-5 pt-2">
-      <CreateAgentRespondToField
-        allowlist={behaviorDraft.respondToAllowlist}
-        disabled={disabled}
-        mode={behaviorDraft.respondTo ?? "owner-only"}
-        onAllowlistChange={(allowlist) =>
-          onBehaviorDraftChange({
-            ...behaviorDraft,
-            respondToAllowlist: allowlist,
-          })
-        }
-        onModeChange={(mode) =>
-          onBehaviorDraftChange({ ...behaviorDraft, respondTo: mode })
-        }
-        variant="persona"
-      />
+      <section className="space-y-4">
+        <h4 className="text-sm font-semibold text-foreground">Behavior</h4>
+        <CreateAgentRespondToField
+          allowlist={behaviorDraft.respondToAllowlist}
+          disabled={disabled}
+          mode={behaviorDraft.respondTo ?? "owner-only"}
+          onAllowlistChange={(allowlist) =>
+            onBehaviorDraftChange({
+              ...behaviorDraft,
+              respondToAllowlist: allowlist,
+            })
+          }
+          onModeChange={(mode) =>
+            onBehaviorDraftChange({ ...behaviorDraft, respondTo: mode })
+          }
+          variant="persona"
+        />
 
-      <div className="grid gap-5 sm:grid-cols-2">
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div className="space-y-1.5">
+            <label
+              className="text-sm font-medium text-foreground"
+              htmlFor="persona-parallelism"
+            >
+              Parallelism
+              <span className={PERSONA_LABEL_OPTIONAL_CLASS}>Optional</span>
+            </label>
+            <div
+              className={cn(
+                "flex min-h-11 items-center px-3",
+                PERSONA_FIELD_SHELL_CLASS,
+              )}
+            >
+              <Input
+                aria-describedby="persona-parallelism-help"
+                className={cn(
+                  "h-8 px-0 py-0 leading-6",
+                  PERSONA_FIELD_CONTROL_CLASS,
+                )}
+                disabled={disabled}
+                id="persona-parallelism"
+                inputMode="numeric"
+                max={32}
+                min={1}
+                onChange={(event) =>
+                  onBehaviorDraftChange({
+                    ...behaviorDraft,
+                    parallelism: event.target.value,
+                  })
+                }
+                placeholder="1"
+                type="number"
+                value={behaviorDraft.parallelism}
+              />
+            </div>
+            <p
+              className="text-xs text-muted-foreground"
+              id="persona-parallelism-help"
+            >
+              Conversations each running instance can handle at once (1–32).
+            </p>
+          </div>
+        </div>
+
         <div className="space-y-1.5">
           <label
             className="text-sm font-medium text-foreground"
-            htmlFor="persona-parallelism"
+            htmlFor="persona-name-pool"
           >
-            Parallelism
+            Instance name pool
             <span className={PERSONA_LABEL_OPTIONAL_CLASS}>Optional</span>
           </label>
           <div
@@ -82,72 +128,44 @@ export function PersonaAdvancedFields({
             )}
           >
             <Input
+              autoCapitalize="words"
+              autoCorrect="off"
               className={cn(
                 "h-8 px-0 py-0 leading-6",
                 PERSONA_FIELD_CONTROL_CLASS,
               )}
               disabled={disabled}
-              id="persona-parallelism"
-              inputMode="numeric"
-              max={32}
-              min={1}
-              onChange={(event) =>
-                onBehaviorDraftChange({
-                  ...behaviorDraft,
-                  parallelism: event.target.value,
-                })
-              }
-              placeholder="1"
-              type="number"
-              value={behaviorDraft.parallelism}
+              id="persona-name-pool"
+              onChange={(event) => onNamePoolTextChange(event.target.value)}
+              placeholder="Birch, Compass, Ridge, Thistle"
+              spellCheck={false}
+              value={namePoolText}
             />
           </div>
-          <p className="text-xs text-muted-foreground">
-            How many conversations each running instance handles at once (1–32).
+        </div>
+      </section>
+
+      <section
+        className="scroll-mt-4 space-y-2"
+        id="persona-environment-section"
+        tabIndex={-1}
+      >
+        <div>
+          <h4 className="text-sm font-semibold text-foreground">Environment</h4>
+          <p className="mt-1 text-xs text-muted-foreground">
+            Saved on this device. Secrets are never included in template
+            versions.
           </p>
         </div>
-      </div>
-
-      <div className="space-y-1.5">
-        <label
-          className="text-sm font-medium text-foreground"
-          htmlFor="persona-name-pool"
-        >
-          Instance name pool
-          <span className={PERSONA_LABEL_OPTIONAL_CLASS}>Optional</span>
-        </label>
-        <div
-          className={cn(
-            "flex min-h-11 items-center px-3",
-            PERSONA_FIELD_SHELL_CLASS,
-          )}
-        >
-          <Input
-            autoCapitalize="words"
-            autoCorrect="off"
-            className={cn(
-              "h-8 px-0 py-0 leading-6",
-              PERSONA_FIELD_CONTROL_CLASS,
-            )}
-            disabled={disabled}
-            id="persona-name-pool"
-            onChange={(event) => onNamePoolTextChange(event.target.value)}
-            placeholder="Birch, Compass, Ridge, Thistle"
-            spellCheck={false}
-            value={namePoolText}
-          />
-        </div>
-      </div>
-
-      <EnvVarsEditor
-        disabled={disabled}
-        fileSatisfiedKeys={fileSatisfiedEnvKeys}
-        hiddenKeys={hiddenEnvKeys}
-        keyAnnotations={CARD_MINT_KEY_ANNOTATIONS}
-        onChange={onEnvVarsChange}
-        requiredKeys={requiredEnvKeys}
-        value={envVars}
-      />
+        <EnvVarsEditor
+          disabled={disabled}
+          fileSatisfiedKeys={fileSatisfiedEnvKeys}
+          hiddenKeys={hiddenEnvKeys}
+          onChange={onEnvVarsChange}
+          requiredKeys={requiredEnvKeys}
+          value={envVars}
+        />
+      </section>
 
       {/* Tier-1 buzz-agent model-tuning knobs — only shown for buzz-agent. */}
       {isBuzzAgentRuntime(modelTuningRuntimeId) ? (

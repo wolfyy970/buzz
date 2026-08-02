@@ -33,6 +33,7 @@ const LINKED_AGENTS = [
     backend: { type: "local" as const },
     systemPrompt: INITIAL_TEMPLATE_INSTRUCTIONS,
     skills: [CAMPAIGN_SKILL],
+    skillsChangedForAgent: true,
   },
   {
     pubkey: TEST_IDENTITIES.bob.pubkey,
@@ -83,10 +84,34 @@ async function capture(
   await subject.screenshot({ path: `${SHOTS}/${filename}` });
 }
 
+async function capturePage(page: Page, filename: string) {
+  await waitForAnimations(page);
+  await page.screenshot({ path: `${SHOTS}/${filename}` });
+}
+
+async function openTemplateEditor(page: Page) {
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page.getByTestId("open-agents-view").click();
+  await page
+    .getByRole("button", {
+      exact: true,
+      name: `${TEMPLATE_NAME} agent profile`,
+    })
+    .click();
+  await page.getByTestId("user-profile-edit-agent").click();
+  await page
+    .getByTestId("agent-edit-scope-dialog")
+    .getByTestId("agent-edit-scope-template")
+    .click();
+  const templateEditor = page.getByTestId("persona-dialog");
+  await expect(templateEditor).toBeVisible({ timeout: 10_000 });
+  return templateEditor;
+}
+
 test.describe("agent template update screenshots", () => {
   test.use({ viewport: { width: 1280, height: 900 } });
 
-  test.beforeEach(async ({ page }) => {
+  test.beforeEach(async ({ page }, testInfo) => {
     page.on("pageerror", (error) => {
       console.error(
         "PAGE ERROR:",
@@ -99,6 +124,12 @@ test.describe("agent template update screenshots", () => {
         console.error("CONSOLE ERROR:", message.text().slice(0, 500));
       }
     });
+
+    if (testInfo.title.includes("dark compact")) {
+      await page.addInitScript(() => {
+        window.localStorage.setItem("buzz-theme", "github-dark");
+      });
+    }
 
     await installMockBridge(page, {
       globalAgentConfig: {
@@ -170,8 +201,52 @@ test.describe("agent template update screenshots", () => {
       "02-template-editor-affected-agent-preview.png",
     );
 
+    const templateContents = templateEditor.getByTestId(
+      "template-contents-nav",
+    );
+    await expect(templateContents).toContainText("Template setup");
+    await expect(templateContents).toContainText("Identity");
+    await expect(templateContents).toContainText("Instructions");
+    await expect(templateContents).toContainText("AI configuration");
+    await expect(templateContents).toContainText("1 Skill");
+    await expect(templateContents).toContainText("0 requirements");
+    await expect(templateContents).toContainText("Behavior");
+    await expect(templateContents).toContainText(
+      "stays on this device and is not included in a version",
+    );
+    await capture(
+      page,
+      templateContents,
+      "02-template-editor-contents-map.png",
+    );
+
+    await templateContents
+      .getByTestId("template-section-persona-model-section")
+      .click();
+    const modelSection = templateEditor.locator("#persona-model-section");
+    await expect(modelSection).toBeInViewport();
+    await capture(page, modelSection, "02-template-editor-runtime-model.png");
+
+    await templateContents
+      .getByTestId("template-section-persona-tools-section")
+      .click();
+    const toolsSection = templateEditor.getByTestId("agent-tools-section");
+    await expect(toolsSection).toBeInViewport();
+    await capture(page, toolsSection, "02-template-editor-tools.png");
+
+    await templateContents
+      .getByTestId("template-section-persona-behavior-section")
+      .click();
+    await expect(page.locator("#persona-parallelism")).toBeVisible();
+    const behaviorSection = templateEditor.locator("#persona-behavior-section");
+    await capture(page, behaviorSection, "02-template-editor-behavior.png");
+    await page.locator("#persona-parallelism").fill("4");
+
+    await templateContents
+      .getByTestId("template-section-persona-skills-section")
+      .click();
     const skillsSection = templateEditor.getByTestId("agent-skills-section");
-    await skillsSection.scrollIntoViewIfNeeded();
+    await expect(skillsSection).toBeInViewport();
     await expect(templateEditor.getByTestId("agent-skill-name-0")).toHaveValue(
       "campaign-analysis",
     );
@@ -199,11 +274,11 @@ test.describe("agent template update screenshots", () => {
     await expect(
       templateEditor.getByTestId("persona-dialog-template-version-notice"),
     ).toHaveText(
-      "Publishing creates a version you can use to update agents. Running agents do not change.",
+      "Save changes without affecting running agents. Publish a version when you are ready to update them.",
     );
     await expect(
       templateEditor.getByTestId("persona-dialog-save-template"),
-    ).toHaveText("Save template");
+    ).toHaveText("Save changes");
     const publishButton = templateEditor.getByTestId("persona-dialog-submit");
     await expect(publishButton).toHaveText("Publish version");
     await expect(publishButton).toBeEnabled({ timeout: 10_000 });
@@ -225,15 +300,18 @@ test.describe("agent template update screenshots", () => {
         }, commandsBeforeSave),
       )
       .toBe(false);
+    await expect(updateReview).toContainText("Update agents");
+    await expect(updateReview).toContainText("Choose who should get");
     await expect(updateReview).toContainText(
-      `Update agents using ${TEMPLATE_NAME}?`,
-    );
-    await expect(updateReview).toContainText("Choose which agents");
-    await expect(updateReview).toContainText(
-      "Safe to update now. Buzz stops new work and lets the current task finish. If it cannot, the new version recovers it after the update.",
+      "Buzz finishes current work before switching versions. If the update fails, it restores the previous version.",
     );
     await expect(updateReview).toContainText("Skills in this update");
     await expect(updateReview).toContainText("Changed campaign-analysis");
+    await expect(updateReview).toContainText("Configuration in this update");
+    await expect(updateReview).toContainText("Parallel work");
+    await expect(updateReview).toContainText(
+      "This agent keeps its own Skills.",
+    );
     const instructionChanges = updateReview.getByTestId(
       "template-instruction-changes",
     );
@@ -295,7 +373,7 @@ test.describe("agent template update screenshots", () => {
       .getByRole("button", { name: "Continue working" })
       .click();
     await expect(updateReview).not.toBeVisible();
-    const backgroundNotice = page.getByText("Agent update finished.", {
+    const backgroundNotice = page.getByText("3 agents updated.", {
       exact: true,
     });
     await expect(backgroundNotice).toBeVisible({ timeout: 10_000 });
@@ -303,10 +381,10 @@ test.describe("agent template update screenshots", () => {
       page,
       page
         .locator("[data-sonner-toast]")
-        .filter({ hasText: "Agent update finished." }),
+        .filter({ hasText: "3 agents updated." }),
       "08-background-update-finished.png",
     );
-    await page.getByRole("button", { name: "Review" }).click();
+    await page.getByRole("button", { name: "View results" }).click();
 
     await expect(
       updateReview.getByText("Agents updated", { exact: true }),
@@ -354,6 +432,13 @@ test.describe("agent template update screenshots", () => {
         exact: true,
       }),
     ).toBeVisible();
+    await capture(
+      page,
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: "Version wasn’t published" }),
+      "10-publish-failure.png",
+    );
 
     await page.getByTestId("user-profile-edit-agent").click();
     await page
@@ -406,5 +491,49 @@ test.describe("agent template update screenshots", () => {
         );
     }, commandCount);
     expect(templateCommands).toEqual(["update_persona"]);
+  });
+
+  test("shows inline Skill validation and protects unsaved work", async ({
+    page,
+  }) => {
+    const templateEditor = await openTemplateEditor(page);
+    await templateEditor.getByTestId("agent-skill-add").click();
+
+    const newSkillName = templateEditor.getByTestId("agent-skill-name-1");
+    await expect(newSkillName).toHaveAttribute("aria-invalid", "true");
+    await expect(newSkillName).toHaveValue("");
+    await expect(
+      templateEditor.getByRole("alert").filter({
+        hasText: "Enter a Skill name.",
+      }),
+    ).toBeVisible();
+    await capture(
+      page,
+      templateEditor.getByTestId("agent-skill-1"),
+      "11-inline-skill-validation.png",
+    );
+
+    await templateEditor.getByRole("button", { name: "Cancel" }).click();
+    const confirmation = page.getByTestId("persona-discard-confirmation");
+    await expect(confirmation).toBeVisible();
+    await capture(page, confirmation, "12-discard-unsaved-confirmation.png");
+    await confirmation.getByRole("button", { name: "Keep editing" }).click();
+    await expect(templateEditor).toBeVisible();
+  });
+
+  test("keeps desktop density in a dark compact window", async ({ page }) => {
+    await page.setViewportSize({ width: 860, height: 720 });
+    const templateEditor = await openTemplateEditor(page);
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          document.documentElement.classList.contains("dark"),
+        ),
+      )
+      .toBe(true);
+    await expect(
+      templateEditor.getByTestId("template-contents-nav"),
+    ).toBeVisible();
+    await capturePage(page, "13-dark-compact-template-editor.png");
   });
 });

@@ -36,6 +36,7 @@ import {
  * env-vars map pattern and the `setConfig` pattern).
  */
 export function EffortSelectField({
+  ariaDescribedBy,
   currentEffort,
   disabled = false,
   emptyOptionLabel,
@@ -54,6 +55,8 @@ export function EffortSelectField({
   testId,
   useCustomSelect = false,
 }: {
+  /** ID of visible help text associated with this control. */
+  ariaDescribedBy?: string;
   /** Current effort value from env vars ("" = inherit). */
   currentEffort: string;
   /** Disable the dropdown. */
@@ -132,6 +135,7 @@ export function EffortSelectField({
       </label>
       {useCustomSelect ? (
         <AgentDropdownSelect
+          aria-describedby={ariaDescribedBy}
           className={selectClassName}
           disabled={disabled}
           id={htmlFor}
@@ -144,6 +148,7 @@ export function EffortSelectField({
         />
       ) : (
         <select
+          aria-describedby={ariaDescribedBy}
           className={cn(
             "flex h-9 w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-xs disabled:cursor-not-allowed disabled:opacity-60",
             selectClassName,
@@ -229,14 +234,13 @@ export function BuzzAgentModelTuningFields({
 
   return (
     <div className="space-y-4">
-      <p className="text-2xs font-semibold uppercase tracking-wide text-muted-foreground">
-        buzz-agent model tuning
-      </p>
+      <h4 className="text-sm font-semibold text-foreground">Model tuning</h4>
 
       <div className="grid gap-4 md:grid-cols-2">
         {/* Thinking / Effort */}
         <div className="space-y-1.5">
           <EffortSelectField
+            ariaDescribedBy="help-ba-thinking-effort"
             currentEffort={currentEffort}
             effortDefault={effortDefault}
             effortValid={effortValid}

@@ -396,13 +396,13 @@ export function usePersonaActions() {
         );
         const options = {
           action: {
-            label: "Review",
+            label: "View results",
             onClick: () => {
               isTemplateUpdateDialogOpenRef.current = true;
               setIsTemplateUpdateDialogOpen(true);
             },
           },
-          duration: 10_000,
+          duration: needsAttention ? Number.POSITIVE_INFINITY : 10_000,
         };
         if (needsAttention) {
           toast.error("Some agents need attention.", options);
@@ -412,7 +412,12 @@ export function usePersonaActions() {
             options,
           );
         } else {
-          toast.success("Agent update finished.", options);
+          toast.success(
+            `${result.agents.length} ${
+              result.agents.length === 1 ? "agent" : "agents"
+            } updated.`,
+            options,
+          );
         }
       }
     } catch (error) {
@@ -422,18 +427,47 @@ export function usePersonaActions() {
       if (!isTemplateUpdateDialogOpenRef.current) {
         toast.error("Agent update failed.", {
           action: {
-            label: "Review",
+            label: "View details",
             onClick: () => {
               isTemplateUpdateDialogOpenRef.current = true;
               setIsTemplateUpdateDialogOpen(true);
             },
           },
           description: message,
-          duration: 10_000,
+          duration: Number.POSITIVE_INFINITY,
         });
       }
     } finally {
       setIsTemplateUpdatePending(false);
+    }
+  }
+
+  async function openPublishedTemplateUpdate(persona: AgentPersona) {
+    if (isTemplateUpdatePending) return;
+    clearFeedback("library");
+    try {
+      const preview = await previewAgentTemplateUpdate(
+        persona.id,
+        persona.publishedVersion ?? undefined,
+      );
+      if (!hasOutdatedAgentTemplateInstances(preview)) {
+        setPersonaNoticeMessage(
+          `Every agent using ${persona.displayName} is up to date.`,
+        );
+        return;
+      }
+      setTemplateUpdateResult(null);
+      setTemplateUpdateError(null);
+      setTemplateUpdateProgressStage(null);
+      setTemplateUpdatePreview(preview);
+      isTemplateUpdateDialogOpenRef.current = true;
+      setIsTemplateUpdateDialogOpen(true);
+    } catch (error) {
+      setPersonaErrorMessage(
+        error instanceof Error
+          ? error.message
+          : `Could not review updates for ${persona.displayName}.`,
+      );
     }
   }
 
@@ -445,6 +479,12 @@ export function usePersonaActions() {
     setTemplateUpdateResult(null);
     setTemplateUpdateError(null);
     setTemplateUpdateProgressStage(null);
+  }
+
+  function reopenTemplateUpdateDialog() {
+    if (!templateUpdatePreview) return;
+    isTemplateUpdateDialogOpenRef.current = true;
+    setIsTemplateUpdateDialogOpen(true);
   }
 
   async function handleDelete(persona: AgentPersona) {
@@ -781,6 +821,8 @@ export function usePersonaActions() {
     templateUpdateProgressStage,
     isTemplateUpdatePending,
     handleApplyTemplateUpdate,
+    openPublishedTemplateUpdate,
     closeTemplateUpdateDialog,
+    reopenTemplateUpdateDialog,
   };
 }

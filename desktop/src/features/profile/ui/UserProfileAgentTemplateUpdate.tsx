@@ -13,6 +13,7 @@ import {
   type PublishAgentTemplateVersionResult,
 } from "@/shared/api/tauriAgentTemplateUpdates";
 import type { AgentPersona } from "@/shared/api/types";
+import { useProfilePanel } from "@/shared/context/ProfilePanelContext";
 
 export type ProfileAgentTemplateUpdateController = {
   apply: (
@@ -112,13 +113,13 @@ export function useProfileAgentTemplateUpdate({
           );
           const options = {
             action: {
-              label: "Review",
+              label: "View results",
               onClick: () => {
                 dialogOpenRef.current = true;
                 setDialogOpen(true);
               },
             },
-            duration: 10_000,
+            duration: needsAttention ? Number.POSITIVE_INFINITY : 10_000,
           };
           if (needsAttention) {
             toast.error("Some agents need attention.", options);
@@ -128,7 +129,12 @@ export function useProfileAgentTemplateUpdate({
               options,
             );
           } else {
-            toast.success("Agent update finished.", options);
+            toast.success(
+              `${nextResult.agents.length} ${
+                nextResult.agents.length === 1 ? "agent" : "agents"
+              } updated.`,
+              options,
+            );
           }
         }
       } catch (applyError) {
@@ -140,14 +146,14 @@ export function useProfileAgentTemplateUpdate({
         if (!dialogOpenRef.current) {
           toast.error("Agent update failed.", {
             action: {
-              label: "Review",
+              label: "View details",
               onClick: () => {
                 dialogOpenRef.current = true;
                 setDialogOpen(true);
               },
             },
             description: message,
-            duration: 10_000,
+            duration: Number.POSITIVE_INFINITY,
           });
         }
       } finally {
@@ -188,6 +194,7 @@ export function UserProfileAgentTemplateUpdateDialog({
 }: {
   controller: ProfileAgentTemplateUpdateController;
 }) {
+  const { openProfilePanel } = useProfilePanel();
   return (
     <AgentTemplateUpdateDialog
       error={controller.error}
@@ -196,6 +203,7 @@ export function UserProfileAgentTemplateUpdateDialog({
         void controller.apply(selectedPubkeys, connectionBindingsByPubkey);
       }}
       onOpenChange={controller.onOpenChange}
+      onOpenAgent={(pubkey) => openProfilePanel?.(pubkey, { tab: "runtime" })}
       open={controller.dialogOpen}
       preview={controller.preview}
       progressStage={controller.progressStage}

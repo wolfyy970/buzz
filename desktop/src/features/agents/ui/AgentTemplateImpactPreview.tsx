@@ -15,6 +15,9 @@ export function AgentTemplateImpactPreview({
   className?: string;
   surface?: "card" | "plain";
 }) {
+  const visibleAgents = agents.slice(0, 6);
+  const hiddenCount = agents.length - visibleAgents.length;
+
   return (
     <div
       className={cn(
@@ -33,15 +36,21 @@ export function AgentTemplateImpactPreview({
           aria-label="Agents using this template"
           className="mt-2 flex flex-wrap gap-1.5"
         >
-          {agents.map((agent) => (
+          {visibleAgents.map((agent) => (
             <li
-              className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+              className="max-w-full break-words rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
               data-testid={`template-impact-agent-${agent.pubkey}`}
               key={agent.pubkey}
+              title={agent.name}
             >
               {agent.name}
             </li>
           ))}
+          {hiddenCount > 0 ? (
+            <li className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+              +{hiddenCount} more
+            </li>
+          ) : null}
         </ul>
       ) : null}
     </div>

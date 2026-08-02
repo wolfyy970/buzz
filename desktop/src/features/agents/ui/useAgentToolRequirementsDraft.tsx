@@ -6,7 +6,7 @@ import type {
   UpdatePersonaInput,
 } from "@/shared/api/types";
 import { AgentToolsSection } from "./AgentToolsSection";
-import { agentToolRequirementsValid } from "./agentToolRequirements";
+import { agentToolRequirementIssues } from "./agentToolRequirements";
 import type { AgentDefinitionDialogProps } from "./AgentDefinitionDialogTypes";
 
 export function useAgentToolRequirementsDraft({
@@ -36,7 +36,8 @@ export function useAgentToolRequirementsDraft({
     }
   }, [initialValues, open]);
 
-  const valid = agentToolRequirementsValid(requirements);
+  const issues = agentToolRequirementIssues(requirements);
+  const valid = issues.length === 0;
   const extraBlocked =
     typeof createSubmitBlocked === "function"
       ? createSubmitBlocked(requirements)
@@ -57,6 +58,7 @@ export function useAgentToolRequirementsDraft({
     section: (
       <AgentToolsSection
         disabled={disabled}
+        issues={issues}
         onChange={(nextRequirements) => {
           onUserChange();
           setRequirements(nextRequirements);

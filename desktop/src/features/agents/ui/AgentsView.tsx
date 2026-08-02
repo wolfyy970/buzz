@@ -222,6 +222,52 @@ export function AgentsView() {
             description="Set up and manage your agents."
             title="Agents"
           />
+          {personas.templateUpdatePreview &&
+          !personas.isTemplateUpdateDialogOpen &&
+          (personas.isTemplateUpdatePending ||
+            personas.templateUpdateResult ||
+            personas.templateUpdateError) ? (
+            <section
+              className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border bg-muted/30 px-4 py-3"
+              data-testid="agent-update-status-banner"
+              role={personas.templateUpdateError ? "alert" : "status"}
+            >
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {personas.isTemplateUpdatePending
+                    ? `Updating ${personas.templateUpdatePreview.personaName}`
+                    : personas.templateUpdateResult?.agents.some(
+                          (agent) => agent.outcome === "rollback_failed",
+                        )
+                      ? "Some agents need attention"
+                      : personas.templateUpdateResult?.rolledBack
+                        ? "Update rolled back"
+                        : personas.templateUpdateError
+                          ? "Agent update failed"
+                          : `${personas.templateUpdateResult?.agents.length ?? 0} ${
+                              personas.templateUpdateResult?.agents.length === 1
+                                ? "agent"
+                                : "agents"
+                            } updated`}
+                </p>
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {personas.isTemplateUpdatePending
+                    ? "The update is continuing in the background."
+                    : "Open the result for agent-by-agent details."}
+                </p>
+              </div>
+              <Button
+                onClick={personas.reopenTemplateUpdateDialog}
+                size="sm"
+                type="button"
+                variant="outline"
+              >
+                {personas.isTemplateUpdatePending
+                  ? "View progress"
+                  : "View results"}
+              </Button>
+            </section>
+          ) : null}
           <div className="flex flex-col gap-8">
             <UnifiedAgentsSection
               defaultModel={inheritedDefaults.model.value}
@@ -273,6 +319,9 @@ export function AgentsView() {
               onDuplicatePersona={personas.openDuplicate}
               onEditPersona={personas.openEdit}
               onSharePersona={personas.openShare}
+              onUpdatePersonaAgents={(persona) => {
+                void personas.openPublishedTemplateUpdate(persona);
+              }}
               onDeactivatePersona={(persona) => {
                 void personas.handleSetActive(persona, false, "library");
               }}
@@ -419,6 +468,7 @@ export function AgentsView() {
         onOpenChange={(open) => {
           if (!open) personas.closeTemplateUpdateDialog();
         }}
+        onOpenAgent={(pubkey) => openProfilePanel?.(pubkey, { tab: "runtime" })}
         open={personas.isTemplateUpdateDialogOpen}
         preview={personas.templateUpdatePreview}
         progressStage={personas.templateUpdateProgressStage}

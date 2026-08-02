@@ -8057,10 +8057,39 @@ function mockToolChanges(
     changed: target.flatMap((requirement) => {
       const before = currentById.get(requirement.id);
       return before && JSON.stringify(before) !== JSON.stringify(requirement)
-        ? [{ before, after: requirement }]
+        ? [
+            {
+              before,
+              after: requirement,
+              labelChanged: before.label !== requirement.label,
+              capabilityChanged: before.capability !== requirement.capability,
+              requiredChanged: before.required !== requirement.required,
+            },
+          ]
         : [];
     }),
     removed: current.filter((requirement) => !targetById.has(requirement.id)),
+  };
+}
+
+function mockSkillFileChanges(before: AgentSkill, after: AgentSkill) {
+  const currentByPath = new Map(before.files.map((file) => [file.path, file]));
+  const targetByPath = new Map(after.files.map((file) => [file.path, file]));
+  return {
+    added: after.files.filter((file) => !currentByPath.has(file.path)),
+    changed: after.files.flatMap((file) => {
+      const current = currentByPath.get(file.path);
+      return current && current.content !== file.content
+        ? [
+            {
+              path: file.path,
+              before: current.content,
+              after: file.content,
+            },
+          ]
+        : [];
+    }),
+    removed: before.files.filter((file) => !targetByPath.has(file.path)),
   };
 }
 
@@ -8075,10 +8104,42 @@ function mockSkillChanges(
     changed: target.flatMap((skill) => {
       const before = currentByName.get(skill.name);
       return before && JSON.stringify(before) !== JSON.stringify(skill)
-        ? [{ before, after: skill }]
+        ? [
+            {
+              before,
+              after: skill,
+              fileChanges: mockSkillFileChanges(before, skill),
+            },
+          ]
         : [];
     }),
     removed: current.filter((skill) => !targetByName.has(skill.name)),
+  };
+}
+
+function mockOptionalStringChange(
+  before: string | null | undefined,
+  after: string | null | undefined,
+) {
+  const normalizedBefore = before ?? null;
+  const normalizedAfter = after ?? null;
+  return normalizedBefore === normalizedAfter
+    ? null
+    : { before: normalizedBefore, after: normalizedAfter };
+}
+
+function mockEnvironmentChanges(
+  current: Record<string, string>,
+  target: Record<string, string>,
+) {
+  const currentKeys = new Set(Object.keys(current));
+  const targetKeys = new Set(Object.keys(target));
+  return {
+    addedKeys: [...targetKeys].filter((key) => !currentKeys.has(key)).sort(),
+    changedKeys: [...targetKeys]
+      .filter((key) => currentKeys.has(key) && current[key] !== target[key])
+      .sort(),
+    removedKeys: [...currentKeys].filter((key) => !targetKeys.has(key)).sort(),
   };
 }
 
@@ -8106,38 +8167,100 @@ function handlePreviewAgentTemplateUpdate(args: {
     targetSkills: persona.skills ?? [],
     agents: mockManagedAgents
       .filter((agent) => agent.persona_id === persona.id)
-      .map((agent) => ({
-        pubkey: agent.pubkey,
-        name: agent.name,
-        currentVersion: agent.persona_source_version,
-        targetVersion,
-        runningRelays: agent.status === "running" ? [agent.relay_url] : [],
-        eligible: agent.backend.type === "local",
-        blockedReason:
-          agent.backend.type === "local"
-            ? null
-            : "Remote agents cannot be updated safely in this version.",
-        projectScope: agent.project_scope ?? null,
-        connectionBindings: agent.connection_bindings ?? {},
-        instructionChange:
-          (agent.system_prompt ?? "") === persona.system_prompt
-            ? null
-            : {
-                before: agent.system_prompt ?? "",
-                after: persona.system_prompt,
-                privateOverridePreserved:
-                  agent.instructions_changed_for_agent === true,
-              },
-        toolChanges: mockToolChanges(
-          agent.tool_requirements ?? [],
-          persona.tool_requirements ?? [],
-        ),
-        skillChanges: mockSkillChanges(
-          agent.skills ?? [],
-          persona.skills ?? [],
-        ),
-        toolBindingIssues: [],
-      }))
+      .map((agent) => {
+        const environment = mockEnvironmentChanges(
+          agent.env_vars ?? {},
+          persona.env_vars ?? {},
+        );
+        const accessBefore = agent.respond_to;
+        const accessAfter =
+          (persona.respond_to as RawManagedAgent["respond_to"] | undefined) ??
+          "owner-only";
+        const allowlistBefore = agent.respond_to_allowlist;
+        const allowlistAfter = persona.respond_to_allowlist ?? [];
+        const allowlistAdded = allowlistAfter.filter(
+          (pubkey) => !allowlistBefore.includes(pubkey),
+        );
+        const allowlistRemoved = allowlistBefore.filter(
+          (pubkey) => !allowlistAfter.includes(pubkey),
+        );
+        const changedEnvironmentKeys = new Set([
+          ...environment.addedKeys,
+          ...environment.changedKeys,
+          ...environment.removedKeys,
+        ]);
+        const localEnvironmentKeys = Object.keys(agent.env_vars ?? {}).filter(
+          (key) => changedEnvironmentKeys.has(key),
+        );
+        return {
+          pubkey: agent.pubkey,
+          name: agent.name,
+          currentVersion: agent.persona_source_version,
+          targetVersion,
+          runningRelays: agent.status === "running" ? [agent.relay_url] : [],
+          eligible: agent.backend.type === "local",
+          blockedReason:
+            agent.backend.type === "local"
+              ? null
+              : "Remote agents cannot be updated safely in this version.",
+          projectScope: agent.project_scope ?? null,
+          connectionBindings: agent.connection_bindings ?? {},
+          instructionChange:
+            (agent.system_prompt ?? "") === persona.system_prompt
+              ? null
+              : {
+                  before: agent.system_prompt ?? "",
+                  after: persona.system_prompt,
+                  privateOverridePreserved:
+                    agent.instructions_changed_for_agent === true,
+                },
+          toolChanges: mockToolChanges(
+            agent.tool_requirements ?? [],
+            persona.tool_requirements ?? [],
+          ),
+          skillChanges: mockSkillChanges(
+            agent.skills ?? [],
+            persona.skills ?? [],
+          ),
+          versionChanges: {
+            runtime: mockOptionalStringChange(agent.runtime, persona.runtime),
+            provider: mockOptionalStringChange(
+              agent.provider,
+              persona.provider,
+            ),
+            model: mockOptionalStringChange(agent.model, persona.model),
+            access:
+              accessBefore !== accessAfter ||
+              allowlistAdded.length > 0 ||
+              allowlistRemoved.length > 0
+                ? {
+                    before: accessBefore,
+                    after: accessAfter,
+                    allowlistAdded,
+                    allowlistRemoved,
+                  }
+                : null,
+            parallelism:
+              agent.parallelism !== (persona.parallelism ?? 1)
+                ? {
+                    before: agent.parallelism,
+                    after: persona.parallelism ?? 1,
+                  }
+                : null,
+            environment,
+          },
+          overridesPreserved: {
+            instructions: agent.instructions_changed_for_agent === true,
+            runtime: agent.runtime !== null,
+            model: agent.model_changed_for_agent === true,
+            provider: agent.provider_changed_for_agent === true,
+            skills: agent.skills_changed_for_agent === true,
+            localEnvironment: localEnvironmentKeys.length > 0,
+            localEnvironmentKeys,
+          },
+          toolBindingIssues: [],
+        };
+      })
       .sort((left, right) => left.name.localeCompare(right.name)),
   };
 }

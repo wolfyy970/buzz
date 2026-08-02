@@ -4,7 +4,11 @@ import type { AgentToolRequirement } from "@/shared/api/types";
 import { Button } from "@/shared/ui/button";
 import { Checkbox } from "@/shared/ui/checkbox";
 import { Input } from "@/shared/ui/input";
-export { agentToolRequirementsValid } from "./agentToolRequirements";
+import type { AgentToolRequirementIssue } from "./agentToolRequirements";
+export {
+  agentToolRequirementIssues,
+  agentToolRequirementsValid,
+} from "./agentToolRequirements";
 
 function newRequirementId() {
   return `tool_${crypto.randomUUID().replaceAll("-", "")}`;
@@ -12,10 +16,12 @@ function newRequirementId() {
 
 export function AgentToolsSection({
   disabled,
+  issues = [],
   onChange,
   value,
 }: {
   disabled: boolean;
+  issues?: AgentToolRequirementIssue[];
   onChange: (value: AgentToolRequirement[]) => void;
   value: AgentToolRequirement[];
 }) {
@@ -30,20 +36,27 @@ export function AgentToolsSection({
     );
   }
 
+  function issueFor(index: number, field: AgentToolRequirementIssue["field"]) {
+    return issues.find(
+      (issue) => issue.index === index && issue.field === field,
+    );
+  }
+
   return (
     <section className="space-y-3" data-testid="agent-tools-section">
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="flex items-center gap-2">
             <Wrench className="h-4 w-4 text-muted-foreground" />
-            <h3 className="text-sm font-medium text-foreground">Tools</h3>
+            <h3 className="text-base font-semibold text-foreground">Tools</h3>
           </div>
           <p className="mt-1 text-xs text-muted-foreground">
-            Describe the tools this template expects. Each agent connects them
-            through its Project.
+            Capabilities this template expects. Each agent connects them from
+            its project.
           </p>
         </div>
         <Button
+          className="min-h-9"
           disabled={disabled}
           onClick={() =>
             onChange([
@@ -76,6 +89,11 @@ export function AgentToolsSection({
               className="space-y-3 rounded-xl border border-border/70 bg-muted/10 p-3"
               key={requirement.id}
             >
+              {issueFor(index, "row") ? (
+                <p className="text-xs text-destructive" role="alert">
+                  {issueFor(index, "row")?.message}
+                </p>
+              ) : null}
               <div className="flex items-start gap-2">
                 <div className="min-w-0 flex-1 space-y-1.5">
                   <label
@@ -85,6 +103,12 @@ export function AgentToolsSection({
                     Tool name
                   </label>
                   <Input
+                    aria-describedby={
+                      issueFor(index, "label")
+                        ? `agent-tool-label-error-${requirement.id}`
+                        : undefined
+                    }
+                    aria-invalid={Boolean(issueFor(index, "label"))}
                     disabled={disabled}
                     id={`agent-tool-label-${requirement.id}`}
                     onChange={(event) =>
@@ -93,15 +117,24 @@ export function AgentToolsSection({
                     placeholder="Analytics reports"
                     value={requirement.label}
                   />
+                  {issueFor(index, "label") ? (
+                    <p
+                      className="text-xs text-destructive"
+                      id={`agent-tool-label-error-${requirement.id}`}
+                      role="alert"
+                    >
+                      {issueFor(index, "label")?.message}
+                    </p>
+                  ) : null}
                 </div>
                 <Button
                   aria-label={`Remove tool ${index + 1}`}
-                  className="mt-6"
                   disabled={disabled}
                   onClick={() =>
                     onChange(value.filter((item) => item.id !== requirement.id))
                   }
-                  size="icon-xs"
+                  className="mt-6 size-9"
+                  size="icon"
                   type="button"
                   variant="ghost"
                 >
@@ -116,6 +149,12 @@ export function AgentToolsSection({
                   Capability ID
                 </label>
                 <Input
+                  aria-describedby={
+                    issueFor(index, "capability")
+                      ? `agent-tool-capability-error-${requirement.id}`
+                      : `agent-tool-capability-help-${requirement.id}`
+                  }
+                  aria-invalid={Boolean(issueFor(index, "capability"))}
                   autoCapitalize="off"
                   autoCorrect="off"
                   className="font-mono text-xs"
@@ -130,13 +169,25 @@ export function AgentToolsSection({
                   spellCheck={false}
                   value={requirement.capability}
                 />
-                <p className="text-xs text-muted-foreground">
+                <p
+                  className="text-xs text-muted-foreground"
+                  id={`agent-tool-capability-help-${requirement.id}`}
+                >
                   Use the ID shown after testing a compatible Project
                   connection.
                 </p>
+                {issueFor(index, "capability") ? (
+                  <p
+                    className="text-xs text-destructive"
+                    id={`agent-tool-capability-error-${requirement.id}`}
+                    role="alert"
+                  >
+                    {issueFor(index, "capability")?.message}
+                  </p>
+                ) : null}
               </div>
               <label
-                className="flex items-center gap-2 text-xs text-foreground"
+                className="flex min-h-9 items-center gap-2 text-xs text-foreground"
                 htmlFor={`agent-tool-required-${requirement.id}`}
               >
                 <Checkbox

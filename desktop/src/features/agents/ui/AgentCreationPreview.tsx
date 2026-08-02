@@ -809,7 +809,7 @@ export function AgentCreationPreview({
                         aria-label={`Edit ${assetLabel}`}
                         className={cn(
                           "flex items-center justify-center rounded-full bg-sidebar-active text-sidebar-active-foreground shadow-lg transition-[background-color,scale] duration-150 ease-out hover:scale-[1.04] hover:bg-sidebar-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-default disabled:opacity-90 disabled:hover:scale-100",
-                          isCompact ? "h-6 w-6" : "h-9 w-9",
+                          isCompact ? "h-8 w-8" : "h-9 w-9",
                         )}
                         disabled={disabled || isUploading}
                         title={`Edit ${assetLabel}`}
@@ -833,7 +833,7 @@ export function AgentCreationPreview({
                   }
                   badgeBox={
                     isCompact
-                      ? { bottom: 0, height: 28, right: 0, width: 28 }
+                      ? { bottom: 0, height: 34, right: 0, width: 34 }
                       : { bottom: 0, height: 42, right: 0, width: 42 }
                   }
                   className={isCompact ? "h-16 w-16" : "h-36 w-36"}
@@ -898,7 +898,7 @@ export function AgentCreationPreview({
                         aria-label={`Edit ${assetLabel}`}
                         className={cn(
                           "flex items-center justify-center rounded-full bg-sidebar-active text-sidebar-active-foreground shadow-lg transition-[background-color,scale] duration-150 ease-out hover:scale-[1.04] hover:bg-sidebar-active focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-default disabled:opacity-90 disabled:hover:scale-100",
-                          isCompact ? "h-6 w-6" : "h-9 w-9",
+                          isCompact ? "h-8 w-8" : "h-9 w-9",
                         )}
                         disabled={disabled || isUploading}
                         title={`Edit ${assetLabel}`}
@@ -922,7 +922,7 @@ export function AgentCreationPreview({
                   }
                   badgeBox={
                     isCompact
-                      ? { bottom: 0, height: 28, right: 0, width: 28 }
+                      ? { bottom: 0, height: 34, right: 0, width: 34 }
                       : { bottom: 0, height: 42, right: 0, width: 42 }
                   }
                   className={isCompact ? "h-16 w-16" : "h-36 w-36"}
@@ -1003,7 +1003,7 @@ export function AgentCreationPreview({
                     ) : (
                       <Plus
                         aria-hidden="true"
-                        className={isCompact ? "h-6 w-6" : "h-14 w-14"}
+                        className={isCompact ? "h-8 w-8" : "h-14 w-14"}
                       />
                     )}
                   </button>

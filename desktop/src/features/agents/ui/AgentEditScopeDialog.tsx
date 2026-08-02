@@ -3,7 +3,7 @@ import { Bot, ChevronRight, PanelsTopLeft } from "lucide-react";
 import type { AgentPersona, ManagedAgent } from "@/shared/api/types";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
-import { AgentTemplateImpactPreview } from "./AgentTemplateImpactPreview";
+import { agentTemplateUsageLabel } from "./AgentTemplateImpactPreview";
 
 export function AgentEditScopeDialog({
   affectedAgents,
@@ -22,6 +22,10 @@ export function AgentEditScopeDialog({
   open: boolean;
   persona: AgentPersona;
 }) {
+  const visibleAffectedAgents = affectedAgents.slice(0, 6);
+  const hiddenAffectedAgentCount =
+    affectedAgents.length - visibleAffectedAgents.length;
+
   return (
     <Dialog onOpenChange={onOpenChange} open={open}>
       <ChooserDialogContent
@@ -53,7 +57,11 @@ export function AgentEditScopeDialog({
               Edit this agent
             </span>
             <span className="mt-0.5 block text-sm text-muted-foreground">
-              Only {agent.name} will change.
+              Only{" "}
+              <span className="wrap-break-word" title={agent.name}>
+                {agent.name}
+              </span>{" "}
+              will change.
             </span>
           </span>
           <ChevronRight
@@ -62,35 +70,51 @@ export function AgentEditScopeDialog({
           />
         </button>
 
-        <div className="group rounded-xl border border-border/70 bg-background transition-colors hover:bg-muted/40">
-          <button
-            className="flex w-full items-start gap-4 px-4 pb-2 pt-4 text-left focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
-            data-testid="agent-edit-scope-template"
-            onClick={onEditTemplate}
-            type="button"
-          >
-            <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
-              <PanelsTopLeft aria-hidden="true" className="h-5 w-5" />
+        <button
+          className="group flex w-full items-start gap-4 rounded-xl border border-border/70 bg-background px-4 py-4 text-left transition-colors hover:bg-muted/40 focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-ring"
+          data-testid="agent-edit-scope-template"
+          onClick={onEditTemplate}
+          type="button"
+        >
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-muted text-foreground">
+            <PanelsTopLeft aria-hidden="true" className="h-5 w-5" />
+          </span>
+          <span className="min-w-0 flex-1">
+            <span className="block text-sm font-semibold text-foreground">
+              Edit its template
             </span>
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-semibold text-foreground">
-                Edit its template
-              </span>
-              <span className="mt-0.5 block text-sm text-muted-foreground">
+            <span className="mt-0.5 block text-sm text-muted-foreground">
+              <span className="wrap-break-word" title={persona.displayName}>
                 {persona.displayName}
               </span>
             </span>
-            <ChevronRight
-              aria-hidden="true"
-              className="mt-3 h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
-            />
-          </button>
-          <AgentTemplateImpactPreview
-            agents={affectedAgents}
-            className="px-4 pb-4 pl-[4.5rem]"
-            surface="plain"
+            <span className="mt-2 block text-xs font-medium text-foreground">
+              {agentTemplateUsageLabel(affectedAgents.length)}
+            </span>
+            {affectedAgents.length > 0 ? (
+              <span className="mt-1.5 flex flex-wrap gap-1.5">
+                {visibleAffectedAgents.map((affectedAgent) => (
+                  <span
+                    className="max-w-full wrap-break-word rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground"
+                    key={affectedAgent.pubkey}
+                    title={affectedAgent.name}
+                  >
+                    {affectedAgent.name}
+                  </span>
+                ))}
+                {hiddenAffectedAgentCount > 0 ? (
+                  <span className="rounded-full bg-muted px-2.5 py-1 text-xs text-muted-foreground">
+                    +{hiddenAffectedAgentCount} more
+                  </span>
+                ) : null}
+              </span>
+            ) : null}
+          </span>
+          <ChevronRight
+            aria-hidden="true"
+            className="mt-3 h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5"
           />
-        </div>
+        </button>
       </ChooserDialogContent>
     </Dialog>
   );

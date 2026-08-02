@@ -63,21 +63,45 @@ export function AgentTemplateToolChangesSummary({
             className="flex items-center gap-2"
             key={`add:${requirement.id}`}
           >
-            <Plus className="h-3.5 w-3.5 text-emerald-600" />
+            <Plus className="h-3.5 w-3.5 text-status-added" />
             <span>
               Added <strong>{requirement.label}</strong>
             </span>
           </div>
         ))}
-        {changes.changed.map(({ after, before }) => (
-          <div className="flex items-center gap-2" key={`change:${after.id}`}>
-            <RefreshCw className="h-3.5 w-3.5 text-amber-600" />
-            <span>
-              Changed <strong>{before.label}</strong>
-              {before.label !== after.label ? ` to ${after.label}` : ""}
-            </span>
-          </div>
-        ))}
+        {changes.changed.map(
+          ({
+            after,
+            before,
+            capabilityChanged,
+            labelChanged,
+            requiredChanged,
+          }) => (
+            <div className="space-y-0.5" key={`change:${after.id}`}>
+              <div className="flex items-center gap-2">
+                <RefreshCw className="h-3.5 w-3.5 text-status-modified" />
+                <span>
+                  Changed <strong>{before.label}</strong>
+                  {labelChanged ? ` to ${after.label}` : ""}
+                </span>
+              </div>
+              {capabilityChanged || requiredChanged ? (
+                <p className="ml-5 text-2xs text-muted-foreground">
+                  {[
+                    capabilityChanged ? "Capability ID" : null,
+                    requiredChanged
+                      ? after.required
+                        ? "Now required"
+                        : "Now optional"
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              ) : null}
+            </div>
+          ),
+        )}
         {changes.removed.map((requirement) => (
           <div
             className="flex items-center gap-2"

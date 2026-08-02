@@ -11,6 +11,20 @@ export type AgentSkill = {
   files: AgentSkillFile[];
 };
 
+export type AgentSkillValidationIssue = {
+  field:
+    | "skills"
+    | "name"
+    | "description"
+    | "files"
+    | "file-path"
+    | "file-content"
+    | "skill-markdown";
+  fileIndex?: number;
+  message: string;
+  skillIndex?: number;
+};
+
 const SKILL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const MAX_SKILLS = 16;
 const MAX_SKILL_DESCRIPTION_BYTES = 512;
@@ -183,69 +197,141 @@ export function synchronizeSkillMarkdown(
   return `---\nname: ${JSON.stringify(name)}\ndescription: ${JSON.stringify(description)}\n---\n${body}`;
 }
 
-export function agentSkillsValidationError(
+export function agentSkillsValidationIssue(
   skills: readonly AgentSkill[],
-): string | null {
+): AgentSkillValidationIssue | null {
   if (skills.length > MAX_SKILLS) {
-    return `Templates can include up to ${MAX_SKILLS} Skills.`;
+    return {
+      field: "skills",
+      message: `Templates can include up to ${MAX_SKILLS} Skills.`,
+    };
   }
 
   const names = new Set<string>();
   let totalLength = 0;
-  for (const skill of skills) {
+  for (const [skillIndex, skill] of skills.entries()) {
     const name = skill.name.trim();
+    if (name.length === 0) {
+      return {
+        field: "name",
+        message: "Enter a Skill name.",
+        skillIndex,
+      };
+    }
     if (!SKILL_NAME_RE.test(name)) {
-      return "Skill names must use lowercase letters, numbers, and hyphens.";
+      return {
+        field: "name",
+        message: "Use lowercase letters, numbers, and hyphens.",
+        skillIndex,
+      };
     }
     if (RESERVED_SKILL_NAMES.has(name)) {
-      return `"${name}" is reserved by Buzz. Choose another Skill name.`;
+      return {
+        field: "name",
+        message: `"${name}" is reserved by Buzz. Choose another Skill name.`,
+        skillIndex,
+      };
     }
     if (names.has(name)) {
-      return `Each Skill needs a unique name. "${name}" appears more than once.`;
+      return {
+        field: "name",
+        message: `"${name}" is already used by another Skill.`,
+        skillIndex,
+      };
     }
     if (
       skill.description.trim().length === 0 ||
       utf8Length(skill.description) > MAX_SKILL_DESCRIPTION_BYTES
     ) {
-      return `"${name}" needs a description up to ${MAX_SKILL_DESCRIPTION_BYTES} bytes.`;
+      return {
+        field: "description",
+        message: `Add a description up to ${MAX_SKILL_DESCRIPTION_BYTES} bytes.`,
+        skillIndex,
+      };
     }
     if (skill.files.length === 0 || skill.files.length > MAX_SKILL_FILES) {
-      return `"${name}" must include 1 to ${MAX_SKILL_FILES} files.`;
+      return {
+        field: "files",
+        message: `Include 1 to ${MAX_SKILL_FILES} files.`,
+        skillIndex,
+      };
     }
     names.add(name);
 
     const paths = new Set<string>();
     let skillMarkdown: string | null = null;
-    for (const file of skill.files) {
+    let skillMarkdownIndex: number | undefined;
+    for (const [fileIndex, file] of skill.files.entries()) {
       const path = file.path;
       if (!skillPathValid(path)) {
-        return `"${path || "Untitled file"}" is not a safe relative file path.`;
+        return {
+          field: "file-path",
+          fileIndex,
+          message: "Use a safe relative path, such as references/example.md.",
+          skillIndex,
+        };
       }
       if (paths.has(path)) {
-        return `"${name}" includes "${path}" more than once.`;
+        return {
+          field: "file-path",
+          fileIndex,
+          message: `"${path}" is already used in this Skill.`,
+          skillIndex,
+        };
       }
       if (utf8Length(file.content) > MAX_SKILL_FILE_BYTES) {
-        return `"${path}" must be smaller than ${MAX_SKILL_FILE_BYTES / 1_024} KiB.`;
+        return {
+          field: "file-content",
+          fileIndex,
+          message: `Keep this file smaller than ${MAX_SKILL_FILE_BYTES / 1_024} KiB.`,
+          skillIndex,
+        };
       }
       if (containsObviousSecret(file.content)) {
-        return `"${path}" appears to contain a secret. Use a Connection or agent environment setting instead.`;
+        return {
+          field: "file-content",
+          fileIndex,
+          message:
+            "This file appears to contain a secret. Use a Connection or agent environment setting instead.",
+          skillIndex,
+        };
       }
       paths.add(path);
       totalLength += utf8Length(path) + utf8Length(file.content);
       if (totalLength > MAX_SKILL_TOTAL_BYTES) {
-        return `Skills can contain up to ${MAX_SKILL_TOTAL_BYTES / 1_024} KiB in total.`;
+        return {
+          field: "file-content",
+          fileIndex,
+          message: `Skills can contain up to ${MAX_SKILL_TOTAL_BYTES / 1_024} KiB in total.`,
+          skillIndex,
+        };
       }
-      if (path === "SKILL.md") skillMarkdown = file.content;
+      if (path === "SKILL.md") {
+        skillMarkdown = file.content;
+        skillMarkdownIndex = fileIndex;
+      }
     }
     if (skillMarkdown === null || !frontmatterValid(skill, skillMarkdown)) {
-      return `"${name}" needs a SKILL.md whose frontmatter name and description match this form.`;
+      return {
+        field: "skill-markdown",
+        fileIndex: skillMarkdownIndex,
+        message:
+          "SKILL.md frontmatter must match the Skill name and description.",
+        skillIndex,
+      };
     }
   }
   return null;
 }
 
+export function agentSkillsValidationError(
+  skills: readonly AgentSkill[],
+): string | null {
+  return agentSkillsValidationIssue(skills)?.message ?? null;
+}
+
 export function agentSkillsValid(skills: readonly AgentSkill[]): boolean {
-  return agentSkillsValidationError(skills) === null;
+  return agentSkillsValidationIssue(skills) === null;
 }
 
 function isAgentSkillFile(value: unknown): value is AgentSkillFile {

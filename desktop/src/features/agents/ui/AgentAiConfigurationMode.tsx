@@ -78,7 +78,9 @@ export function AgentAiConfigurationModeField({
 }) {
   return (
     <div className="space-y-1.5">
-      <p className="text-sm font-medium text-foreground">AI configuration</p>
+      <h3 className="text-base font-semibold text-foreground">
+        AI configuration
+      </h3>
       <Tabs
         onValueChange={(value) =>
           onModeChange(value as AgentAiConfigurationMode)

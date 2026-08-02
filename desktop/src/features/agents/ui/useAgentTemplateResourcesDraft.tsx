@@ -5,7 +5,7 @@ import type {
   CreatePersonaInput,
   UpdatePersonaInput,
 } from "@/shared/api/types";
-import { agentSkillsValidationError } from "@/shared/api/agentSkillTypes";
+import { agentSkillsValidationIssue } from "@/shared/api/agentSkillTypes";
 import { AgentSkillsSection } from "./AgentSkillsSection";
 import type { AgentDefinitionDialogProps } from "./AgentDefinitionDialogTypes";
 import { useAgentToolRequirementsDraft } from "./useAgentToolRequirementsDraft";
@@ -44,8 +44,8 @@ export function useAgentTemplateResourcesDraft({
     if (open && initialValues) setSkills(initialValues.skills ?? []);
   }, [initialValues, open]);
 
-  const skillsValidationError = agentSkillsValidationError(skills);
-  const skillsValid = skillsValidationError === null;
+  const skillsValidationIssue = agentSkillsValidationIssue(skills);
+  const skillsValid = skillsValidationIssue === null;
   return {
     requirements: tools.requirements,
     skills,
@@ -54,19 +54,24 @@ export function useAgentTemplateResourcesDraft({
     submitBlockReason: !tools.valid
       ? tools.submitBlockReason
       : !skillsValid
-        ? skillsValidationError
+        ? (skillsValidationIssue?.message ?? null)
         : tools.submitBlockReason,
     section: (
       <div className="space-y-5">
-        <AgentSkillsSection
-          disabled={disabled}
-          onChange={(nextSkills) => {
-            onUserChange();
-            setSkills(nextSkills);
-          }}
-          value={skills}
-        />
-        {tools.section}
+        <div className="scroll-mt-4" id="persona-skills-section" tabIndex={-1}>
+          <AgentSkillsSection
+            disabled={disabled}
+            onChange={(nextSkills) => {
+              onUserChange();
+              setSkills(nextSkills);
+            }}
+            validationIssue={skillsValidationIssue}
+            value={skills}
+          />
+        </div>
+        <div className="scroll-mt-4" id="persona-tools-section" tabIndex={-1}>
+          {tools.section}
+        </div>
       </div>
     ),
   };
