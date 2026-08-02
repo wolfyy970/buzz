@@ -101,6 +101,12 @@ const DNS_RETRY_INTERVAL: Duration = Duration::from_secs(2);
 /// window (10 frames/s at the limit). A 48-channel reconnect spreads over ≈6 s
 /// instead of arriving as a single burst that consumes the entire budget at once.
 const REQ_PACING_INTERVAL: Duration = Duration::from_millis(125);
+/// Largest bounded history page requested for timestamp-based replay.
+///
+/// This matches the relay's advertised hard page ceiling. It reduces truncation
+/// risk for handoff and reconnect recovery, but remains a finite best-effort
+/// fallback until the relay exposes a durable, paginated ingestion cursor.
+const REPLAY_QUERY_LIMIT: u64 = 1_000;
 /// Maximum REQ frames sent per drain iteration (shared across rate_limited_pending,
 /// resubscribe_retry, and control-sub recovery). Keeps any single main-loop tick
 /// below the relay's 50-frames/5s budget, and ensures the select! loop is never
@@ -3709,6 +3715,10 @@ async fn send_subscribe(
         req_filter.insert("#p".into(), json!([agent_pubkey_hex]));
     }
 
+    if since.is_some() {
+        req_filter.insert("limit".into(), json!(REPLAY_QUERY_LIMIT));
+    }
+
     // since — on first subscribe use current time to skip history; on reconnect
     // subtract skew buffer to catch events missed during the disconnect window.
     let since_ts = match since {
@@ -3773,6 +3783,10 @@ async fn send_membership_subscribe(
         ]),
     );
     req_filter.insert("#p".into(), json!([agent_pubkey_hex]));
+
+    if since.is_some() {
+        req_filter.insert("limit".into(), json!(REPLAY_QUERY_LIMIT));
+    }
 
     let since_ts = match since {
         Some(ts) => ts.saturating_sub(SINCE_SKEW_SECS),
@@ -4951,6 +4965,43 @@ mod tests {
                 replay_since: Some(1_000),
             },
         );
+    }
+
+    #[tokio::test]
+    async fn channel_replay_req_emits_bounded_max_limit() {
+        let (mut client, mut server) = test_ws_pair().await;
+        let mut state = BgState::new();
+        let channel_id = Uuid::new_v4();
+
+        assert!(
+            send_subscribe(
+                &mut client,
+                &mut state,
+                channel_id,
+                "agent-pubkey",
+                Some(1_000),
+                &test_channel_filter(),
+            )
+            .await
+        );
+
+        let frame = next_test_frame(&mut server).await;
+        assert_eq!(frame[0], "REQ");
+        assert_eq!(frame[2]["limit"], json!(REPLAY_QUERY_LIMIT));
+    }
+
+    #[tokio::test]
+    async fn membership_replay_req_emits_bounded_max_limit() {
+        let (mut client, mut server) = test_ws_pair().await;
+        let mut state = BgState::new();
+
+        assert!(
+            send_membership_subscribe(&mut client, &mut state, "agent-pubkey", Some(1_000),).await
+        );
+
+        let frame = next_test_frame(&mut server).await;
+        assert_eq!(frame[0], "REQ");
+        assert_eq!(frame[2]["limit"], json!(REPLAY_QUERY_LIMIT));
     }
 
     #[tokio::test]
