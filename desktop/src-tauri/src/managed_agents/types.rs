@@ -125,7 +125,9 @@ impl AgentDefinition {
             system_prompt: (!self.system_prompt.is_empty()).then_some(self.system_prompt),
             system_prompt_override: None,
             model: self.model,
+            model_override: None,
             provider: self.provider,
+            provider_override: None,
             persona_source_version: None,
             pinned_persona_env_vars: None,
             previous_persona_snapshots: Vec::new(),
@@ -288,12 +290,22 @@ pub struct ManagedAgentRecord {
     /// definition-less instance this field is the instance's own value.
     #[serde(default)]
     pub model: Option<String>,
+    /// Explicit instance-only model selection. `None` inherits the pinned
+    /// template model; `Some`, including an empty string, overrides it. An
+    /// empty override asks the runtime to use its own default instead of
+    /// falling through to the template or global Buzz default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model_override: Option<String>,
     /// LLM inference provider. For a linked instance this is the pinned
     /// template value; for a definition-less instance it is the instance's own
     /// value. `#[serde(default)]` keeps pre-existing records readable until the
     /// launch backfill pins them.
     #[serde(default)]
     pub provider: Option<String>,
+    /// Explicit instance-only provider selection. `None` inherits the pinned
+    /// template provider; `Some`, including an empty string, overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_override: Option<String>,
     /// Non-secret revision token of the persona at the time this agent was
     /// created. The Agents menu compares it against the linked persona's
     /// current token to flag a stale (out-of-date) instance. `None` for
@@ -494,13 +506,15 @@ pub struct ManagedAgentSummary {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model_source: Option<super::effective_config::ConfigSource>,
+    pub model_changed_for_agent: bool,
     /// LLM inference provider, resolved the same way as `model`/`model_source`
-    /// (definition → global for linked instances; instance → global for
-    /// definition-less instances). `None` for an orphaned instance.
+    /// (agent override → definition → global for linked instances; instance →
+    /// global for definition-less instances). `None` for an orphaned instance.
     pub provider: Option<String>,
+    pub provider_changed_for_agent: bool,
     /// `true` when the linked persona has been edited since this agent was
     /// created — the running agent uses the older pinned snapshot. The UI
-    /// flags it and tells the user to delete + respawn to pick up the edit.
+    /// flags it and offers the controlled Update agents flow.
     /// Always `false` for non-persona agents and for orphaned agents (their
     /// persona is gone, so there is nothing newer to drift toward).
     pub persona_out_of_date: bool,

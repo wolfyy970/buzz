@@ -574,6 +574,8 @@ pub async fn confirm_team_snapshot_import(
                 .unwrap_or(crate::managed_agents::DEFAULT_AGENT_PARALLELISM),
             system_prompt: member.definition.system_prompt.clone(),
             system_prompt_override: None,
+            model_override: None,
+            provider_override: None,
             model: member.definition.model.clone(),
             provider: member.definition.provider.clone(),
             persona_source_version: Some(pinned_snapshot.source_version),

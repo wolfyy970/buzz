@@ -70,6 +70,10 @@ type MockManagedAgentSeed = {
   skills?: AgentSkill[];
   systemPrompt?: string | null;
   instructionsChangedForAgent?: boolean;
+  model?: string | null;
+  modelChangedForAgent?: boolean;
+  provider?: string | null;
+  providerChangedForAgent?: boolean;
   skillsChangedForAgent?: boolean;
   connectionBindings?: Record<string, string>;
 };

@@ -759,9 +759,7 @@ async fn discover_databricks_models(
     }))
 }
 
-/// Compatibility seam for focused model/provider/prompt tests. Linked
-/// model/provider writes remain rejected, while linked prompt writes now enter
-/// the explicit private override layer instead of corrupting the template pin.
+/// Compatibility seam for focused model/provider/prompt tests.
 #[cfg(test)]
 pub(crate) fn apply_model_provider_prompt_update(
     record: &mut crate::managed_agents::ManagedAgentRecord,
@@ -772,7 +770,9 @@ pub(crate) fn apply_model_provider_prompt_update(
     let _ = super::agent_private_overrides::apply_agent_configuration_update(
         record,
         model,
+        false,
         provider,
+        false,
         system_prompt,
         false,
         None,
@@ -822,7 +822,9 @@ pub async fn update_managed_agent(
         super::agent_private_overrides::apply_agent_configuration_update(
             record,
             input.model,
+            input.reset_model_to_template,
             input.provider,
+            input.reset_provider_to_template,
             input.system_prompt,
             input.reset_system_prompt_to_template,
             input.skills,

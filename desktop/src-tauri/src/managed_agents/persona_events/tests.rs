@@ -62,6 +62,8 @@ fn sample_record() -> ManagedAgentRecord {
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
         system_prompt_override: None,
+        model_override: None,
+        provider_override: None,
         pinned_skills: Vec::new(),
         skill_overrides: None,
     }
@@ -216,8 +218,7 @@ fn monotonic_created_at_bumps_past_head() {
     let none = monotonic_created_at(None).as_secs() as i64;
     assert!(none >= now, "no-head write must be >= now");
 
-    // Head in the FUTURE (same-second or clock-skewed): must bump to head+1,
-    // never reuse now (which would be <= head and lose the NIP-33 tiebreak).
+    // A future head must bump to head+1 and preserve the NIP-33 tiebreak.
     let future_head = now + 1000;
     let bumped = monotonic_created_at(Some(future_head)).as_secs() as i64;
     assert_eq!(
@@ -258,8 +259,7 @@ fn passes_relay_slug_grammar(d: &str) -> bool {
 
 #[test]
 fn d_tag_normalizes_pack_slug_to_relay_grammar() {
-    // The cited failing cases: mixed-case and leading-underscore pack slugs
-    // that the relay rejects un-normalized → pending forever.
+    // Normalize mixed-case and leading-underscore slugs before relay writes.
     for (raw, expected) in [
         ("CodeReviewer", "codereviewer"),
         ("_ops", "a_ops"),

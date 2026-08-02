@@ -103,6 +103,10 @@ type MockManagedAgentSeed = {
   skills?: RawManagedAgent["skills"];
   systemPrompt?: string | null;
   instructionsChangedForAgent?: boolean;
+  model?: string | null;
+  modelChangedForAgent?: boolean;
+  provider?: string | null;
+  providerChangedForAgent?: boolean;
   skillsChangedForAgent?: boolean;
   connectionBindings?: RawManagedAgent["connection_bindings"];
 };
@@ -818,7 +822,9 @@ type RawManagedAgent = {
   instructions_changed_for_agent?: boolean;
   avatar_url: string | null;
   model: string | null;
+  model_changed_for_agent?: boolean;
   provider?: string | null;
+  provider_changed_for_agent?: boolean;
   env_vars?: Record<string, string>;
   status: "running" | "stopped" | "deployed" | "not_deployed";
   pid: number | null;
@@ -1599,7 +1605,9 @@ function cloneManagedAgent(agent: MockManagedAgent): RawManagedAgent {
       agent.instructions_changed_for_agent ?? false,
     avatar_url: agent.avatar_url ?? null,
     model: agent.model,
+    model_changed_for_agent: agent.model_changed_for_agent ?? false,
     provider: agent.provider ?? null,
+    provider_changed_for_agent: agent.provider_changed_for_agent ?? false,
     env_vars: { ...(agent.env_vars ?? {}) },
     status: agent.status,
     pid: agent.pid,
@@ -2145,7 +2153,10 @@ function buildSeededManagedAgent(seed: MockManagedAgentSeed): MockManagedAgent {
     system_prompt: seed.systemPrompt ?? null,
     instructions_changed_for_agent: seed.instructionsChangedForAgent ?? false,
     avatar_url: seed.avatarUrl ?? null,
-    model: null,
+    model: seed.model ?? null,
+    model_changed_for_agent: seed.modelChangedForAgent ?? false,
+    provider: seed.provider ?? null,
+    provider_changed_for_agent: seed.providerChangedForAgent ?? false,
     env_vars: {},
     status,
     pid: status === "running" ? 42000 + mockManagedAgents.length : null,
@@ -8775,6 +8786,9 @@ async function handleUpdateManagedAgent(args: {
     pubkey: string;
     name?: string;
     model?: string | null;
+    resetModelToTemplate?: boolean;
+    provider?: string | null;
+    resetProviderToTemplate?: boolean;
     systemPrompt?: string | null;
     resetSystemPromptToTemplate?: boolean;
     skills?: RawManagedAgent["skills"];
@@ -8790,8 +8804,22 @@ async function handleUpdateManagedAgent(args: {
   if (args.input.name !== undefined) {
     agent.name = args.input.name;
   }
-  if (args.input.model !== undefined) {
+  const linkedPersona = mockPersonas.find(
+    (candidate) => candidate.id === agent.persona_id,
+  );
+  if (args.input.resetModelToTemplate) {
+    agent.model = linkedPersona?.model ?? null;
+    agent.model_changed_for_agent = false;
+  } else if (args.input.model !== undefined) {
     agent.model = args.input.model;
+    agent.model_changed_for_agent = agent.persona_id !== null;
+  }
+  if (args.input.resetProviderToTemplate) {
+    agent.provider = linkedPersona?.provider ?? null;
+    agent.provider_changed_for_agent = false;
+  } else if (args.input.provider !== undefined) {
+    agent.provider = args.input.provider;
+    agent.provider_changed_for_agent = agent.persona_id !== null;
   }
   if (args.input.resetSystemPromptToTemplate) {
     agent.system_prompt = null;
@@ -8801,11 +8829,8 @@ async function handleUpdateManagedAgent(args: {
     agent.instructions_changed_for_agent = agent.persona_id !== null;
   }
   if (args.input.resetSkillsToTemplate) {
-    const persona = mockPersonas.find(
-      (candidate) => candidate.id === agent.persona_id,
-    );
     agent.skills =
-      persona?.skills?.map((skill) => ({
+      linkedPersona?.skills?.map((skill) => ({
         ...skill,
         files: skill.files.map((file) => ({ ...file })),
       })) ?? [];

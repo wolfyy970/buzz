@@ -473,11 +473,11 @@ fn update_request_turn_timeout_parses_for_wire_compat() {
 }
 
 // ---------------------------------------------------------------------------
-// Linked-instance private instructions
+// Linked-instance private configuration
 // ---------------------------------------------------------------------------
 
 #[test]
-fn linked_instance_keeps_model_provider_pins_and_writes_private_prompt() {
+fn linked_instance_keeps_template_pins_and_writes_private_overrides() {
     let mut record: crate::managed_agents::ManagedAgentRecord = serde_json::from_str(
         r#"{
             "pubkey": "linked1",
@@ -516,11 +516,11 @@ fn linked_instance_keeps_model_provider_pins_and_writes_private_prompt() {
 
     assert!(
         record.model.is_none(),
-        "linked record model must not be updated"
+        "linked template model pin must not be updated"
     );
     assert!(
         record.provider.is_none(),
-        "linked record provider must not be updated"
+        "linked template provider pin must not be updated"
     );
     assert!(
         record.system_prompt.is_none(),
@@ -530,6 +530,8 @@ fn linked_instance_keeps_model_provider_pins_and_writes_private_prompt() {
         record.system_prompt_override.as_deref(),
         Some("explicit-prompt")
     );
+    assert_eq!(record.model_override.as_deref(), Some("explicit-model"));
+    assert_eq!(record.provider_override.as_deref(), Some("explicit-prov"));
 }
 
 #[test]

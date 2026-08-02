@@ -227,6 +227,12 @@ pub struct UpdateManagedAgentRequest {
     /// Absent = don't touch. null = clear to agent default. "id" = set.
     #[serde(default)]
     pub model: Option<Option<String>>,
+    /// Reset an agent-only model selection and inherit the pinned template.
+    #[serde(default)]
+    pub reset_model_to_template: bool,
+    /// Reset an agent-only provider selection and inherit the pinned template.
+    #[serde(default)]
+    pub reset_provider_to_template: bool,
     #[serde(default)]
     pub system_prompt: Option<Option<String>>,
     /// Reset agent-only instructions and inherit the pinned template again.

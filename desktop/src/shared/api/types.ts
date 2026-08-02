@@ -617,7 +617,9 @@ export type UpdateManagedAgentInput = {
   pubkey: string;
   name?: string;
   model?: string | null;
+  resetModelToTemplate?: boolean;
   provider?: string | null;
+  resetProviderToTemplate?: boolean;
   systemPrompt?: string | null;
   resetSystemPromptToTemplate?: boolean;
   skills?: AgentSkill[];

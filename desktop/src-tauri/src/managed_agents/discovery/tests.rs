@@ -285,6 +285,8 @@ fn record_with(
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
         system_prompt_override: None,
+        model_override: None,
+        provider_override: None,
         pinned_skills: Vec::new(),
         skill_overrides: None,
     }
@@ -304,9 +306,7 @@ fn record_agent_command_override_beats_runtime() {
 }
 #[test]
 fn record_agent_command_does_not_read_mutable_persona_runtime() {
-    // Startup backfill materializes linked runtimes before launch. If a
-    // partially migrated record reaches this pure resolver, it must not
-    // silently select the mutable definition head.
+    // A partially migrated record must not silently select the mutable head.
     let personas = vec![persona_with_runtime("p1", Some("goose"))];
     let record = record_with(None, Some("p1"), None);
     assert_eq!(
@@ -320,8 +320,6 @@ fn record_agent_command_bare_record_defaults() {
     let record = record_with(None, None, None);
     assert_eq!(record_agent_command(&record, &[]), default_agent_command());
 }
-
-// ── try_record_agent_command ─────────────────────────────────────────────────
 
 /// When the record carries a dangling (unknown) runtime id, `try_record_agent_command`
 /// must return `Err` containing "DANGLING_HARNESS_ID" — NEVER the buzz-agent default.

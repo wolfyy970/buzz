@@ -5,12 +5,24 @@ use crate::managed_agents::{validate_agent_skills, AgentSkill, ManagedAgentRecor
 pub(crate) fn apply_agent_configuration_update(
     record: &mut ManagedAgentRecord,
     model: Option<Option<String>>,
+    reset_model_to_template: bool,
     provider: Option<Option<String>>,
+    reset_provider_to_template: bool,
     system_prompt: Option<Option<String>>,
     reset_system_prompt_to_template: bool,
     skills: Option<Vec<AgentSkill>>,
     reset_skills_to_template: bool,
 ) -> Result<(), String> {
+    if reset_model_to_template && model.is_some() {
+        return Err(
+            "Choose either an agent-only model or Reset to template, not both.".to_string(),
+        );
+    }
+    if reset_provider_to_template && provider.is_some() {
+        return Err(
+            "Choose either an agent-only provider or Reset to template, not both.".to_string(),
+        );
+    }
     if reset_system_prompt_to_template && system_prompt.is_some() {
         return Err(
             "Choose either agent-only instructions or Reset to template, not both.".to_string(),
@@ -26,9 +38,16 @@ pub(crate) fn apply_agent_configuration_update(
     }
 
     if record.persona_id.is_some() {
-        // Model/provider still have no explicit private layer. Until that
-        // schema exists, keep rejecting linked writes rather than corrupting
-        // the immutable selected template revision.
+        if reset_model_to_template {
+            record.model_override = None;
+        } else if let Some(model) = model {
+            record.model_override = Some(model.unwrap_or_default());
+        }
+        if reset_provider_to_template {
+            record.provider_override = None;
+        } else if let Some(provider) = provider {
+            record.provider_override = Some(provider.unwrap_or_default());
+        }
         if reset_system_prompt_to_template {
             record.system_prompt_override = None;
         } else if let Some(prompt) = system_prompt {
@@ -99,7 +118,9 @@ mod tests {
         apply_agent_configuration_update(
             &mut record,
             Some(Some("ignored-model".into())),
+            false,
             Some(Some("ignored-provider".into())),
+            false,
             Some(Some("Only this agent".into())),
             false,
             Some(vec![valid_skill("agent-skill")]),
@@ -119,9 +140,26 @@ mod tests {
         );
         assert_eq!(record.model.as_deref(), Some("template-model"));
         assert_eq!(record.provider.as_deref(), Some("template-provider"));
+        assert_eq!(record.model_override.as_deref(), Some("ignored-model"));
+        assert_eq!(
+            record.provider_override.as_deref(),
+            Some("ignored-provider")
+        );
 
-        apply_agent_configuration_update(&mut record, None, None, None, true, None, true)
-            .expect("reset");
+        apply_agent_configuration_update(
+            &mut record,
+            None,
+            true,
+            None,
+            true,
+            None,
+            true,
+            None,
+            true,
+        )
+        .expect("reset");
+        assert!(record.model_override.is_none());
+        assert!(record.provider_override.is_none());
         assert!(record.system_prompt_override.is_none());
         assert!(record.skill_overrides.is_none());
     }
@@ -135,7 +173,9 @@ mod tests {
         let error = apply_agent_configuration_update(
             &mut record,
             None,
+            false,
             None,
+            false,
             Some(Some("must not stick".into())),
             false,
             Some(vec![invalid]),
@@ -153,8 +193,34 @@ mod tests {
         let mut record = linked_record();
         assert!(apply_agent_configuration_update(
             &mut record,
+            Some(Some("agent-model".into())),
+            true,
             None,
+            false,
             None,
+            false,
+            None,
+            false,
+        )
+        .is_err());
+        assert!(apply_agent_configuration_update(
+            &mut record,
+            None,
+            false,
+            Some(Some("agent-provider".into())),
+            true,
+            None,
+            false,
+            None,
+            false,
+        )
+        .is_err());
+        assert!(apply_agent_configuration_update(
+            &mut record,
+            None,
+            false,
+            None,
+            false,
             Some(Some("override".into())),
             true,
             None,
@@ -164,7 +230,9 @@ mod tests {
         assert!(apply_agent_configuration_update(
             &mut record,
             None,
+            false,
             None,
+            false,
             None,
             false,
             Some(vec![valid_skill("agent-skill")]),

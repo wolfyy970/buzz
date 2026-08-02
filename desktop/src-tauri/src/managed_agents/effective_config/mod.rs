@@ -73,25 +73,37 @@ fn non_blank(v: Option<&str>) -> Option<&str> {
 }
 
 fn resolve_linked(record: &ManagedAgentRecord, global: &GlobalAgentConfig) -> EffectiveAgentConfig {
-    let model = match non_blank(record.model.as_deref()) {
-        Some(m) => ResolvedField {
-            value: Some(m.to_owned()),
-            source: ConfigSource::Definition,
+    let model = match record.model_override.as_deref() {
+        Some(override_value) => ResolvedField {
+            value: non_blank(Some(override_value)).map(str::to_owned),
+            source: ConfigSource::InstanceOverride,
         },
-        None => ResolvedField {
-            value: global.model.clone(),
-            source: ConfigSource::Global,
+        None => match non_blank(record.model.as_deref()) {
+            Some(model) => ResolvedField {
+                value: Some(model.to_owned()),
+                source: ConfigSource::Definition,
+            },
+            None => ResolvedField {
+                value: global.model.clone(),
+                source: ConfigSource::Global,
+            },
         },
     };
 
-    let provider = match non_blank(record.provider.as_deref()) {
-        Some(p) => ResolvedField {
-            value: Some(p.to_owned()),
-            source: ConfigSource::Definition,
+    let provider = match record.provider_override.as_deref() {
+        Some(override_value) => ResolvedField {
+            value: non_blank(Some(override_value)).map(str::to_owned),
+            source: ConfigSource::InstanceOverride,
         },
-        None => ResolvedField {
-            value: global.provider.clone(),
-            source: ConfigSource::Global,
+        None => match non_blank(record.provider.as_deref()) {
+            Some(provider) => ResolvedField {
+                value: Some(provider.to_owned()),
+                source: ConfigSource::Definition,
+            },
+            None => ResolvedField {
+                value: global.provider.clone(),
+                source: ConfigSource::Global,
+            },
         },
     };
 

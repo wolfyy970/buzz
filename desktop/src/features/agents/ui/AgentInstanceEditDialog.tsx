@@ -37,7 +37,6 @@ import {
   NO_RUNTIME_DROPDOWN_VALUE,
   PERSONA_FIELD_CONTROL_CLASS,
   PERSONA_FIELD_SHELL_CLASS,
-  PERSONA_LABEL_OPTIONAL_CLASS,
   runtimeSupportsLlmProviderSelection,
   shouldClearKnownModelForSelectionScope,
   sortPersonaRuntimes,
@@ -95,6 +94,10 @@ import {
 } from "./addCustomHarness";
 import { useAgentConnectionBindingsDraft } from "./useAgentConnectionBindingsDraft";
 import { useAgentInstanceTemplateOverridesDraft } from "./useAgentInstanceTemplateOverridesDraft";
+import {
+  AgentModelField,
+  AgentProviderField,
+} from "./AgentRuntimeOverrideFields";
 
 export function AgentInstanceEditDialog({
   agent,
@@ -138,8 +141,11 @@ export function AgentInstanceEditDialog({
     agent.systemPrompt ?? "",
   );
   const [model, setModel] = React.useState(agent.model ?? "");
+  const [resetModelToTemplate, setResetModelToTemplate] = React.useState(false);
   const [isCustomModelEditing, setIsCustomModelEditing] = React.useState(false);
   const [provider, setProvider] = React.useState(agent.provider ?? "");
+  const [resetProviderToTemplate, setResetProviderToTemplate] =
+    React.useState(false);
   const [isCustomProviderEditing, setIsCustomProviderEditing] =
     React.useState(false);
   const [envVars, setEnvVars] = React.useState<EnvVarsValue>(agent.envVars);
@@ -198,8 +204,10 @@ export function AgentInstanceEditDialog({
       setParallelism(String(agent.parallelism));
       setSystemPrompt(agent.systemPrompt ?? "");
       setModel(agent.model ?? "");
+      setResetModelToTemplate(false);
       setIsCustomModelEditing(false);
       setProvider(agent.provider ?? "");
+      setResetProviderToTemplate(false);
       setIsCustomProviderEditing(false);
       setEnvVars(agent.envVars);
       setRespondTo(agent.respondTo);
@@ -502,6 +510,8 @@ export function AgentInstanceEditDialog({
   }
 
   function handleRuntimeDropdownChange(nextValue: string) {
+    setResetModelToTemplate(false);
+    setResetProviderToTemplate(false);
     const action = runtimeDropdownAction(nextValue);
     if (action.kind === "add-custom-harness") {
       setIsAddHarnessOpen(true);
@@ -565,6 +575,7 @@ export function AgentInstanceEditDialog({
   );
 
   function handleProviderDropdownChange(nextValue: string) {
+    setResetProviderToTemplate(false);
     const nextProvider =
       nextValue === AUTO_PROVIDER_DROPDOWN_VALUE ? "" : nextValue;
     if (nextProvider === "relay-mesh" && selectedRuntimeId !== "buzz-agent") {
@@ -585,6 +596,7 @@ export function AgentInstanceEditDialog({
   }
 
   function handleModelDropdownChange(nextValue: string) {
+    setResetModelToTemplate(false);
     applySelection(
       selectionOnModelDropdownChange(selection, {
         nextValue,
@@ -680,10 +692,20 @@ export function AgentInstanceEditDialog({
               : undefined,
         model:
           linkedPersona != null
-            ? undefined
+            ? resetModelToTemplate
+              ? undefined
+              : normalizedModel !== (agent.model ?? null)
+                ? (normalizedModel ?? "")
+                : undefined
             : normalizedModel !== (agent.model ?? null)
               ? normalizedModel
               : undefined,
+        resetModelToTemplate:
+          linkedPersona != null &&
+          resetModelToTemplate &&
+          agent.modelChangedForAgent
+            ? true
+            : undefined,
         // Tri-state provider persistence keyed on providerRuntimeCapability:
         //   "capable"  → persist: value if changed, omit if unchanged.
         //   "locked"   → clear: send null if provider was set, else omit.
@@ -691,7 +713,11 @@ export function AgentInstanceEditDialog({
         // llmProviderFieldVisible is for UX visibility only; not used here.
         provider:
           linkedPersona != null
-            ? undefined
+            ? resetProviderToTemplate
+              ? undefined
+              : normalizedSubmitProvider !== (agent.provider ?? null)
+                ? (normalizedSubmitProvider ?? "")
+                : undefined
             : providerRuntimeCapability === "capable"
               ? normalizedSubmitProvider !== (agent.provider ?? null)
                 ? normalizedSubmitProvider
@@ -701,6 +727,12 @@ export function AgentInstanceEditDialog({
                   ? null
                   : undefined
                 : undefined, // "unknown" → omit always
+        resetProviderToTemplate:
+          linkedPersona != null &&
+          resetProviderToTemplate &&
+          agent.providerChangedForAgent
+            ? true
+            : undefined,
         envVars: envVarsEqual(submitEnvVars, agent.envVars)
           ? undefined
           : submitEnvVars,
@@ -1015,53 +1047,33 @@ export function AgentInstanceEditDialog({
             ) : null}
             {/* LLM provider */}
             {llmProviderFieldVisible ? (
-              <div className="space-y-1.5">
-                <label
-                  className="text-sm font-medium text-foreground"
-                  htmlFor="edit-agent-llm-provider"
-                >
-                  LLM provider
-                  {providerRequired ? (
-                    <span className="ml-1 text-destructive" aria-hidden="true">
-                      *
-                    </span>
-                  ) : (
-                    <span className={PERSONA_LABEL_OPTIONAL_CLASS}>
-                      Optional
-                    </span>
-                  )}
-                </label>
-                <PersonaDropdownField
-                  disabled={updateMutation.isPending}
-                  id="edit-agent-llm-provider"
-                  onValueChange={handleProviderDropdownChange}
-                  options={providerDropdownOptions}
-                  placeholder="Default (auto)"
-                  value={providerSelectValue}
-                />
-                {isCustomProviderEditing ? (
-                  <div
-                    className={cn(
-                      "mt-2 flex min-h-11 items-center px-3",
-                      PERSONA_FIELD_SHELL_CLASS,
-                    )}
-                  >
-                    <Input
-                      aria-label="Custom provider ID"
-                      autoCorrect="off"
-                      className={cn(
-                        "h-8 px-0 py-0 leading-6",
-                        PERSONA_FIELD_CONTROL_CLASS,
-                      )}
-                      disabled={updateMutation.isPending}
-                      id="edit-agent-custom-provider"
-                      onChange={(event) => setProvider(event.target.value)}
-                      placeholder="Custom provider ID"
-                      value={provider}
-                    />
-                  </div>
-                ) : null}
-              </div>
+              <AgentProviderField
+                changedForAgent={
+                  linkedPersona != null &&
+                  agent.providerChangedForAgent &&
+                  !resetProviderToTemplate
+                }
+                customValue={provider}
+                disabled={updateMutation.isPending}
+                isCustomEditing={isCustomProviderEditing}
+                onCustomChange={(value) => {
+                  setResetProviderToTemplate(false);
+                  setProvider(value);
+                }}
+                onReset={() => {
+                  setProvider(
+                    linkedPersona?.provider ??
+                      inheritedProviderDefault.value ??
+                      "",
+                  );
+                  setIsCustomProviderEditing(false);
+                  setResetProviderToTemplate(true);
+                }}
+                onValueChange={handleProviderDropdownChange}
+                options={providerDropdownOptions}
+                required={providerRequired}
+                selectedValue={providerSelectValue}
+              />
             ) : null}
 
             {llmProviderFieldVisible && topLevelSecretEnvVar ? (
@@ -1083,56 +1095,33 @@ export function AgentInstanceEditDialog({
             ) : null}
 
             {/* Model */}
-            <div className="space-y-1.5">
-              <label
-                className="text-sm font-medium text-foreground"
-                htmlFor="edit-agent-model"
-              >
-                Model
-                {modelRequired ? (
-                  <span className="ml-1 text-destructive" aria-hidden="true">
-                    *
-                  </span>
-                ) : (
-                  <span className={PERSONA_LABEL_OPTIONAL_CLASS}>Optional</span>
-                )}
-              </label>
-              <PersonaDropdownField
-                disabled={updateMutation.isPending || modelDiscoveryLoading}
-                id="edit-agent-model"
-                onValueChange={handleModelDropdownChange}
-                options={modelDropdownOptions}
-                placeholder="Default model"
-                value={modelSelectValue}
-              />
-              {showCustomModelInput ? (
-                <div
-                  className={cn(
-                    "mt-2 flex min-h-11 items-center px-3",
-                    PERSONA_FIELD_SHELL_CLASS,
-                  )}
-                >
-                  <Input
-                    aria-label="Custom model ID"
-                    autoCorrect="off"
-                    className={cn(
-                      "h-8 px-0 py-0 leading-6",
-                      PERSONA_FIELD_CONTROL_CLASS,
-                    )}
-                    disabled={updateMutation.isPending}
-                    id="edit-agent-custom-model"
-                    onChange={(event) => setModel(event.target.value)}
-                    placeholder="Custom model ID"
-                    value={model}
-                  />
-                </div>
-              ) : null}
-              {modelStatusMessage ? (
-                <p className="text-xs text-muted-foreground">
-                  {modelStatusMessage}
-                </p>
-              ) : null}
-            </div>
+            <AgentModelField
+              changedForAgent={
+                linkedPersona != null &&
+                agent.modelChangedForAgent &&
+                !resetModelToTemplate
+              }
+              customValue={model}
+              disabled={updateMutation.isPending}
+              discoveryLoading={modelDiscoveryLoading}
+              onCustomChange={(value) => {
+                setResetModelToTemplate(false);
+                setModel(value);
+              }}
+              onReset={() => {
+                setModel(
+                  linkedPersona?.model ?? inheritedModelDefault.value ?? "",
+                );
+                setIsCustomModelEditing(false);
+                setResetModelToTemplate(true);
+              }}
+              onValueChange={handleModelDropdownChange}
+              options={modelDropdownOptions}
+              required={modelRequired}
+              showCustomInput={showCustomModelInput}
+              statusMessage={modelStatusMessage}
+              selectedValue={modelSelectValue}
+            />
 
             <AgentAiDefaultsNotice
               onEditDefaults={() => setAiDefaultsOpen(true)}

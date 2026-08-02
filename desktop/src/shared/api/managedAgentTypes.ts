@@ -31,8 +31,15 @@ export type ManagedAgent = {
   instructionsChangedForAgent: boolean;
   avatarUrl: string | null;
   model: string | null;
-  modelSource: "definition" | "global" | "instance_legacy" | null;
+  modelSource:
+    | "definition"
+    | "global"
+    | "instance_override"
+    | "instance_legacy"
+    | null;
+  modelChangedForAgent: boolean;
   provider: string | null;
+  providerChangedForAgent: boolean;
   personaOutOfDate: boolean;
   personaOrphaned: boolean;
   needsRestart: boolean;

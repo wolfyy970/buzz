@@ -70,6 +70,8 @@ fn make_definition(slug: &str) -> ManagedAgentRecord {
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
         system_prompt_override: None,
+        model_override: None,
+        provider_override: None,
         pinned_skills: Vec::new(),
         skill_overrides: None,
     }

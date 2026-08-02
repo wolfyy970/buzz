@@ -114,6 +114,10 @@ test.describe("edit agent dialog", () => {
           instructionsChangedForAgent: true,
           systemPrompt:
             "Focus on lifecycle campaigns and call out weak evidence.",
+          model: "agent-model",
+          modelChangedForAgent: true,
+          provider: "openai",
+          providerChangedForAgent: true,
           skillsChangedForAgent: true,
           skills: [
             {
@@ -135,6 +139,8 @@ test.describe("edit agent dialog", () => {
           id: PERSONA_ID,
           displayName: AGENT_NAME,
           systemPrompt: "Use the template instructions.",
+          model: "template-model",
+          provider: "anthropic",
           skills: [templateSkill],
         },
       ],
@@ -143,19 +149,24 @@ test.describe("edit agent dialog", () => {
     await openEditDialog(page, true);
     const overrides = page.getByTestId("agent-template-overrides");
     await expect(overrides).toBeVisible();
-    await expect(overrides.getByText("Changed for this agent")).toHaveCount(2);
+    await expect(page.getByText("Changed for this agent")).toHaveCount(4);
     await waitForAnimations(page);
     await overrides.screenshot({
       path: "test-results/agent-template-update-screenshots/06-private-agent-overrides.png",
     });
     await overrides.getByTestId("reset-agent-instructions-to-template").click();
     await overrides.getByTestId("reset-agent-skills-to-template").click();
+    await page.getByTestId("reset-agent-model-to-template").click();
+    await page.getByTestId("reset-agent-provider-to-template").click();
     await expect(
       overrides.getByTestId("edit-agent-private-instructions"),
     ).toHaveValue("Use the template instructions.");
     await expect(
       overrides.getByTestId("agent-skill-description-0"),
     ).toHaveValue("Analyze campaigns from the template.");
+    await page
+      .getByLabel("Anthropic API Key")
+      .fill("sk-test-template-reset-e2e");
 
     await page.getByTestId("edit-agent-dialog-submit").click();
     await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
@@ -167,6 +178,8 @@ test.describe("edit agent dialog", () => {
     });
     expect(updateInput).toMatchObject({
       resetSystemPromptToTemplate: true,
+      resetModelToTemplate: true,
+      resetProviderToTemplate: true,
       resetSkillsToTemplate: true,
     });
   });

@@ -100,6 +100,8 @@ fn record(
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
         system_prompt_override: None,
+        model_override: None,
+        provider_override: None,
         pinned_skills: Vec::new(),
         skill_overrides: None,
     }
@@ -245,6 +247,56 @@ fn linked_private_instructions_override_the_selected_template_pin() {
 
     assert_eq!(cfg.system_prompt.value.as_deref(), Some("only this agent"));
     assert_eq!(cfg.system_prompt.source, ConfigSource::InstanceOverride);
+}
+
+#[test]
+fn linked_private_model_and_provider_override_the_selected_template_pin() {
+    let mut rec = record(
+        Some("d1"),
+        Some("template-model"),
+        Some("template-provider"),
+        None,
+    );
+    rec.model_override = Some("agent-model".to_string());
+    rec.provider_override = Some("agent-provider".to_string());
+    let defs = vec![definition("d1", None, None, "mutable head")];
+
+    let cfg = match resolve_effective_config(&rec, &defs, &global(None, None)) {
+        EffectiveConfigResult::Resolved(config) => config,
+        other => panic!("expected Resolved, got {other:?}"),
+    };
+
+    assert_eq!(cfg.model.value.as_deref(), Some("agent-model"));
+    assert_eq!(cfg.model.source, ConfigSource::InstanceOverride);
+    assert_eq!(cfg.provider.value.as_deref(), Some("agent-provider"));
+    assert_eq!(cfg.provider.source, ConfigSource::InstanceOverride);
+}
+
+#[test]
+fn linked_empty_private_model_and_provider_bypass_template_and_global_defaults() {
+    let mut rec = record(
+        Some("d1"),
+        Some("template-model"),
+        Some("template-provider"),
+        None,
+    );
+    rec.model_override = Some(String::new());
+    rec.provider_override = Some(String::new());
+    let defs = vec![definition("d1", None, None, "mutable head")];
+
+    let cfg = match resolve_effective_config(
+        &rec,
+        &defs,
+        &global(Some("global-model"), Some("global-provider")),
+    ) {
+        EffectiveConfigResult::Resolved(config) => config,
+        other => panic!("expected Resolved, got {other:?}"),
+    };
+
+    assert_eq!(cfg.model.value, None);
+    assert_eq!(cfg.model.source, ConfigSource::InstanceOverride);
+    assert_eq!(cfg.provider.value, None);
+    assert_eq!(cfg.provider.source, ConfigSource::InstanceOverride);
 }
 
 #[test]

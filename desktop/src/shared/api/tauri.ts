@@ -663,8 +663,10 @@ export function fromRawManagedAgent(agent: RawManagedAgent): ManagedAgent {
     avatarUrl: agent.avatar_url ?? null,
     model: agent.model,
     modelSource: agent.model_source ?? null,
+    modelChangedForAgent: agent.model_changed_for_agent ?? false,
     // Fallbacks for pre-feature mocks/fixtures. Real records always carry them.
     provider: agent.provider ?? null,
+    providerChangedForAgent: agent.provider_changed_for_agent ?? false,
     personaOutOfDate: agent.persona_out_of_date ?? false,
     personaOrphaned: agent.persona_orphaned ?? false,
     needsRestart: agent.needs_restart ?? false,

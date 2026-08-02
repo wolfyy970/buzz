@@ -216,8 +216,14 @@ pub fn build_snapshot(
             .clone()
             .or_else(|| record.system_prompt.clone()),
         runtime: record.runtime.clone(),
-        model: record.model.clone(),
-        provider: record.provider.clone(),
+        model: record
+            .model_override
+            .clone()
+            .or_else(|| record.model.clone()),
+        provider: record
+            .provider_override
+            .clone()
+            .or_else(|| record.provider.clone()),
         parallelism: record.definition_parallelism.or(Some(record.parallelism)),
         respond_to: record.definition_respond_to.clone(),
         respond_to_allowlist: record.definition_respond_to_allowlist.clone(),

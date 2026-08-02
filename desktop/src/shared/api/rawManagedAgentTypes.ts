@@ -21,7 +21,9 @@ export type RawManagedAgent = {
   avatar_url?: string | null;
   model: string | null;
   model_source?: ManagedAgent["modelSource"];
+  model_changed_for_agent?: boolean;
   provider: string | null;
+  provider_changed_for_agent?: boolean;
   persona_out_of_date: boolean;
   persona_orphaned: boolean;
   needs_restart: boolean;
