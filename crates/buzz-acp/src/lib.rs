@@ -4,6 +4,7 @@ mod acp;
 mod config;
 mod engram_fetch;
 mod filter;
+mod handoff;
 mod observer;
 mod pool;
 mod pool_lifecycle;
@@ -1347,6 +1348,18 @@ async fn tokio_main() -> Result<()> {
 
     tracing::info!("buzz-acp starting: {}", config.summary());
 
+    let pubkey_hex = config.keys.public_key().to_hex();
+    let mut pending_handoff = handoff::load_checkpoint(
+        config.handoff_checkpoint_path.as_deref(),
+        &pubkey_hex,
+        &config.relay_url,
+    )
+    .map_err(|error| anyhow::anyhow!("handoff checkpoint error: {error}"))?;
+    let recovery = pending_handoff
+        .as_ref()
+        .map(handoff::LoadedCheckpoint::recovery)
+        .unwrap_or_default();
+
     let observer = config
         .relay_observer
         .then(observer::ObserverHandle::in_process);
@@ -1378,12 +1391,12 @@ async fn tokio_main() -> Result<()> {
     // the initial subscribe_since for channels discovered at startup. The Subscribe
     // handler falls back to subscribe_since when last_seen is None, closing the
     // blind spot between "agents ready" and "first REQ sent".
-    let startup_watermark: u64 = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-
-    let pubkey_hex = config.keys.public_key().to_hex();
+    let startup_watermark: u64 = recovery.membership_floor().unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+    });
 
     // Parse BUZZ_AUTH_TAG into a nostr::Tag for NIP-OA relay membership delegation.
     let relay_auth_tag: Option<nostr::Tag> = std::env::var("BUZZ_AUTH_TAG")
@@ -1528,16 +1541,34 @@ async fn tokio_main() -> Result<()> {
     if channel_filters.is_empty() {
         tracing::warn!("no channel subscriptions resolved — agent will sit idle");
     }
+    let recovery_channels: HashSet<Uuid> = recovery.channels().collect();
+    let unavailable_recovery_channels: Vec<Uuid> = recovery_channels
+        .iter()
+        .filter(|channel| !channel_filters.contains_key(channel))
+        .copied()
+        .collect();
+    if !unavailable_recovery_channels.is_empty() {
+        return Err(anyhow::anyhow!(
+            "handoff checkpoint contains {} channel(s) that cannot be subscribed; checkpoint retained",
+            unavailable_recovery_channels.len()
+        ));
+    }
     let mut subscribed_channel_ids = HashSet::with_capacity(channel_filters.len());
     for (channel_id, filter) in &channel_filters {
-        if let Err(e) = relay.subscribe_channel(*channel_id, filter.clone()).await {
+        if let Err(e) = relay
+            .subscribe_channel_from(
+                *channel_id,
+                filter.clone(),
+                recovery.channel_floor(channel_id),
+            )
+            .await
+        {
             tracing::warn!("failed to subscribe to channel {channel_id}: {e}");
         } else {
             subscribed_channel_ids.insert(*channel_id);
             tracing::info!("subscribed to channel {channel_id}");
         }
     }
-
     if let Some((observer, publisher, keys, agent_pubkey, owner_pubkey, owner)) =
         relay_observer_publisher.take()
     {
@@ -1555,18 +1586,19 @@ async fn tokio_main() -> Result<()> {
     let dedup_mode = config.dedup_mode;
     let mut queue =
         EventQueue::new(dedup_mode).with_in_flight_deadline(config.max_turn_duration_secs);
+    let mut handoff_tracker = handoff::HandoffTracker::default();
 
     // Online means the harness can receive work, not merely that its socket is
     // connected. Publishing after channel subscriptions gives desktop callers
     // a durable readiness boundary before they send a startup mention.
-    if config.presence_enabled {
+    if config.presence_enabled && pending_handoff.is_none() {
         match publish_presence(&presence_publisher, &presence_keys, "online").await {
             Ok(_) => tracing::info!("presence set to online"),
             Err(e) => tracing::warn!("failed to set initial presence: {e}"),
         }
     }
 
-    if config.lazy_pool {
+    if config.lazy_pool && pending_handoff.is_none() {
         emit_runtime_lifecycle(
             observer.as_ref(),
             &runtime_start_nonce,
@@ -1695,25 +1727,48 @@ async fn tokio_main() -> Result<()> {
     //      `IN_FLIGHT_DEADLINE_SECS` expires.
     let (steer_ack_tx, mut steer_ack_rx) = mpsc::unbounded_channel::<SteerAckEvent>();
 
-    // ── Step 7: Shutdown signal ───────────────────────────────────────────────
-    let (shutdown_tx, mut shutdown_rx) = watch::channel(());
+    // ── Step 7: Shutdown signals ──────────────────────────────────────────────
+    let (shutdown_tx, shutdown_rx) = watch::channel(());
+    let (stop_tx, mut stop_rx) = mpsc::channel::<ShutdownMode>(1);
 
-    let tx = shutdown_tx.clone();
+    let tx = stop_tx.clone();
     tokio::spawn(async move {
         tokio::signal::ctrl_c().await.ok();
-        let _ = tx.send(());
+        let _ = tx.try_send(ShutdownMode::Normal);
     });
 
     #[cfg(unix)]
     {
-        let tx = shutdown_tx.clone();
+        let tx = stop_tx.clone();
         tokio::spawn(async move {
             use tokio::signal::unix::{signal, SignalKind};
             let mut sigterm = signal(SignalKind::terminate()).expect("SIGTERM handler");
             sigterm.recv().await;
-            let _ = tx.send(());
+            let _ = tx.try_send(ShutdownMode::Normal);
         });
+        if config.handoff_checkpoint_path.is_some() {
+            let tx = stop_tx.clone();
+            tokio::spawn(async move {
+                use tokio::signal::unix::{signal, SignalKind};
+                match signal(SignalKind::user_defined1()) {
+                    Ok(mut planned) => {
+                        planned.recv().await;
+                        let _ = tx.try_send(ShutdownMode::PlannedUpdate);
+                    }
+                    Err(error) => {
+                        tracing::error!("failed to install planned-update signal handler: {error}");
+                    }
+                }
+            });
+        }
     }
+    let mut handoff_request_poll = config.handoff_request_path.as_ref().map(|_| {
+        let mut interval = tokio::time::interval(Duration::from_millis(250));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval
+    });
+    let mut shutdown_mode = ShutdownMode::Normal;
+    let mut planned_cutover_time = None;
 
     // Track the newest membership notification timestamp per channel.
     // On reconnect the relay replays events newest-first, so the first event
@@ -1772,6 +1827,38 @@ async fn tokio_main() -> Result<()> {
     }
 
     loop {
+        if pending_handoff.is_some()
+            && handoff_recovery_can_commit(
+                relay.replay_ready(&recovery_channels),
+                relay.replay_delivery_drained(),
+                handoff_tracker.has_pending_work(),
+            )
+        {
+            let Some(restored) = pending_handoff.take() else {
+                continue;
+            };
+            restored.consume().map_err(|error| {
+                anyhow::anyhow!("failed to consume restored checkpoint: {error}")
+            })?;
+            tracing::info!("handoff replay completed; checkpoint consumed");
+            if config.presence_enabled {
+                match publish_presence(&presence_publisher, &presence_keys, "online").await {
+                    Ok(_) => tracing::info!("presence set to online"),
+                    Err(error) => tracing::warn!("failed to set initial presence: {error}"),
+                }
+            }
+            if config.lazy_pool {
+                emit_runtime_lifecycle(
+                    observer.as_ref(),
+                    &runtime_start_nonce,
+                    &pubkey_hex,
+                    &config.relay_url,
+                    "listening",
+                    None,
+                );
+            }
+        }
+
         // Whether buffered work is waiting on a lazy pool. Also gates the
         // retry-deadline sleep arm below: a `Failed` lifecycle keeps its
         // (possibly past) `retry_at` until the next wake, so sleeping on it
@@ -1842,8 +1929,13 @@ async fn tokio_main() -> Result<()> {
             // called on relay events or pool results, neither of which
             // arrive when the channel is silent.
             if queue.has_flushable_work() {
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &mut last_activity,
+                    &mut handoff_tracker,
+                )
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -1880,8 +1972,13 @@ async fn tokio_main() -> Result<()> {
         // this, batches requeued during crash recovery sit idle until the
         // next relay event arrives — which can be minutes on quiet channels.
         if respawn_collected {
-            for (channel_id, thread_tags) in
-                dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+            for (channel_id, thread_tags) in dispatch_pending(
+                &mut pool,
+                &mut queue,
+                &ctx,
+                &mut last_activity,
+                &mut handoff_tracker,
+            )
             {
                 typing_channels.insert(channel_id, thread_tags);
             }
@@ -1892,6 +1989,90 @@ async fn tokio_main() -> Result<()> {
             let (result_rx, join_set) = pool.rx_and_join_set();
             tokio::select! {
                 biased;
+                requested_mode = stop_rx.recv() => {
+                    let _ = result_rx;
+                    if let Some(mode) = requested_mode {
+                        if mode == ShutdownMode::PlannedUpdate {
+                            if pending_handoff.is_some() {
+                                tracing::warn!(
+                                    "planned update deferred until the active handoff replay commits"
+                                );
+                                continue;
+                            }
+                            let cutover_time = unix_now_secs();
+                            if let Err(error) = write_pre_quiesce_checkpoint(
+                                &config,
+                                &handoff_tracker,
+                                &pubkey_hex,
+                                &subscribed_channel_ids,
+                                cutover_time,
+                            ) {
+                                tracing::error!(
+                                    "planned update refused because its checkpoint was not durable: {error}"
+                                );
+                                continue;
+                            }
+                            shutdown_mode = mode;
+                            planned_cutover_time = Some(cutover_time);
+                            tracing::info!("planned update checkpoint committed");
+                        } else {
+                            shutdown_mode = mode;
+                            tracing::info!("shutting down");
+                        }
+                    }
+                    break;
+                }
+                _ = async {
+                    match handoff_request_poll.as_mut() {
+                        Some(interval) => interval.tick().await,
+                        None => std::future::pending().await,
+                    }
+                } => {
+                    let _ = result_rx;
+                    if let Some(path) = config.handoff_request_path.as_deref() {
+                        match poll_planned_update_request(path) {
+                            Ok(Some(request)) => {
+                                if pending_handoff.is_some() {
+                                    tracing::debug!(
+                                        "planned-update request retained until active handoff replay commits"
+                                    );
+                                    continue;
+                                }
+                                let cutover_time = unix_now_secs();
+                                if let Err(error) = write_pre_quiesce_checkpoint(
+                                    &config,
+                                    &handoff_tracker,
+                                    &pubkey_hex,
+                                    &subscribed_channel_ids,
+                                    cutover_time,
+                                ) {
+                                    tracing::error!(
+                                        "planned-update request retained because its checkpoint was not durable: {error}"
+                                    );
+                                    continue;
+                                }
+                                if let Err(error) = request.consume() {
+                                    tracing::error!(
+                                        "planned-update request changed before durable consumption: {error}"
+                                    );
+                                    continue;
+                                }
+                                shutdown_mode = ShutdownMode::PlannedUpdate;
+                                planned_cutover_time = Some(cutover_time);
+                                tracing::info!(
+                                    "planned update checkpoint committed through control file"
+                                );
+                                break;
+                            }
+                            Ok(None) => {}
+                            Err(error) => {
+                                tracing::error!("invalid planned-update request: {error}");
+                                handoff_request_poll = None;
+                            }
+                        }
+                    }
+                    None
+                }
                 // recv() returning None means all senders dropped (pool was torn down).
                 // Break cleanly instead of panicking.
                 r = result_rx.recv(), if pool_ready => match r {
@@ -2095,6 +2276,16 @@ async fn tokio_main() -> Result<()> {
                                 continue;
                             }
 
+                            let replay_event_id = buzz_event.event.id.to_hex();
+                            if recovery.should_skip_completed(&replay_event_id) {
+                                tracing::debug!(
+                                    channel_id = %buzz_event.channel_id,
+                                    event_id = %replay_event_id,
+                                    "skipping event completed before planned update"
+                                );
+                                continue;
+                            }
+
                             if config.ignore_self && buzz_event.event.pubkey.to_hex() == pubkey_hex {
                                 tracing::debug!(channel_id = %buzz_event.channel_id, "dropping self-authored event");
                                 continue;
@@ -2116,7 +2307,7 @@ async fn tokio_main() -> Result<()> {
                                             sender = %buzz_event.event.pubkey.to_hex(),
                                             "shutdown command from owner — exiting gracefully"
                                         );
-                                        let _ = shutdown_tx.send(());
+                                        let _ = stop_tx.try_send(ShutdownMode::Normal);
                                         continue;
                                     }
                                 }
@@ -2278,6 +2469,11 @@ async fn tokio_main() -> Result<()> {
                             // guard's cleanup may race with this add, leaving a
                             // cosmetic stale 👀. Acceptable — see ReactionGuard docs.
                             if accepted {
+                                handoff_tracker.record_pending(
+                                    buzz_event.channel_id,
+                                    event_id_hex.clone(),
+                                    event_for_steer.created_at.as_secs(),
+                                );
                                 let rc = ctx.rest_client.clone();
                                 let eid = event_id_hex.clone();
                                 tokio::spawn(async move {
@@ -2329,8 +2525,13 @@ async fn tokio_main() -> Result<()> {
                                 }
                             }
                             if pool_ready {
-                                for (channel_id, thread_tags) in
-                                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                                for (channel_id, thread_tags) in dispatch_pending(
+                                    &mut pool,
+                                    &mut queue,
+                                    &ctx,
+                                    &mut last_activity,
+                                    &mut handoff_tracker,
+                                )
                                 {
                                     typing_channels.insert(channel_id, thread_tags);
                                 }
@@ -2379,8 +2580,13 @@ async fn tokio_main() -> Result<()> {
                         tracing::debug!("heartbeat_skipped_pool_not_ready");
                     } else if queue.has_flushable_work() {
                         tracing::debug!("heartbeat_skipped_events");
-                        for (channel_id, thread_tags) in
-                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                        for (channel_id, thread_tags) in dispatch_pending(
+                            &mut pool,
+                            &mut queue,
+                            &ctx,
+                            &mut last_activity,
+                            &mut handoff_tracker,
+                        )
                         {
                             typing_channels.insert(channel_id, thread_tags);
                         }
@@ -2434,10 +2640,6 @@ async fn tokio_main() -> Result<()> {
                     }
                     None
                 }
-                _ = shutdown_rx.changed() => {
-                    tracing::info!("shutting down");
-                    break;
-                }
             }
         };
 
@@ -2447,6 +2649,7 @@ async fn tokio_main() -> Result<()> {
                 if let PromptSource::Channel(ch) = &result.source {
                     typing_channels.remove(ch);
                 }
+                handoff_tracker.record_result(&result);
                 if handle_prompt_result(
                     &mut pool,
                     &mut queue,
@@ -2478,8 +2681,13 @@ async fn tokio_main() -> Result<()> {
                 {
                     break;
                 }
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &mut last_activity,
+                    &mut handoff_tracker,
+                )
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -2503,8 +2711,13 @@ async fn tokio_main() -> Result<()> {
                     tracing::error!("all agents dead — exiting");
                     break;
                 }
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &mut last_activity,
+                    &mut handoff_tracker,
+                )
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -2624,6 +2837,7 @@ async fn tokio_main() -> Result<()> {
                     "non-cancelling steer ack received"
                 );
                 if matches!(ack, Ok(pool::SteerAck::Success)) {
+                    handoff_tracker.record_steered(channel_id, &event_id);
                     queue.extend_in_flight_deadline(channel_id, config.max_turn_duration_secs);
                 }
                 if drop_withheld {
@@ -2647,8 +2861,13 @@ async fn tokio_main() -> Result<()> {
                 // tear down the in-flight task; on its completion the
                 // queue drains. We still try here in case the in-flight
                 // task has already returned.
-                for (channel_id, thread_tags) in
-                    dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                for (channel_id, thread_tags) in dispatch_pending(
+                    &mut pool,
+                    &mut queue,
+                    &ctx,
+                    &mut last_activity,
+                    &mut handoff_tracker,
+                )
                 {
                     typing_channels.insert(channel_id, thread_tags);
                 }
@@ -2675,8 +2894,13 @@ async fn tokio_main() -> Result<()> {
                             "ready",
                             None,
                         );
-                        for (channel_id, thread_tags) in
-                            dispatch_pending(&mut pool, &mut queue, &ctx, &mut last_activity)
+                        for (channel_id, thread_tags) in dispatch_pending(
+                            &mut pool,
+                            &mut queue,
+                            &ctx,
+                            &mut last_activity,
+                            &mut handoff_tracker,
+                        )
                         {
                             typing_channels.insert(channel_id, thread_tags);
                         }
@@ -2698,6 +2922,15 @@ async fn tokio_main() -> Result<()> {
         }
     }
 
+    // Planned replacement first stops the relay producer. The returned floors
+    // cover events buffered between the relay task and this main loop, plus
+    // any events dropped under backpressure.
+    let relay_replay_snapshot = if shutdown_mode == ShutdownMode::PlannedUpdate {
+        relay.quiesce().await
+    } else {
+        relay::RelayReplaySnapshot::default()
+    };
+
     // Drain wake tasks gracefully rather than aborting: an in-flight
     // initialize_agent_pool observes the shutdown watch at its biased per-slot
     // select and reaps its partially-spawned agents itself. `shutdown()` here
@@ -2708,7 +2941,12 @@ async fn tokio_main() -> Result<()> {
     // just as promptly. Timeout is a backstop for a slot stuck outside the
     // select (e.g. in spawn); only then do we fall back to aborting.
     let _ = shutdown_tx.send(());
-    let wake_drain = tokio::time::timeout(Duration::from_secs(30), async {
+    let wake_grace = if shutdown_mode == ShutdownMode::PlannedUpdate {
+        Duration::from_secs(config.handoff_grace_secs.min(30))
+    } else {
+        Duration::from_secs(30)
+    };
+    let wake_drain = tokio::time::timeout(wake_grace, async {
         while wake_tasks.join_next().await.is_some() {}
     })
     .await;
@@ -2725,7 +2963,11 @@ async fn tokio_main() -> Result<()> {
     tracing::info!("shutdown: waiting for in-flight prompts");
     // 30 s is generous for in-flight prompts to be cancelled; using
     // max_turn_duration here would cause Ctrl+C to hang for up to an hour.
-    let grace = Duration::from_secs(30);
+    let grace = if shutdown_mode == ShutdownMode::PlannedUpdate {
+        Duration::from_secs(config.handoff_grace_secs)
+    } else {
+        Duration::from_secs(30)
+    };
     // Best-effort drain of both join_set and result_rx during the grace period.
     // Tasks that finish normally send their OwnedAgent through result_rx — we
     // explicitly shut them down here to reap child processes. If the grace
@@ -2744,6 +2986,7 @@ async fn tokio_main() -> Result<()> {
                 }
                 maybe_result = rx_ref.recv() => {
                     if let Some(mut pr) = maybe_result {
+                        handoff_tracker.record_result(&pr);
                         let idx = pr.agent.index;
                         pr.agent.acp.shutdown().await;
                         tracing::debug!(agent = idx, "reaped checked-out agent on shutdown");
@@ -2761,10 +3004,38 @@ async fn tokio_main() -> Result<()> {
     // Drain any remaining results that arrived after join_set drained but
     // before tasks were aborted.
     while let Ok(mut pr) = pool.result_rx_try_recv() {
+        handoff_tracker.record_result(&pr);
         let idx = pr.agent.index;
         pr.agent.acp.shutdown().await;
         tracing::debug!(agent = idx, "reaped late-arriving agent on shutdown");
     }
+
+    let handoff_write_error: Option<anyhow::Error> = if shutdown_mode == ShutdownMode::PlannedUpdate
+    {
+        match config.handoff_checkpoint_path.as_deref() {
+            Some(path) => {
+                let cutover_time = planned_cutover_time.unwrap_or_else(unix_now_secs);
+                handoff_tracker
+                    .write_checkpoint(handoff::CheckpointWriteParams {
+                        path,
+                        agent_pubkey: &pubkey_hex,
+                        relay_url: &config.relay_url,
+                        subscribed_channels: &subscribed_channel_ids,
+                        cutover_time,
+                        membership_relay_floor: relay_replay_snapshot.membership_floor,
+                        relay_channel_floors: &relay_replay_snapshot.channel_floors,
+                        relay_fallback_floor: relay_replay_snapshot.fallback_floor,
+                    })
+                    .err()
+                    .map(anyhow::Error::from)
+            }
+            None => Some(anyhow::anyhow!(
+                "planned update requested without a handoff checkpoint path"
+            )),
+        }
+    } else {
+        None
+    };
     // Explicitly shut down idle agents still sitting in their slots.
     for slot in pool.agents_mut().iter_mut() {
         if let Some(agent) = slot.take() {
@@ -2819,6 +3090,9 @@ async fn tokio_main() -> Result<()> {
     relay.shutdown().await;
 
     tracing::info!("buzz-acp stopped");
+    if let Some(error) = handoff_write_error {
+        return Err(error.context("planned update checkpoint was not written safely"));
+    }
     Ok(())
 }
 
@@ -2826,6 +3100,110 @@ async fn tokio_main() -> Result<()> {
 enum LoopAction {
     Continue,
     Exit,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShutdownMode {
+    Normal,
+    PlannedUpdate,
+}
+
+fn unix_now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
+fn poll_planned_update_request(
+    path: &std::path::Path,
+) -> Result<Option<handoff::LoadedUpdateRequest>> {
+    handoff::load_update_request(path)
+        .map_err(|error| anyhow::anyhow!("planned-update request error: {error}"))
+}
+
+fn write_pre_quiesce_checkpoint(
+    config: &Config,
+    tracker: &handoff::HandoffTracker,
+    agent_pubkey: &str,
+    subscribed_channels: &HashSet<Uuid>,
+    cutover_time: u64,
+) -> Result<()> {
+    let path = config
+        .handoff_checkpoint_path
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("planned update has no handoff checkpoint path"))?;
+    tracker
+        .write_checkpoint(handoff::CheckpointWriteParams {
+            path,
+            agent_pubkey,
+            relay_url: &config.relay_url,
+            subscribed_channels,
+            cutover_time,
+            membership_relay_floor: None,
+            relay_channel_floors: &HashMap::new(),
+            relay_fallback_floor: None,
+        })
+        .map_err(anyhow::Error::from)
+}
+
+fn handoff_recovery_can_commit(
+    subscriptions_ready: bool,
+    replay_delivery_drained: bool,
+    pending_work: bool,
+) -> bool {
+    subscriptions_ready && replay_delivery_drained && !pending_work
+}
+
+#[cfg(test)]
+mod handoff_shutdown_tests {
+    use super::*;
+
+    #[test]
+    fn request_file_selects_planned_shutdown_and_is_one_shot() {
+        let directory =
+            std::env::temp_dir().join(format!("buzz-acp-request-test-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let path = directory.join("update.request");
+        std::fs::write(
+            &path,
+            br#"{"version":1,"kind":"buzz-acp-planned-update-request"}"#,
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+
+        let request = poll_planned_update_request(&path).unwrap().unwrap();
+        assert!(
+            path.exists(),
+            "request must remain until checkpoint durability is known"
+        );
+        request.consume().unwrap();
+        assert!(!path.exists());
+        assert!(poll_planned_update_request(&path).unwrap().is_none());
+        let _ = std::fs::remove_dir(&directory);
+    }
+
+    #[test]
+    fn normal_shutdown_never_selects_checkpoint_mode() {
+        assert_ne!(ShutdownMode::Normal, ShutdownMode::PlannedUpdate);
+    }
+
+    #[test]
+    fn checkpoint_is_not_consumed_before_eose_buffer_and_work_are_durable() {
+        assert!(!handoff_recovery_can_commit(false, true, false));
+        assert!(!handoff_recovery_can_commit(true, false, false));
+        assert!(!handoff_recovery_can_commit(true, true, true));
+        assert!(handoff_recovery_can_commit(true, true, false));
+    }
 }
 
 fn event_mentions_agent(event: &nostr::Event, agent_pubkey_hex: &str) -> bool {
@@ -3011,6 +3389,7 @@ fn dispatch_pending(
     queue: &mut EventQueue,
     ctx: &Arc<PromptContext>,
     last_activity: &mut tokio::time::Instant,
+    handoff_tracker: &mut handoff::HandoffTracker,
 ) -> Vec<(Uuid, ThreadTags)> {
     let mut dispatched_channels = Vec::new();
     loop {
@@ -3036,6 +3415,7 @@ fn dispatch_pending(
             }
         };
         tracing::debug!(agent = agent.index, channel = %channel_id, affinity_hit, "agent_claimed");
+        handoff_tracker.record_dispatched(&batch);
 
         let recoverable_batch = match ctx.dedup_mode {
             DedupMode::Queue => Some(batch.clone()),
@@ -5157,6 +5537,9 @@ mod build_mcp_servers_tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            handoff_checkpoint_path: None,
+            handoff_request_path: None,
+            handoff_grace_secs: 30,
         }
     }
 
@@ -5579,6 +5962,9 @@ mod error_outcome_emission_tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            handoff_checkpoint_path: None,
+            handoff_request_path: None,
+            handoff_grace_secs: 30,
         }
     }
 

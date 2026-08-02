@@ -753,6 +753,35 @@ pub struct CliArgs {
     /// Connect and subscribe before starting the ACP/LLM subprocess pool.
     #[arg(long, env = "BUZZ_ACP_LAZY_POOL", default_value_t = false)]
     pub lazy_pool: bool,
+
+    /// Private durable replay checkpoint used only for planned process updates.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_HANDOFF_CHECKPOINT",
+        hide = true,
+        hide_env_values = true
+    )]
+    pub handoff_checkpoint: Option<PathBuf>,
+
+    /// Private cross-platform request file that initiates a planned update.
+    /// Defaults to `<handoff-checkpoint>.request`.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_HANDOFF_REQUEST",
+        hide = true,
+        hide_env_values = true
+    )]
+    pub handoff_request: Option<PathBuf>,
+
+    /// Seconds to let in-flight prompts finish during a planned update.
+    #[arg(
+        long,
+        env = "BUZZ_ACP_HANDOFF_GRACE_SECS",
+        default_value_t = 30,
+        value_parser = clap::value_parser!(u64).range(1..=300),
+        hide = true
+    )]
+    pub handoff_grace_secs: u64,
 }
 
 /// Merged NIP-01 subscription filter for a single channel.
@@ -841,6 +870,12 @@ pub struct Config {
     /// `from_cli()`. `None` when using the compiled-in default or when
     /// `--no-base-prompt` is set.
     pub base_prompt_content: Option<String>,
+    /// Private durable replay checkpoint for planned process replacement.
+    pub handoff_checkpoint_path: Option<PathBuf>,
+    /// Private cross-platform planned-update request file.
+    pub handoff_request_path: Option<PathBuf>,
+    /// Bounded grace for in-flight prompts during a planned update.
+    pub handoff_grace_secs: u64,
 }
 
 /// Maximum length, in characters, of a session title sent to the adapter.
@@ -1108,8 +1143,14 @@ pub fn propagate_legacy_env_vars() {
 /// variable before argument parsing starts.
 pub fn prepare_process_env() {
     propagate_legacy_env_vars();
-    if std::env::var_os("BUZZ_ACP_MCP_CONFIG").is_some_and(|value| value.is_empty()) {
-        std::env::remove_var("BUZZ_ACP_MCP_CONFIG");
+    for name in [
+        "BUZZ_ACP_MCP_CONFIG",
+        "BUZZ_ACP_HANDOFF_CHECKPOINT",
+        "BUZZ_ACP_HANDOFF_REQUEST",
+    ] {
+        if std::env::var_os(name).is_some_and(|value| value.is_empty()) {
+            std::env::remove_var(name);
+        }
     }
 }
 
@@ -1352,6 +1393,30 @@ impl Config {
 
         validate_multiple_event_handling(args.multiple_event_handling, args.dedup)?;
 
+        let handoff_checkpoint_path = args.handoff_checkpoint;
+        let handoff_request_path = match (&handoff_checkpoint_path, args.handoff_request) {
+            (None, Some(_)) => {
+                return Err(ConfigError::ConfigFile(
+                    "--handoff-request requires --handoff-checkpoint".into(),
+                ));
+            }
+            (None, None) => None,
+            (Some(_), Some(path)) => Some(path),
+            (Some(checkpoint), None) => {
+                let mut adjacent = checkpoint.as_os_str().to_os_string();
+                adjacent.push(".request");
+                Some(PathBuf::from(adjacent))
+            }
+        };
+        if let Some(path) = handoff_checkpoint_path.as_deref() {
+            crate::handoff::validate_configured_path(path)
+                .map_err(|error| ConfigError::ConfigFile(error.to_string()))?;
+        }
+        if let Some(path) = handoff_request_path.as_deref() {
+            crate::handoff::validate_configured_path(path)
+                .map_err(|error| ConfigError::ConfigFile(error.to_string()))?;
+        }
+
         let config = Config {
             keys,
             relay_url: args.relay_url,
@@ -1403,6 +1468,9 @@ impl Config {
             agent_owner: args.agent_owner.map(|s| s.trim().to_ascii_lowercase()),
             no_base_prompt: args.no_base_prompt,
             base_prompt_content,
+            handoff_checkpoint_path,
+            handoff_request_path,
+            handoff_grace_secs: args.handoff_grace_secs,
         };
 
         Ok(config)
@@ -1776,6 +1844,9 @@ mod tests {
             agent_owner: None,
             no_base_prompt: false,
             base_prompt_content: None,
+            handoff_checkpoint_path: None,
+            handoff_request_path: None,
+            handoff_grace_secs: 30,
         }
     }
 
@@ -1814,6 +1885,46 @@ mod tests {
             assert!(kinds.contains(&buzz_core::kind::KIND_WORKFLOW_APPROVAL_REQUESTED));
             assert!(kinds.contains(&buzz_core::kind::KIND_STREAM_REMINDER));
         }
+    }
+
+    #[test]
+    fn handoff_config_derives_private_request_path_and_bounds_grace() {
+        let directory =
+            std::env::temp_dir().join(format!("buzz-acp-config-handoff-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).unwrap();
+        }
+        let checkpoint = directory.join("agent.checkpoint");
+        let key = "1".repeat(64);
+        let args = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            &key,
+            "--handoff-checkpoint",
+            checkpoint.to_str().unwrap(),
+            "--handoff-grace-secs",
+            "45",
+        ])
+        .unwrap();
+        let config = Config::from_args(args).unwrap();
+        assert_eq!(
+            config.handoff_request_path,
+            Some(PathBuf::from(format!("{}.request", checkpoint.display())))
+        );
+        assert_eq!(config.handoff_grace_secs, 45);
+
+        let invalid = CliArgs::try_parse_from([
+            "buzz-acp",
+            "--private-key",
+            &key,
+            "--handoff-grace-secs",
+            "301",
+        ]);
+        assert!(invalid.is_err());
+        let _ = std::fs::remove_dir(&directory);
     }
 
     #[test]
