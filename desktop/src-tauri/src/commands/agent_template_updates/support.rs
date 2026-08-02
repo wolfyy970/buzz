@@ -118,6 +118,20 @@ pub(super) fn skill_changes(
     }
 }
 
+pub(super) fn instruction_change(
+    record: &ManagedAgentRecord,
+    target: &crate::managed_agents::AgentDefinition,
+) -> Option<AgentTemplateInstructionChange> {
+    let before = record.system_prompt.clone().unwrap_or_default();
+    (before != target.system_prompt).then(|| AgentTemplateInstructionChange {
+        before,
+        after: target.system_prompt.clone(),
+        // The preview only discloses that an override exists. Its contents
+        // remain private to the individual agent.
+        private_override_preserved: record.system_prompt_override.is_some(),
+    })
+}
+
 pub(super) fn prospective_record(
     record: &ManagedAgentRecord,
     persona: &crate::managed_agents::AgentDefinition,
@@ -279,6 +293,7 @@ pub async fn preview_agent_template_update(
                 blocked_reason,
                 project_scope: record.project_scope.clone(),
                 connection_bindings: bindings,
+                instruction_change: instruction_change(record, &target),
                 tool_changes: tool_changes(
                     &record.pinned_tool_requirements,
                     &target.tool_requirements,

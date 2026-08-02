@@ -8,6 +8,8 @@ const TEMPLATE_ID = "campaign-analyst-template";
 const TEMPLATE_NAME = "Campaign Analyst";
 const PREVIOUS_TEMPLATE_VERSION =
   "7d91f42b01481f4f36d7f3eca85bc50f684b09aa5ac9df16848e67bb0d64ae21";
+const INITIAL_TEMPLATE_INSTRUCTIONS =
+  "Analyze campaign performance and explain what changed.";
 const CAMPAIGN_SKILL = {
   name: "campaign-analysis",
   description: "Compare campaign performance with the prior period.",
@@ -29,6 +31,7 @@ const LINKED_AGENTS = [
     status: "running" as const,
     channelNames: ["agents"],
     backend: { type: "local" as const },
+    systemPrompt: INITIAL_TEMPLATE_INSTRUCTIONS,
     skills: [CAMPAIGN_SKILL],
   },
   {
@@ -39,6 +42,7 @@ const LINKED_AGENTS = [
     status: "stopped" as const,
     channelNames: ["agents"],
     backend: { type: "local" as const },
+    systemPrompt: INITIAL_TEMPLATE_INSTRUCTIONS,
     skills: [CAMPAIGN_SKILL],
   },
   {
@@ -53,6 +57,7 @@ const LINKED_AGENTS = [
       id: "blox",
       config: {},
     },
+    systemPrompt: INITIAL_TEMPLATE_INSTRUCTIONS,
     skills: [CAMPAIGN_SKILL],
   },
   {
@@ -63,6 +68,7 @@ const LINKED_AGENTS = [
     status: "stopped" as const,
     channelNames: ["agents"],
     backend: { type: "local" as const },
+    systemPrompt: INITIAL_TEMPLATE_INSTRUCTIONS,
     skills: [CAMPAIGN_SKILL],
   },
 ];
@@ -106,8 +112,7 @@ test.describe("agent template update screenshots", () => {
         {
           id: TEMPLATE_ID,
           displayName: TEMPLATE_NAME,
-          systemPrompt:
-            "Analyze campaign performance and explain what changed.",
+          systemPrompt: INITIAL_TEMPLATE_INSTRUCTIONS,
           skills: [CAMPAIGN_SKILL],
           updatedAt: "2026-07-15T12:00:00.000Z",
         },
@@ -229,6 +234,20 @@ test.describe("agent template update screenshots", () => {
     );
     await expect(updateReview).toContainText("Skills in this update");
     await expect(updateReview).toContainText("Changed campaign-analysis");
+    const instructionChanges = updateReview.getByTestId(
+      "template-instruction-changes",
+    );
+    await expect(instructionChanges).toContainText(
+      "Agent instructions in this update",
+    );
+    await expect(instructionChanges.getByText("Current")).toBeVisible();
+    await expect(instructionChanges.getByText("New version")).toBeVisible();
+    await expect(instructionChanges.locator("pre").nth(0)).toHaveText(
+      INITIAL_TEMPLATE_INSTRUCTIONS,
+    );
+    await expect(instructionChanges.locator("pre").nth(1)).toHaveText(
+      "Analyze campaign performance, explain what changed, and recommend the next action.",
+    );
     await expect(updateReview).toContainText(
       "Remote agents cannot be updated safely in this version.",
     );

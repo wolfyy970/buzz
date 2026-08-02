@@ -8119,6 +8119,15 @@ function handlePreviewAgentTemplateUpdate(args: {
             : "Remote agents cannot be updated safely in this version.",
         projectScope: agent.project_scope ?? null,
         connectionBindings: agent.connection_bindings ?? {},
+        instructionChange:
+          (agent.system_prompt ?? "") === persona.system_prompt
+            ? null
+            : {
+                before: agent.system_prompt ?? "",
+                after: persona.system_prompt,
+                privateOverridePreserved:
+                  agent.instructions_changed_for_agent === true,
+              },
         toolChanges: mockToolChanges(
           agent.tool_requirements ?? [],
           persona.tool_requirements ?? [],

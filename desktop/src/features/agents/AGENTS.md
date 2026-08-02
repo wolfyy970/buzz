@@ -191,10 +191,13 @@ with a TypeScript lookup table or an id comparison in a component.
     settles, and never simulate rollout progress with frontend timers.
 16. **Template rollout is explicit and impact-aware.** Agents retain their
     pinned template snapshot until the operator chooses Update agents. The
-    preview shows each affected agent, its own added, changed, and removed tool
-    requirements and Skills, plus any connection choices that must be resolved.
-    The apply request carries the complete binding map for every selected agent
-    and the backend validates it again under the update transaction.
+    preview shows instruction changes literally rather than rendering Markdown,
+    each affected agent's own added, changed, and removed tool requirements and
+    Skills, plus any connection choices that must be resolved. If an agent has
+    private instructions, say that they remain in control and show the template
+    change that will be used if the operator resets them later. The apply
+    request carries the complete binding map for every selected agent and the
+    backend validates it again under the update transaction.
 17. **Linked agents may privately change instructions and Skills.** The
     instance editor labels each divergence as "Changed for this agent" and
     provides an explicit "Reset to template" action. Reset requests use named

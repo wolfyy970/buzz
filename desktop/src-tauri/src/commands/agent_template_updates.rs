@@ -118,6 +118,14 @@ pub struct AgentTemplateSkillChanges {
     pub removed: Vec<crate::managed_agents::AgentSkill>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateInstructionChange {
+    pub before: String,
+    pub after: String,
+    pub private_override_preserved: bool,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTemplateUpdateTarget {
@@ -130,6 +138,7 @@ pub struct AgentTemplateUpdateTarget {
     pub blocked_reason: Option<String>,
     pub project_scope: Option<crate::managed_agents::AgentProjectScope>,
     pub connection_bindings: BTreeMap<String, String>,
+    pub instruction_change: Option<AgentTemplateInstructionChange>,
     pub tool_changes: AgentTemplateToolChanges,
     pub skill_changes: AgentTemplateSkillChanges,
     pub tool_binding_issues: Vec<String>,

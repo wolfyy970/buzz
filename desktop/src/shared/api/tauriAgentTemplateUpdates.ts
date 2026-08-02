@@ -18,9 +18,16 @@ export type AgentTemplateUpdateTarget = {
   blockedReason: string | null;
   projectScope: AgentProjectScope | null;
   connectionBindings: Record<string, string>;
+  instructionChange: AgentTemplateInstructionChange | null;
   toolChanges: AgentTemplateToolChanges;
   skillChanges: AgentTemplateSkillChanges;
   toolBindingIssues: string[];
+};
+
+export type AgentTemplateInstructionChange = {
+  before: string;
+  after: string;
+  privateOverridePreserved: boolean;
 };
 
 export type AgentTemplateToolChanges = {
@@ -130,6 +137,7 @@ export async function previewAgentTemplateUpdate(
       ...agent,
       projectScope: agent.projectScope ?? null,
       connectionBindings: agent.connectionBindings ?? {},
+      instructionChange: agent.instructionChange ?? null,
       toolChanges: agent.toolChanges ?? {
         added: [],
         changed: [],

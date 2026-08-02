@@ -139,6 +139,40 @@ fn skill_changes_are_computed_per_agent_snapshot() {
 }
 
 #[test]
+fn instruction_changes_are_exact_and_mark_private_overrides() {
+    let mut current = record();
+    current.system_prompt =
+        Some("Current instructions.\n||Show this syntax literally.||".to_string());
+    current.system_prompt_override = Some("Only this agent.".to_string());
+    let mut target = persona("2026-08-02T10:00:00.000000002Z");
+    target.system_prompt =
+        "New instructions.\n[Do not project this](https://example.test)".to_string();
+
+    let change = instruction_change(&current, &target).expect("instructions changed");
+
+    assert_eq!(
+        change.before,
+        "Current instructions.\n||Show this syntax literally.||"
+    );
+    assert_eq!(
+        change.after,
+        "New instructions.\n[Do not project this](https://example.test)"
+    );
+    assert!(change.private_override_preserved);
+    assert!(!serde_json::to_string(&change)
+        .expect("serialize instruction change")
+        .contains("Only this agent"));
+}
+
+#[test]
+fn unchanged_instructions_have_no_diff() {
+    let mut current = record();
+    current.system_prompt = Some("Analyze the data.".to_string());
+
+    assert_eq!(instruction_change(&current, &persona("updated")), None);
+}
+
+#[test]
 fn advancing_a_template_pin_preserves_agent_only_overrides() {
     let mut original = record();
     original.system_prompt_override = Some("Only this agent".to_string());

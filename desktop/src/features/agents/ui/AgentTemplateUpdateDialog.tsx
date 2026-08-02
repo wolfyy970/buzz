@@ -30,6 +30,10 @@ import {
   AgentTemplateSkillChangesSummary,
   commonAgentSkillChanges,
 } from "./AgentTemplateSkillUpdateFields";
+import {
+  AgentTemplateInstructionChangesSummary,
+  commonAgentInstructionChange,
+} from "./AgentTemplateInstructionUpdateFields";
 
 type AgentTemplateUpdateDialogProps = {
   error: string | null;
@@ -113,6 +117,7 @@ export function AgentTemplateUpdateDialog({
   const rollbackFailed =
     result?.agents.some((agent) => agent.outcome === "rollback_failed") ??
     false;
+  const commonInstructionChange = commonAgentInstructionChange(changedAgents);
   const commonToolChanges = commonAgentToolChanges(changedAgents);
   const commonSkillChanges = commonAgentSkillChanges(changedAgents);
   const bindingsReady = changedAgents
@@ -156,6 +161,11 @@ export function AgentTemplateUpdateDialog({
           </DialogDescription>
         </DialogHeader>
 
+        {!isComplete && commonInstructionChange ? (
+          <AgentTemplateInstructionChangesSummary
+            change={commonInstructionChange}
+          />
+        ) : null}
         {!isComplete && commonToolChanges ? (
           <AgentTemplateToolChangesSummary changes={commonToolChanges} />
         ) : null}
@@ -285,6 +295,16 @@ export function AgentTemplateUpdateDialog({
                       >
                         {agent.blockedReason}
                       </p>
+                    ) : null}
+                    {!isComplete &&
+                    !commonInstructionChange &&
+                    !isCurrent &&
+                    agent.instructionChange ? (
+                      <div className="mt-3">
+                        <AgentTemplateInstructionChangesSummary
+                          change={agent.instructionChange}
+                        />
+                      </div>
                     ) : null}
                     {!isComplete && !commonToolChanges && !isCurrent ? (
                       <div className="mt-3">
