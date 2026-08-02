@@ -1,0 +1,24 @@
+#!/bin/zsh -f
+set -euo pipefail
+
+real_adapter=${E008_REAL_CODEX_ACP:-}
+failure_gate=${E008_FAIL_ONCE_DIR:-}
+
+[[ -n "$real_adapter" && "$real_adapter" == /* ]] ||
+  { print -u2 -- "E008_REAL_CODEX_ACP must be an absolute path"; exit 64; }
+[[ -f "$real_adapter" && -x "$real_adapter" ]] ||
+  { print -u2 -- "E008_REAL_CODEX_ACP is not executable"; exit 69; }
+[[ "$real_adapter" != "$0" ]] ||
+  { print -u2 -- "E008_REAL_CODEX_ACP points back to the fixture"; exit 64; }
+[[ -z "$failure_gate" || "$failure_gate" == /* ]] ||
+  { print -u2 -- "E008_FAIL_ONCE_DIR must be an absolute path"; exit 64; }
+
+# An empty owner-created directory is the one-shot failure token. rmdir is an
+# atomic claim: one candidate consumes it and fails, then rollback can launch
+# the real adapter through this same wrapper.
+if [[ $# -eq 0 && -n "$failure_gate" ]] && /bin/rmdir "$failure_gate" 2>/dev/null; then
+  print -u2 -- "E008 synthetic activation failure"
+  exit 86
+fi
+
+exec "$real_adapter" "$@"
