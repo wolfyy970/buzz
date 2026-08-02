@@ -25,6 +25,7 @@ struct HandoffCheckpointEnvelope {
     kind: String,
     handoff_id: Option<String>,
     start_nonce: Option<String>,
+    phase: Option<String>,
     agent_pubkey: String,
     relay_sha256: String,
     written_at_unix_secs: u64,
@@ -436,11 +437,12 @@ pub(crate) fn verify_handoff_checkpoint(
             .relay_sha256
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte));
-    if document.version != 2
+    if document.version != 3
         || document.kind != "buzz-acp-planned-update"
         || !identity_is_valid
         || document.handoff_id.as_deref() != Some(identity.handoff_id.as_str())
         || document.start_nonce.as_deref() != Some(identity.start_nonce.as_str())
+        || document.phase.as_deref() != Some("finalized")
         || document.agent_pubkey != key.pubkey
         || !relay_is_valid
         || document.relay_sha256 != expected_relay
@@ -636,10 +638,11 @@ mod tests {
         let relay_sha256 = hex::encode(Sha256::digest(runtime_key.relay_url.as_bytes()));
         let identity = identity();
         let document = serde_json::json!({
-            "version": 2,
+            "version": 3,
             "kind": "buzz-acp-planned-update",
             "handoff_id": identity.handoff_id,
             "start_nonce": identity.start_nonce,
+            "phase": "finalized",
             "agent_pubkey": runtime_key.pubkey,
             "relay_sha256": relay_sha256,
             "written_at_unix_secs": 1,
@@ -669,6 +672,57 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn only_v3_finalized_checkpoint_can_complete_desktop_handoff() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let temp = TempDir::new();
+        let runtime_key = key();
+        let paths = prepare_handoff_at(&temp.0, &runtime_key).expect("paths");
+        let identity = identity();
+        let relay_sha256 = hex::encode(Sha256::digest(runtime_key.relay_url.as_bytes()));
+        let document = |version, phase: Option<&str>| {
+            let mut value = serde_json::json!({
+                "version": version,
+                "kind": "buzz-acp-planned-update",
+                "handoff_id": identity.handoff_id.clone(),
+                "start_nonce": identity.start_nonce.clone(),
+                "agent_pubkey": runtime_key.pubkey.clone(),
+                "relay_sha256": relay_sha256.clone(),
+                "written_at_unix_secs": 10,
+                "membership_replay_from": 1,
+                "channels": [],
+            });
+            if let Some(phase) = phase {
+                value["phase"] = phase.into();
+            }
+            value
+        };
+        let write = |value: serde_json::Value| {
+            fs::write(
+                &paths.checkpoint,
+                serde_json::to_vec(&value).expect("json"),
+            )
+            .expect("checkpoint");
+            fs::set_permissions(&paths.checkpoint, fs::Permissions::from_mode(0o600))
+                .expect("permissions");
+        };
+
+        write(document(3, Some("pre_quiesce")));
+        assert!(
+            verify_handoff_checkpoint(&paths.checkpoint, &runtime_key, &identity).is_err(),
+            "crash-window pre-quiesce checkpoint must not complete the update"
+        );
+        write(document(2, None));
+        assert!(
+            verify_handoff_checkpoint(&paths.checkpoint, &runtime_key, &identity).is_err(),
+            "legacy v2 recovery checkpoint must not complete a Desktop transaction"
+        );
+        write(document(3, Some("finalized")));
+        assert!(verify_handoff_checkpoint(&paths.checkpoint, &runtime_key, &identity).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn checkpoint_rejects_malformed_or_duplicate_replay_state() {
         use std::os::unix::fs::PermissionsExt as _;
 
@@ -679,10 +733,11 @@ mod tests {
         let relay_sha256 = hex::encode(Sha256::digest(runtime_key.relay_url.as_bytes()));
         let channel_id = uuid::Uuid::new_v4();
         let document = serde_json::json!({
-            "version": 2,
+            "version": 3,
             "kind": "buzz-acp-planned-update",
             "handoff_id": identity.handoff_id,
             "start_nonce": identity.start_nonce,
+            "phase": "finalized",
             "agent_pubkey": runtime_key.pubkey,
             "relay_sha256": relay_sha256,
             "written_at_unix_secs": 10,

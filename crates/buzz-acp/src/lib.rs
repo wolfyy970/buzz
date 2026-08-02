@@ -1771,6 +1771,7 @@ async fn tokio_main() -> Result<()> {
     let mut shutdown_mode = ShutdownMode::Normal;
     let mut planned_cutover_time = None;
     let mut planned_checkpoint_identity = None;
+    let mut planned_update_request_claim = None;
     let mut planned_update_deferred = None;
 
     // Track the newest membership notification timestamp per channel.
@@ -2090,8 +2091,24 @@ async fn tokio_main() -> Result<()> {
                                     );
                                     continue;
                                 }
+                                let claimed = match request.claim() {
+                                    Ok(Some(claimed)) => claimed,
+                                    Ok(None) => {
+                                        tracing::debug!(
+                                            "planned-update request was cancelled before ACP claimed it"
+                                        );
+                                        continue;
+                                    }
+                                    Err(error) => {
+                                        tracing::error!(
+                                            "planned-update request could not be claimed atomically: {error}"
+                                        );
+                                        continue;
+                                    }
+                                };
                                 let cutover_time = unix_now_secs();
-                                let checkpoint_identity = request.checkpoint_identity().clone();
+                                let checkpoint_identity =
+                                    claimed.checkpoint_identity().clone();
                                 if let Err(error) = write_pre_quiesce_checkpoint(
                                     &config,
                                     &handoff_tracker,
@@ -2100,22 +2117,21 @@ async fn tokio_main() -> Result<()> {
                                     cutover_time,
                                     &checkpoint_identity,
                                 ) {
+                                    // Acceptance is now irrevocable. Continue the
+                                    // planned shutdown so the authoritative
+                                    // finalized checkpoint still gets a chance
+                                    // to commit; Desktop will reject a crash or
+                                    // non-clean exit.
                                     tracing::error!(
-                                        "planned-update request retained because its checkpoint was not durable: {error}"
+                                        "pre-quiesce checkpoint failed after request acceptance; continuing safe shutdown: {error}"
                                     );
-                                    continue;
-                                }
-                                if let Err(error) = request.consume() {
-                                    tracing::error!(
-                                        "planned-update request changed before durable consumption: {error}"
-                                    );
-                                    continue;
                                 }
                                 shutdown_mode = ShutdownMode::PlannedUpdate;
                                 planned_cutover_time = Some(cutover_time);
                                 planned_checkpoint_identity = Some(checkpoint_identity);
+                                planned_update_request_claim = Some(claimed);
                                 tracing::info!(
-                                    "planned update checkpoint committed through control file"
+                                    "planned update request claimed through control file"
                                 );
                                 break;
                             }
@@ -3081,6 +3097,7 @@ async fn tokio_main() -> Result<()> {
                     .write_checkpoint(handoff::CheckpointWriteParams {
                         path,
                         identity: checkpoint_identity,
+                        phase: handoff::CheckpointPhase::Finalized,
                         agent_pubkey: &pubkey_hex,
                         relay_url: &config.relay_url,
                         subscribed_channels: &subscribed_channel_ids,
@@ -3102,6 +3119,15 @@ async fn tokio_main() -> Result<()> {
     } else {
         None
     };
+    if handoff_write_error.is_none() {
+        if let Some(claim) = planned_update_request_claim.take() {
+            if let Err(error) = claim.finish() {
+                tracing::warn!(
+                    "finalized planned-update request claim could not be removed: {error}"
+                );
+            }
+        }
+    }
     // Explicitly shut down idle agents still sitting in their slots.
     for slot in pool.agents_mut().iter_mut() {
         if let Some(agent) = slot.take() {
@@ -3205,6 +3231,7 @@ fn write_pre_quiesce_checkpoint(
         .write_checkpoint(handoff::CheckpointWriteParams {
             path,
             identity: checkpoint_identity,
+            phase: handoff::CheckpointPhase::PreQuiesce,
             agent_pubkey,
             relay_url: &config.relay_url,
             subscribed_channels,
@@ -3255,7 +3282,7 @@ mod handoff_shutdown_tests {
             path.exists(),
             "request must remain until checkpoint durability is known"
         );
-        request.consume().unwrap();
+        request.claim().unwrap().unwrap().finish().unwrap();
         assert!(!path.exists());
         assert!(poll_planned_update_request(&path, "").unwrap().is_none());
         let _ = std::fs::remove_dir(&directory);
@@ -3306,7 +3333,7 @@ mod handoff_shutdown_tests {
                 start_nonce,
             }
         );
-        request.consume().unwrap();
+        request.claim().unwrap().unwrap().finish().unwrap();
         let _ = std::fs::remove_dir(&directory);
     }
 

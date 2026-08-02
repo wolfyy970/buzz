@@ -57,6 +57,14 @@ fn update_can_begin(lifecycle: &ManagedAgentRuntimeLifecycle) -> bool {
     )
 }
 
+fn handoff_exit_is_clean(status: &std::process::ExitStatus) -> bool {
+    status.success()
+}
+
+fn request_acceptance_timed_out(started: Instant, now: Instant) -> bool {
+    now.saturating_duration_since(started) >= REQUEST_ACCEPT_TIMEOUT
+}
+
 fn cleanup_exited_runtime(
     app: &AppHandle,
     key: &ManagedAgentRuntimeKey,
@@ -187,15 +195,15 @@ pub(crate) async fn drain_managed_agent_pair_for_update(
                         "The agent exited before accepting the update ({status})."
                     )));
                 }
+                if !handoff_exit_is_clean(&status) {
+                    cleanup_exited_runtime(app, key, runtime);
+                    return Err(ManagedAgentUpdateDrainError::after_acceptance(format!(
+                        "The agent exited unsuccessfully after accepting the update ({status}); Buzz did not trust its checkpoint."
+                    )));
+                }
                 if let Err(error) = verify_handoff_checkpoint(&paths.checkpoint, key, &identity) {
                     cleanup_exited_runtime(app, key, runtime);
                     return Err(ManagedAgentUpdateDrainError::after_acceptance(error));
-                }
-                if !status.success() {
-                    eprintln!(
-                        "buzz-desktop: agent {} on {} exited with {status} after writing a verified update checkpoint",
-                        key.pubkey, key.relay_url
-                    );
                 }
                 cleanup_exited_runtime(app, key, runtime);
                 return Ok(DrainedManagedAgentPair);
@@ -232,7 +240,7 @@ pub(crate) async fn drain_managed_agent_pair_for_update(
             }
         }
 
-        if !accepted && started.elapsed() >= REQUEST_ACCEPT_TIMEOUT {
+        if !accepted && request_acceptance_timed_out(started, Instant::now()) {
             match cancel_planned_update_request(&paths.request, &published) {
                 Ok(true) => {
                     return Err(ManagedAgentUpdateDrainError::before_acceptance(
@@ -273,5 +281,45 @@ mod tests {
     fn accepted_errors_are_never_reported_as_rollback_safe() {
         assert!(ManagedAgentUpdateDrainError::before_acceptance("before").rollback_safe);
         assert!(!ManagedAgentUpdateDrainError::after_acceptance("after").rollback_safe);
+    }
+
+    #[test]
+    fn request_cancellation_begins_at_the_exact_fifteen_second_boundary() {
+        let started = Instant::now();
+        assert_eq!(REQUEST_ACCEPT_TIMEOUT, Duration::from_secs(15));
+        assert!(!request_acceptance_timed_out(
+            started,
+            started + REQUEST_ACCEPT_TIMEOUT - Duration::from_nanos(1)
+        ));
+        assert!(request_acceptance_timed_out(
+            started,
+            started + REQUEST_ACCEPT_TIMEOUT
+        ));
+    }
+
+    #[test]
+    fn only_a_clean_planned_exit_can_complete_a_handoff() {
+        let success = std::process::Command::new(std::env::current_exe().expect("test binary"))
+            .arg("--help")
+            .status()
+            .expect("run clean child");
+        assert!(handoff_exit_is_clean(&success));
+
+        #[cfg(unix)]
+        {
+            let failure = std::process::Command::new("/bin/sh")
+                .args(["-c", "exit 17"])
+                .status()
+                .expect("run failing child");
+            assert!(!handoff_exit_is_clean(&failure));
+        }
+        #[cfg(windows)]
+        {
+            let failure = std::process::Command::new("cmd")
+                .args(["/C", "exit", "17"])
+                .status()
+                .expect("run failing child");
+            assert!(!handoff_exit_is_clean(&failure));
+        }
     }
 }

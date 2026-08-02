@@ -8,10 +8,11 @@
 //!
 //! Wire compatibility: v1 request/checkpoint documents have no transaction
 //! identity. A v2 request adds `handoff_id` (canonical random UUID) and
-//! `expected_start_nonce` (32 lowercase hex characters); both checkpoint
-//! writes echo them as `handoff_id` and `start_nonce`. Readers accept v1 and v2
-//! but reject partial or cross-version identity fields. Rollouts must upgrade
-//! the ACP reader before Desktop begins publishing v2 requests.
+//! `expected_start_nonce` (32 lowercase hex characters). Legacy v2 checkpoints
+//! echo that identity but do not distinguish crash-recovery state from a
+//! completed handoff. New writes use v3 and add an explicit `phase`; readers
+//! retain v1/v2 recovery compatibility, while supervisors must require a v3
+//! `finalized` checkpoint before committing a replacement.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{File, Metadata, OpenOptions};
@@ -27,7 +28,8 @@ use crate::pool::{PromptOutcome, PromptResult, PromptSource};
 use crate::queue::FlushBatch;
 
 const LEGACY_CHECKPOINT_VERSION: u32 = 1;
-const CHECKPOINT_VERSION: u32 = 2;
+const IDENTITY_CHECKPOINT_VERSION: u32 = 2;
+const CHECKPOINT_VERSION: u32 = 3;
 const CHECKPOINT_KIND: &str = "buzz-acp-planned-update";
 const LEGACY_REQUEST_VERSION: u32 = 1;
 const REQUEST_VERSION: u32 = 2;
@@ -167,7 +169,10 @@ impl CheckpointIdentity {
         ))
     }
 
-    fn version(&self) -> u32 {
+    /// Wire version for a newly written checkpoint. The identity still comes
+    /// from a v2 request, but any identity-bound checkpoint written today is
+    /// v3 because only v3 can carry an authoritative phase.
+    fn checkpoint_write_version(&self) -> u32 {
         match self {
             Self::LegacyV1 => LEGACY_CHECKPOINT_VERSION,
             Self::V2 { .. } => CHECKPOINT_VERSION,
@@ -187,6 +192,13 @@ impl CheckpointIdentity {
             Self::V2 { start_nonce, .. } => Some(start_nonce.clone()),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CheckpointPhase {
+    PreQuiesce,
+    Finalized,
 }
 
 fn validate_absolute_leaf(path: &Path, label: &str) -> Result<(), HandoffError> {
@@ -463,6 +475,8 @@ struct CheckpointDocument {
     handoff_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     start_nonce: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    phase: Option<CheckpointPhase>,
     agent_pubkey: String,
     relay_sha256: String,
     written_at_unix_secs: u64,
@@ -486,7 +500,11 @@ impl CheckpointDocument {
             self.start_nonce.as_deref(),
         ) {
             (LEGACY_CHECKPOINT_VERSION, None, None) => Ok(CheckpointIdentity::LegacyV1),
-            (CHECKPOINT_VERSION, Some(handoff_id), Some(start_nonce)) => {
+            (
+                IDENTITY_CHECKPOINT_VERSION | CHECKPOINT_VERSION,
+                Some(handoff_id),
+                Some(start_nonce),
+            ) => {
                 if !is_lower_hex(start_nonce, 32) {
                     return Err(HandoffError::Invalid(
                         "handoff checkpoint contains an invalid process start nonce".into(),
@@ -500,8 +518,8 @@ impl CheckpointDocument {
             (LEGACY_CHECKPOINT_VERSION, _, _) => Err(HandoffError::Invalid(
                 "legacy handoff checkpoint must not contain v2 identity fields".into(),
             )),
-            (CHECKPOINT_VERSION, _, _) => Err(HandoffError::Invalid(
-                "v2 handoff checkpoint must contain handoff_id and start_nonce".into(),
+            (IDENTITY_CHECKPOINT_VERSION | CHECKPOINT_VERSION, _, _) => Err(HandoffError::Invalid(
+                "identity-bound handoff checkpoint must contain handoff_id and start_nonce".into(),
             )),
             _ => Err(HandoffError::Invalid(
                 "unsupported handoff checkpoint version".into(),
@@ -520,6 +538,25 @@ impl CheckpointDocument {
             ));
         }
         self.checkpoint_identity()?;
+        match (self.version, self.phase) {
+            (LEGACY_CHECKPOINT_VERSION | IDENTITY_CHECKPOINT_VERSION, None)
+            | (CHECKPOINT_VERSION, Some(_)) => {}
+            (LEGACY_CHECKPOINT_VERSION | IDENTITY_CHECKPOINT_VERSION, Some(_)) => {
+                return Err(HandoffError::Invalid(
+                    "legacy handoff checkpoints must not contain a phase".into(),
+                ));
+            }
+            (CHECKPOINT_VERSION, None) => {
+                return Err(HandoffError::Invalid(
+                    "v3 handoff checkpoint must contain a phase".into(),
+                ));
+            }
+            _ => {
+                return Err(HandoffError::Invalid(
+                    "unsupported handoff checkpoint version".into(),
+                ));
+            }
+        }
         if !is_lower_hex(&self.agent_pubkey, 64)
             || self.agent_pubkey != expected_pubkey.to_ascii_lowercase()
         {
@@ -662,14 +699,36 @@ pub(crate) fn load_checkpoint(
             path: path.display().to_string(),
             source,
         })?;
-    validate_identity_field_presence(
-        &raw,
-        document.version,
-        LEGACY_CHECKPOINT_VERSION,
-        CHECKPOINT_VERSION,
-        &["handoff_id", "start_nonce"],
-        "handoff checkpoint",
-    )?;
+    let object = raw
+        .as_object()
+        .ok_or_else(|| HandoffError::Invalid("handoff checkpoint must be a JSON object".into()))?;
+    let has_any_v3_field = ["handoff_id", "start_nonce", "phase"]
+        .iter()
+        .any(|field| object.contains_key(*field));
+    let missing_v2_identity = ["handoff_id", "start_nonce"]
+        .iter()
+        .any(|field| !object.contains_key(*field));
+    let missing_any_v3_field = ["handoff_id", "start_nonce", "phase"]
+        .iter()
+        .any(|field| !object.contains_key(*field));
+    match document.version {
+        LEGACY_CHECKPOINT_VERSION if has_any_v3_field => {
+            return Err(HandoffError::Invalid(
+                "legacy handoff checkpoint must not contain identity or phase fields".into(),
+            ));
+        }
+        IDENTITY_CHECKPOINT_VERSION if missing_v2_identity || object.contains_key("phase") => {
+            return Err(HandoffError::Invalid(
+                "v2 handoff checkpoint must contain identity fields and no phase".into(),
+            ));
+        }
+        CHECKPOINT_VERSION if missing_any_v3_field => {
+            return Err(HandoffError::Invalid(
+                "v3 handoff checkpoint must contain identity and phase fields".into(),
+            ));
+        }
+        _ => {}
+    }
     document.validate(agent_pubkey, relay_url)?;
     Ok(Some(LoadedCheckpoint {
         path: path.to_path_buf(),
@@ -695,13 +754,75 @@ pub(crate) struct LoadedUpdateRequest {
     checkpoint_identity: CheckpointIdentity,
 }
 
+pub(crate) struct ClaimedUpdateRequest {
+    path: PathBuf,
+    checkpoint_identity: CheckpointIdentity,
+}
+
 impl LoadedUpdateRequest {
+    #[cfg(test)]
     pub(crate) fn checkpoint_identity(&self) -> &CheckpointIdentity {
         &self.checkpoint_identity
     }
 
-    pub(crate) fn consume(self) -> Result<(), HandoffError> {
-        remove_if_unchanged(&self.path, &self.identity)
+    /// Atomically transfer the exact request out of Desktop's cancellable path.
+    ///
+    /// `rename` and Desktop's cancellation `unlink` contend on the same
+    /// directory entry. If cancellation wins, this returns `Ok(None)` and no
+    /// checkpoint may be written. If this rename wins, the original path is
+    /// absent and Desktop must observe acceptance.
+    pub(crate) fn claim(self) -> Result<Option<ClaimedUpdateRequest>, HandoffError> {
+        let current = match read_secure_file(&self.path, REQUEST_MAX_BYTES) {
+            Ok(Some(current)) => current,
+            Ok(None) => return Ok(None),
+            Err(HandoffError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::NotFound =>
+            {
+                return Ok(None);
+            }
+            Err(error) => return Err(error),
+        };
+        if current.identity != self.identity {
+            return Err(HandoffError::Invalid(format!(
+                "planned-update request changed before it could be claimed: {}",
+                self.path.display()
+            )));
+        }
+        let parent = self
+            .path
+            .parent()
+            .ok_or_else(|| HandoffError::Invalid("planned-update request has no parent".into()))?;
+        let claimed_path = parent.join(format!(".accepted-update-request-{}.json", Uuid::new_v4()));
+        match std::fs::rename(&self.path, &claimed_path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => return Err(io_error("claim", &self.path, error)),
+        }
+        // Once rename succeeds, Desktop must observe acceptance. Durability
+        // sync failure cannot turn that accepted transfer back into a pending
+        // request, so continue the safe shutdown and let the finalized
+        // checkpoint + clean exit remain authoritative.
+        if let Err(error) = sync_parent(&claimed_path) {
+            eprintln!("buzz-acp: accepted update request directory sync failed: {error}");
+        }
+        Ok(Some(ClaimedUpdateRequest {
+            path: claimed_path,
+            checkpoint_identity: self.checkpoint_identity,
+        }))
+    }
+}
+
+impl ClaimedUpdateRequest {
+    pub(crate) fn checkpoint_identity(&self) -> &CheckpointIdentity {
+        &self.checkpoint_identity
+    }
+
+    pub(crate) fn finish(self) -> Result<(), HandoffError> {
+        match std::fs::remove_file(&self.path) {
+            Ok(()) => sync_parent(&self.path),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(io_error("remove claimed", &self.path, error)),
+        }
     }
 }
 
@@ -827,6 +948,7 @@ pub(crate) struct HandoffTracker {
 pub(crate) struct CheckpointWriteParams<'a> {
     pub(crate) path: &'a Path,
     pub(crate) identity: &'a CheckpointIdentity,
+    pub(crate) phase: CheckpointPhase,
     pub(crate) agent_pubkey: &'a str,
     pub(crate) relay_url: &'a str,
     pub(crate) subscribed_channels: &'a HashSet<Uuid>,
@@ -998,10 +1120,14 @@ impl HandoffTracker {
             });
         }
         let document = CheckpointDocument {
-            version: params.identity.version(),
+            version: params.identity.checkpoint_write_version(),
             kind: CHECKPOINT_KIND.into(),
             handoff_id: params.identity.handoff_id(),
             start_nonce: params.identity.start_nonce(),
+            phase: match params.identity {
+                CheckpointIdentity::LegacyV1 => None,
+                CheckpointIdentity::V2 { .. } => Some(params.phase),
+            },
             agent_pubkey: params.agent_pubkey.to_ascii_lowercase(),
             relay_sha256: relay_fingerprint(params.relay_url),
             written_at_unix_secs: unix_now_secs(),
@@ -1168,6 +1294,7 @@ mod tests {
             .write_checkpoint(CheckpointWriteParams {
                 path: &path,
                 identity: &CheckpointIdentity::LegacyV1,
+                phase: CheckpointPhase::Finalized,
                 agent_pubkey: &pubkey(),
                 relay_url: "wss://relay.example",
                 subscribed_channels: &subscribed,
@@ -1266,7 +1393,7 @@ mod tests {
             path.exists(),
             "request remains durable until handoff commit"
         );
-        request.consume().unwrap();
+        request.claim().unwrap().unwrap().finish().unwrap();
         assert!(!path.exists());
         assert!(load_update_request(&path, &runtime_start_nonce)
             .unwrap()
@@ -1340,7 +1467,7 @@ mod tests {
         *last = if *last == b'}' { b' ' } else { b'}' };
         std::fs::write(&path, &changed).unwrap();
 
-        assert!(request.consume().is_err());
+        assert!(request.claim().is_err());
         assert!(path.exists(), "changed request must remain for inspection");
     }
 
@@ -1453,7 +1580,7 @@ mod tests {
 
         atomic_write_secure(&path, &request_bytes(second_id), REQUEST_MAX_BYTES).unwrap();
 
-        assert!(request.consume().is_err());
+        assert!(request.claim().is_err());
         let replacement = load_update_request(&path, &expected_start_nonce)
             .unwrap()
             .unwrap();
@@ -1467,7 +1594,101 @@ mod tests {
     }
 
     #[test]
-    fn v2_checkpoint_echoes_transaction_identity_across_rewrites() {
+    fn acceptance_and_desktop_cancel_are_exclusive_at_the_timeout_boundary() {
+        for _ in 0..64 {
+            let temp = TempDir::new();
+            let path = temp.0.join("request.json");
+            let expected_start_nonce = start_nonce(0x58);
+            let bytes = serde_json::to_vec(&UpdateRequest {
+                version: REQUEST_VERSION,
+                kind: REQUEST_KIND.into(),
+                handoff_id: Some(Uuid::new_v4().hyphenated().to_string()),
+                expected_start_nonce: Some(expected_start_nonce.clone()),
+            })
+            .unwrap();
+            atomic_write_secure(&path, &bytes, REQUEST_MAX_BYTES).unwrap();
+            let request = load_update_request(&path, &expected_start_nonce)
+                .unwrap()
+                .unwrap();
+            let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+            let claim_barrier = barrier.clone();
+            let cancel_barrier = barrier.clone();
+            let cancel_path = path.clone();
+            let (claim_result, cancel_won) = std::thread::scope(|scope| {
+                let claim = scope.spawn(move || {
+                    claim_barrier.wait();
+                    request.claim()
+                });
+                let cancel = scope.spawn(move || {
+                    cancel_barrier.wait();
+                    std::fs::remove_file(cancel_path).is_ok()
+                });
+                barrier.wait();
+                (
+                    claim.join().expect("claim thread"),
+                    cancel.join().expect("cancel thread"),
+                )
+            });
+            let claimed = claim_result.expect("claim race must remain valid");
+            assert_ne!(
+                claimed.is_some(),
+                cancel_won,
+                "ACP acceptance and Desktop cancellation cannot both win"
+            );
+            assert!(!path.exists(), "the cancellable request path must be gone");
+            if let Some(claimed) = claimed {
+                claimed.finish().unwrap();
+            }
+        }
+    }
+
+    #[test]
+    fn recovered_pre_quiesce_checkpoint_does_not_block_a_later_request() {
+        let temp = TempDir::new();
+        let checkpoint_path = temp.0.join("checkpoint.json");
+        let request_path = temp.0.join("request.json");
+        let tracker = HandoffTracker::default();
+        let identity = v2_identity();
+        tracker
+            .write_checkpoint(CheckpointWriteParams {
+                path: &checkpoint_path,
+                identity: &identity,
+                phase: CheckpointPhase::PreQuiesce,
+                agent_pubkey: &pubkey(),
+                relay_url: "wss://relay.example",
+                subscribed_channels: &HashSet::new(),
+                cutover_time: 2_000,
+                membership_relay_floor: None,
+                relay_channel_floors: &HashMap::new(),
+                relay_fallback_floor: None,
+            })
+            .unwrap();
+        let loaded = load_checkpoint(Some(&checkpoint_path), &pubkey(), "wss://relay.example")
+            .unwrap()
+            .unwrap();
+        assert_eq!(loaded.document.phase, Some(CheckpointPhase::PreQuiesce));
+        loaded.consume().unwrap();
+
+        let expected_start_nonce = start_nonce(0x59);
+        let bytes = serde_json::to_vec(&UpdateRequest {
+            version: REQUEST_VERSION,
+            kind: REQUEST_KIND.into(),
+            handoff_id: Some(Uuid::new_v4().hyphenated().to_string()),
+            expected_start_nonce: Some(expected_start_nonce.clone()),
+        })
+        .unwrap();
+        atomic_write_secure(&request_path, &bytes, REQUEST_MAX_BYTES).unwrap();
+        let claimed = load_update_request(&request_path, &expected_start_nonce)
+            .unwrap()
+            .unwrap()
+            .claim()
+            .unwrap()
+            .expect("later retry should be claimable");
+        claimed.finish().unwrap();
+    }
+
+    #[test]
+    fn v3_checkpoint_echoes_identity_and_phase_across_rewrites() {
         let temp = TempDir::new();
         let path = temp.0.join("checkpoint.json");
         let channel = Uuid::new_v4();
@@ -1480,6 +1701,7 @@ mod tests {
                 .write_checkpoint(CheckpointWriteParams {
                     path: &path,
                     identity: &identity,
+                    phase: CheckpointPhase::Finalized,
                     agent_pubkey: &pubkey(),
                     relay_url: "wss://relay.example",
                     subscribed_channels: &subscribed,
@@ -1496,6 +1718,7 @@ mod tests {
             let wire: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
             assert_eq!(wire["version"], CHECKPOINT_VERSION);
+            assert_eq!(wire["phase"], "finalized");
             let CheckpointIdentity::V2 {
                 handoff_id,
                 start_nonce,
@@ -1505,6 +1728,82 @@ mod tests {
             };
             assert_eq!(wire["handoff_id"], handoff_id.hyphenated().to_string());
             assert_eq!(wire["start_nonce"].as_str(), Some(start_nonce.as_str()));
+        }
+    }
+
+    #[test]
+    fn legacy_v2_checkpoint_remains_recovery_compatible_without_becoming_v3() {
+        let temp = TempDir::new();
+        let path = temp.0.join("checkpoint.json");
+        let CheckpointIdentity::V2 {
+            handoff_id,
+            start_nonce,
+        } = v2_identity()
+        else {
+            unreachable!();
+        };
+        let document = serde_json::json!({
+            "version": IDENTITY_CHECKPOINT_VERSION,
+            "kind": CHECKPOINT_KIND,
+            "handoff_id": handoff_id.hyphenated().to_string(),
+            "start_nonce": start_nonce,
+            "agent_pubkey": pubkey(),
+            "relay_sha256": relay_fingerprint("wss://relay.example"),
+            "written_at_unix_secs": 100,
+            "membership_replay_from": 50,
+            "channels": [],
+        });
+        atomic_write_secure(
+            &path,
+            &serde_json::to_vec(&document).unwrap(),
+            CHECKPOINT_MAX_BYTES,
+        )
+        .unwrap();
+
+        let loaded = load_checkpoint(Some(&path), &pubkey(), "wss://relay.example")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            loaded.checkpoint_identity().unwrap(),
+            CheckpointIdentity::V2 { .. }
+        ));
+        assert!(loaded.document.phase.is_none());
+    }
+
+    #[test]
+    fn v3_checkpoint_requires_an_explicit_known_phase() {
+        let temp = TempDir::new();
+        let path = temp.0.join("checkpoint.json");
+        let CheckpointIdentity::V2 {
+            handoff_id,
+            start_nonce,
+        } = v2_identity()
+        else {
+            unreachable!();
+        };
+        let base = serde_json::json!({
+            "version": CHECKPOINT_VERSION,
+            "kind": CHECKPOINT_KIND,
+            "handoff_id": handoff_id.hyphenated().to_string(),
+            "start_nonce": start_nonce,
+            "agent_pubkey": pubkey(),
+            "relay_sha256": relay_fingerprint("wss://relay.example"),
+            "written_at_unix_secs": 100,
+            "membership_replay_from": 50,
+            "channels": [],
+        });
+        for phase in [None, Some("unknown")] {
+            let mut document = base.clone();
+            if let Some(phase) = phase {
+                document["phase"] = phase.into();
+            }
+            atomic_write_secure(
+                &path,
+                &serde_json::to_vec(&document).unwrap(),
+                CHECKPOINT_MAX_BYTES,
+            )
+            .unwrap();
+            assert!(load_checkpoint(Some(&path), &pubkey(), "wss://relay.example").is_err());
         }
     }
 
@@ -1525,6 +1824,7 @@ mod tests {
             kind: CHECKPOINT_KIND.into(),
             handoff_id: Some(handoff_id.simple().to_string()),
             start_nonce: Some(start_nonce),
+            phase: Some(CheckpointPhase::Finalized),
             agent_pubkey: pubkey(),
             relay_sha256: relay_fingerprint("wss://relay.example"),
             written_at_unix_secs: 100,
@@ -1541,6 +1841,7 @@ mod tests {
             kind: CHECKPOINT_KIND.into(),
             handoff_id: Some(handoff_id.hyphenated().to_string()),
             start_nonce: None,
+            phase: Some(CheckpointPhase::Finalized),
             agent_pubkey: pubkey(),
             relay_sha256: relay_fingerprint("wss://relay.example"),
             written_at_unix_secs: 100,
@@ -1571,6 +1872,7 @@ mod tests {
             kind: CHECKPOINT_KIND.into(),
             handoff_id: None,
             start_nonce: None,
+            phase: None,
             agent_pubkey: pubkey(),
             relay_sha256: relay_fingerprint("wss://user:secret@relay.example?token=hidden"),
             written_at_unix_secs: 100,

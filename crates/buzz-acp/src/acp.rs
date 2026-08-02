@@ -21,6 +21,12 @@ use crate::usage::{TurnUsage, UsageTracker};
 const MAX_LINE_SIZE: usize = 10_000_000; // 10 MB
 
 const REDACTED_ENV_VALUE: &str = "[REDACTED]";
+const SUPERVISOR_ONLY_ENV_KEYS: &[&str] = &[
+    "BUZZ_ACP_HANDOFF_CHECKPOINT",
+    "BUZZ_ACP_HANDOFF_REQUEST",
+    "BUZZ_ACP_HANDOFF_GRACE_SECS",
+    "BUZZ_MANAGED_AGENT_START_NONCE",
+];
 
 /// An MCP server configuration passed to `session/new`.
 ///
@@ -598,6 +604,12 @@ impl AcpClient {
         }
         if let Some(merged) = codex_config_value {
             cmd.env("CODEX_CONFIG", merged);
+        }
+        // These values own the outer harness generation and its durable
+        // Desktop handoff. The inner, tool-capable agent must never inherit
+        // them or it could accept or forge its supervisor's update.
+        for key in SUPERVISOR_ONLY_ENV_KEYS {
+            cmd.env_remove(key);
         }
 
         // Spawn the agent in its own process group so SIGKILL doesn't propagate
@@ -3222,6 +3234,23 @@ mod tests {
             "<unset>",
             "non-Hermes spawns must not receive Hermes defaults"
         );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn spawn_strips_supervisor_handoff_environment_from_inner_agent() {
+        for key in SUPERVISOR_ONLY_ENV_KEYS {
+            assert_eq!(
+                spawn_named_and_read_child_env(
+                    "inner-agent",
+                    key,
+                    &[(key.to_string(), "must-not-leak".into())],
+                )
+                .await,
+                "<unset>",
+                "inner agent inherited supervisor-only {key}"
+            );
+        }
     }
 
     #[tokio::test]
