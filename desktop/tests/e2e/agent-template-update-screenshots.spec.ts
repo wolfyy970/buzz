@@ -269,6 +269,12 @@ test.describe("agent template update screenshots", () => {
     await expect(
       updateReview.getByTestId("template-rollout-progress"),
     ).toContainText("Preparing update");
+    await expect(updateReview).toContainText(
+      "This update will continue in the background if you close this window.",
+    );
+    await expect(
+      updateReview.getByRole("button", { name: "Continue working" }),
+    ).toBeEnabled();
     await capture(page, updateReview, "04-preparing-update.png", 75);
 
     await expect(
@@ -285,11 +291,22 @@ test.describe("agent template update screenshots", () => {
       updateReview.getByTestId("template-rollout-progress"),
     ).toContainText("Checking update");
     await capture(page, updateReview, "07-checking-update.png", 75);
-
-    await expect(
-      updateReview.getByTestId("template-rollout-progress"),
-    ).toContainText("Updated");
-    await capture(page, updateReview, "08-updated.png", 75);
+    await updateReview
+      .getByRole("button", { name: "Continue working" })
+      .click();
+    await expect(updateReview).not.toBeVisible();
+    const backgroundNotice = page.getByText("Agent update finished.", {
+      exact: true,
+    });
+    await expect(backgroundNotice).toBeVisible({ timeout: 10_000 });
+    await capture(
+      page,
+      page
+        .locator("[data-sonner-toast]")
+        .filter({ hasText: "Agent update finished." }),
+      "08-background-update-finished.png",
+    );
+    await page.getByRole("button", { name: "Review" }).click();
 
     await expect(
       updateReview.getByText("Agents updated", { exact: true }),

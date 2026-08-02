@@ -419,7 +419,7 @@ export function AgentsView() {
         onOpenChange={(open) => {
           if (!open) personas.closeTemplateUpdateDialog();
         }}
-        open={personas.templateUpdatePreview !== null}
+        open={personas.isTemplateUpdateDialogOpen}
         preview={personas.templateUpdatePreview}
         progressStage={personas.templateUpdateProgressStage}
         result={personas.templateUpdateResult}

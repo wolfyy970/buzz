@@ -19,6 +19,7 @@ export type ProfileAgentTemplateUpdateController = {
     selectedPubkeys: string[],
     connectionBindingsByPubkey: Record<string, Record<string, string>>,
   ) => Promise<void>;
+  dialogOpen: boolean;
   error: string | null;
   isPending: boolean;
   onOpenChange: (open: boolean) => void;
@@ -35,6 +36,8 @@ export function useProfileAgentTemplateUpdate({
 }): ProfileAgentTemplateUpdateController {
   const [preview, setPreview] =
     React.useState<AgentTemplateUpdatePreview | null>(null);
+  const [dialogOpen, setDialogOpen] = React.useState(false);
+  const dialogOpenRef = React.useRef(false);
   const [result, setResult] =
     React.useState<ApplyAgentTemplateUpdateResponse | null>(null);
   const [error, setError] = React.useState<string | null>(null);
@@ -65,6 +68,8 @@ export function useProfileAgentTemplateUpdate({
           setError(null);
           setProgressStage(null);
           setPreview(nextPreview);
+          dialogOpenRef.current = true;
+          setDialogOpen(true);
         }
       } catch (previewError) {
         toast.error(
@@ -101,12 +106,50 @@ export function useProfileAgentTemplateUpdate({
         );
         setResult(nextResult);
         void onAgentsUpdated();
+        if (!dialogOpenRef.current) {
+          const needsAttention = nextResult.agents.some(
+            (agent) => agent.outcome === "rollback_failed",
+          );
+          const options = {
+            action: {
+              label: "Review",
+              onClick: () => {
+                dialogOpenRef.current = true;
+                setDialogOpen(true);
+              },
+            },
+            duration: 10_000,
+          };
+          if (needsAttention) {
+            toast.error("Some agents need attention.", options);
+          } else if (nextResult.rolledBack) {
+            toast.warning(
+              "Update rolled back. Previous version restored.",
+              options,
+            );
+          } else {
+            toast.success("Agent update finished.", options);
+          }
+        }
       } catch (applyError) {
-        setError(
+        const message =
           applyError instanceof Error
             ? applyError.message
-            : "The agents were not updated.",
-        );
+            : "The agents were not updated.";
+        setError(message);
+        if (!dialogOpenRef.current) {
+          toast.error("Agent update failed.", {
+            action: {
+              label: "Review",
+              onClick: () => {
+                dialogOpenRef.current = true;
+                setDialogOpen(true);
+              },
+            },
+            description: message,
+            duration: 10_000,
+          });
+        }
       } finally {
         setIsPending(false);
       }
@@ -116,6 +159,8 @@ export function useProfileAgentTemplateUpdate({
 
   const onOpenChange = React.useCallback(
     (open: boolean) => {
+      dialogOpenRef.current = open;
+      setDialogOpen(open);
       if (open || isPending) return;
       setPreview(null);
       setResult(null);
@@ -127,6 +172,7 @@ export function useProfileAgentTemplateUpdate({
 
   return {
     apply,
+    dialogOpen,
     error,
     isPending,
     onOpenChange,
@@ -150,7 +196,7 @@ export function UserProfileAgentTemplateUpdateDialog({
         void controller.apply(selectedPubkeys, connectionBindingsByPubkey);
       }}
       onOpenChange={controller.onOpenChange}
-      open={controller.preview !== null}
+      open={controller.dialogOpen}
       preview={controller.preview}
       progressStage={controller.progressStage}
       result={controller.result}

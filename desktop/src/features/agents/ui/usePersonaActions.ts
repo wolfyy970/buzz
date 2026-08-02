@@ -1,5 +1,6 @@
 import * as React from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
 
 import {
   managedAgentsQueryKey,
@@ -139,6 +140,9 @@ export function usePersonaActions() {
     React.useState(false);
   const [templateUpdatePreview, setTemplateUpdatePreview] =
     React.useState<AgentTemplateUpdatePreview | null>(null);
+  const [isTemplateUpdateDialogOpen, setIsTemplateUpdateDialogOpen] =
+    React.useState(false);
+  const isTemplateUpdateDialogOpenRef = React.useRef(false);
   const [templateUpdateResult, setTemplateUpdateResult] =
     React.useState<ApplyAgentTemplateUpdateResponse | null>(null);
   const [templateUpdateError, setTemplateUpdateError] = React.useState<
@@ -265,6 +269,8 @@ export function usePersonaActions() {
                 setTemplateUpdateError(null);
                 setTemplateUpdateProgressStage(null);
                 setTemplateUpdatePreview(preview);
+                isTemplateUpdateDialogOpenRef.current = true;
+                setIsTemplateUpdateDialogOpen(true);
               }
             } catch (error) {
               setPersonaErrorMessage(
@@ -384,16 +390,56 @@ export function usePersonaActions() {
       );
       setTemplateUpdateResult(result);
       await queryClient.invalidateQueries({ queryKey: managedAgentsQueryKey });
+      if (!isTemplateUpdateDialogOpenRef.current) {
+        const needsAttention = result.agents.some(
+          (agent) => agent.outcome === "rollback_failed",
+        );
+        const options = {
+          action: {
+            label: "Review",
+            onClick: () => {
+              isTemplateUpdateDialogOpenRef.current = true;
+              setIsTemplateUpdateDialogOpen(true);
+            },
+          },
+          duration: 10_000,
+        };
+        if (needsAttention) {
+          toast.error("Some agents need attention.", options);
+        } else if (result.rolledBack) {
+          toast.warning(
+            "Update rolled back. Previous version restored.",
+            options,
+          );
+        } else {
+          toast.success("Agent update finished.", options);
+        }
+      }
     } catch (error) {
-      setTemplateUpdateError(
-        error instanceof Error ? error.message : "The agents were not updated.",
-      );
+      const message =
+        error instanceof Error ? error.message : "The agents were not updated.";
+      setTemplateUpdateError(message);
+      if (!isTemplateUpdateDialogOpenRef.current) {
+        toast.error("Agent update failed.", {
+          action: {
+            label: "Review",
+            onClick: () => {
+              isTemplateUpdateDialogOpenRef.current = true;
+              setIsTemplateUpdateDialogOpen(true);
+            },
+          },
+          description: message,
+          duration: 10_000,
+        });
+      }
     } finally {
       setIsTemplateUpdatePending(false);
     }
   }
 
   function closeTemplateUpdateDialog() {
+    isTemplateUpdateDialogOpenRef.current = false;
+    setIsTemplateUpdateDialogOpen(false);
     if (isTemplateUpdatePending) return;
     setTemplateUpdatePreview(null);
     setTemplateUpdateResult(null);
@@ -729,6 +775,7 @@ export function usePersonaActions() {
     handleConfirmSnapshotImport,
     closeSnapshotImportDialog,
     templateUpdatePreview,
+    isTemplateUpdateDialogOpen,
     templateUpdateResult,
     templateUpdateError,
     templateUpdateProgressStage,
