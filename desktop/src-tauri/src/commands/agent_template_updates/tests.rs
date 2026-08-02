@@ -104,8 +104,10 @@ fn tool_changes_are_computed_per_agent_snapshot() {
         tool("analytics", "Analytics", "mcp.tool.old_report"),
         tool("removed", "Legacy export", "mcp.tool.legacy"),
     ];
+    let mut changed_tool = tool("analytics", "Campaign reports", "mcp.tool.run_report");
+    changed_tool.required = false;
     let after = vec![
-        tool("analytics", "Analytics", "mcp.tool.run_report"),
+        changed_tool,
         tool("issues", "Issue tracker", "mcp.tool.create_issue"),
     ];
 
@@ -115,6 +117,9 @@ fn tool_changes_are_computed_per_agent_snapshot() {
     assert_eq!(changes.changed.len(), 1);
     assert_eq!(changes.changed[0].before, before[0]);
     assert_eq!(changes.changed[0].after, after[0]);
+    assert!(changes.changed[0].label_changed);
+    assert!(changes.changed[0].capability_changed);
+    assert!(changes.changed[0].required_changed);
     assert_eq!(changes.removed, vec![before[1].clone()]);
 }
 
@@ -136,6 +141,64 @@ fn skill_changes_are_computed_per_agent_snapshot() {
     assert_eq!(changes.changed[0].before, before[0]);
     assert_eq!(changes.changed[0].after, after[0]);
     assert_eq!(changes.removed, vec![before[1].clone()]);
+}
+
+#[test]
+fn changed_skills_disclose_exact_file_content_changes() {
+    let before = crate::managed_agents::AgentSkill {
+        name: "analysis".to_string(),
+        description: "Analyze reports".to_string(),
+        files: vec![
+            crate::managed_agents::AgentSkillFile {
+                path: "SKILL.md".to_string(),
+                content: "old instructions".to_string(),
+            },
+            crate::managed_agents::AgentSkillFile {
+                path: "references/legacy.md".to_string(),
+                content: "legacy reference".to_string(),
+            },
+        ],
+    };
+    let after = crate::managed_agents::AgentSkill {
+        name: "analysis".to_string(),
+        description: "Analyze reports carefully".to_string(),
+        files: vec![
+            crate::managed_agents::AgentSkillFile {
+                path: "SKILL.md".to_string(),
+                content: "new instructions".to_string(),
+            },
+            crate::managed_agents::AgentSkillFile {
+                path: "references/current.md".to_string(),
+                content: "current reference".to_string(),
+            },
+        ],
+    };
+
+    let changes = skill_changes(std::slice::from_ref(&before), std::slice::from_ref(&after));
+    let file_changes = &changes.changed[0].file_changes;
+
+    assert_eq!(
+        file_changes.changed,
+        vec![AgentTemplateSkillFileContentChange {
+            path: "SKILL.md".to_string(),
+            before: "old instructions".to_string(),
+            after: "new instructions".to_string(),
+        }]
+    );
+    assert_eq!(
+        file_changes.added,
+        vec![AgentTemplateSkillFileContent {
+            path: "references/current.md".to_string(),
+            content: "current reference".to_string(),
+        }]
+    );
+    assert_eq!(
+        file_changes.removed,
+        vec![AgentTemplateSkillFileContent {
+            path: "references/legacy.md".to_string(),
+            content: "legacy reference".to_string(),
+        }]
+    );
 }
 
 #[test]
@@ -193,6 +256,172 @@ fn advancing_a_template_pin_preserves_agent_only_overrides() {
         original.system_prompt_override
     );
     assert_eq!(prospective.skill_overrides, original.skill_overrides);
+}
+
+#[test]
+fn preview_changes_disclose_effective_settings_and_only_relevant_override_keys() {
+    let mut current = record();
+    current.runtime = Some("codex".to_string());
+    current.provider = Some("anthropic".to_string());
+    current.model = Some("old-model".to_string());
+    current.respond_to = crate::managed_agents::RespondTo::OwnerOnly;
+    let alice_pubkey = "11".repeat(32);
+    let bob_pubkey = "22".repeat(32);
+    let shared_pubkey = "33".repeat(32);
+    current.respond_to_allowlist = vec![alice_pubkey.clone(), shared_pubkey.clone()];
+    current.parallelism = 1;
+    current.pinned_persona_env_vars = Some(BTreeMap::from([
+        ("API_KEY".to_string(), "old-template-secret".to_string()),
+        ("REMOVED_KEY".to_string(), "removed-secret".to_string()),
+        ("UNCHANGED".to_string(), "same".to_string()),
+    ]));
+    current.env_vars = BTreeMap::from([
+        ("API_KEY".to_string(), "agent-secret".to_string()),
+        (
+            "UNRELATED_PRIVATE_KEY".to_string(),
+            "unrelated-secret".to_string(),
+        ),
+    ]);
+    current.system_prompt_override = Some("private instructions".to_string());
+    current.agent_command_override = Some("private-harness".to_string());
+    current.model_override = Some("private-model".to_string());
+    current.provider_override = Some("private-provider".to_string());
+    current.pinned_skills = vec![skill("analysis", "Old template workflow")];
+    current.skill_overrides = Some(vec![skill("private-analysis", "Private workflow")]);
+
+    let mut target = persona("2026-08-02T10:00:00.000000002Z");
+    target.display_name = "Identity must not be an instance impact".to_string();
+    target.name_pool = vec!["Future-only name".to_string()];
+    target.runtime = Some("pi".to_string());
+    target.provider = Some("openai".to_string());
+    target.model = Some("new-model".to_string());
+    target.system_prompt = "New template instructions".to_string();
+    target.respond_to = Some("allowlist".to_string());
+    target.respond_to_allowlist = vec![bob_pubkey.clone(), shared_pubkey];
+    target.parallelism = Some(4);
+    target.env_vars = BTreeMap::from([
+        ("ADDED_KEY".to_string(), "added-secret".to_string()),
+        ("API_KEY".to_string(), "new-template-secret".to_string()),
+        ("UNCHANGED".to_string(), "same".to_string()),
+    ]);
+    target.skills = vec![skill("analysis", "New template workflow")];
+
+    let target_snapshot = crate::managed_agents::persona_events::persona_snapshot(&target).unwrap();
+    let instruction_change = instruction_change(&current, &target);
+    let skill_changes = skill_changes(&current.pinned_skills, &target.skills);
+    let changes = version_changes(&current, &target_snapshot);
+    let preserved = preserved_overrides(
+        &current,
+        instruction_change.as_ref(),
+        &skill_changes,
+        &changes,
+    );
+
+    assert_eq!(
+        changes.runtime,
+        Some(AgentTemplateOptionalStringChange {
+            before: Some("codex".to_string()),
+            after: Some("pi".to_string()),
+        })
+    );
+    assert_eq!(
+        changes.provider,
+        Some(AgentTemplateOptionalStringChange {
+            before: Some("anthropic".to_string()),
+            after: Some("openai".to_string()),
+        })
+    );
+    assert_eq!(
+        changes.model,
+        Some(AgentTemplateOptionalStringChange {
+            before: Some("old-model".to_string()),
+            after: Some("new-model".to_string()),
+        })
+    );
+    assert_eq!(
+        changes.access,
+        Some(AgentTemplateAccessChange {
+            before: crate::managed_agents::RespondTo::OwnerOnly,
+            after: crate::managed_agents::RespondTo::Allowlist,
+            allowlist_added: vec![bob_pubkey],
+            allowlist_removed: vec![alice_pubkey],
+        })
+    );
+    assert_eq!(
+        changes.parallelism,
+        Some(AgentTemplateParallelismChange {
+            before: 1,
+            after: 4,
+        })
+    );
+    assert_eq!(
+        changes.environment,
+        AgentTemplateEnvironmentChanges {
+            added_keys: vec!["ADDED_KEY".to_string()],
+            changed_keys: vec!["API_KEY".to_string()],
+            removed_keys: vec!["REMOVED_KEY".to_string()],
+        }
+    );
+    assert_eq!(
+        preserved,
+        AgentTemplateOverridesPreserved {
+            instructions: true,
+            runtime: true,
+            model: true,
+            provider: true,
+            skills: true,
+            local_environment: true,
+            local_environment_keys: vec!["API_KEY".to_string()],
+        }
+    );
+
+    let json = serde_json::to_string(&(changes, preserved)).unwrap();
+    for secret in [
+        "old-template-secret",
+        "removed-secret",
+        "agent-secret",
+        "unrelated-secret",
+        "added-secret",
+        "new-template-secret",
+        "private instructions",
+        "private-harness",
+        "private-model",
+        "private-provider",
+        "Private workflow",
+        "UNRELATED_PRIVATE_KEY",
+        "Identity must not be an instance impact",
+        "Future-only name",
+    ] {
+        assert!(
+            !json.contains(secret),
+            "preview change metadata leaked {secret:?}"
+        );
+    }
+    assert!(json.contains("API_KEY"));
+}
+
+#[test]
+fn override_flags_ignore_private_settings_unrelated_to_this_version() {
+    let mut current = record();
+    current.system_prompt_override = Some("private instructions".to_string());
+    current.agent_command_override = Some("private-harness".to_string());
+    current.model_override = Some("private-model".to_string());
+    current.provider_override = Some("private-provider".to_string());
+    current.skill_overrides = Some(vec![skill("private-analysis", "Private workflow")]);
+    current.env_vars.insert(
+        "UNRELATED_PRIVATE_KEY".to_string(),
+        "private value".to_string(),
+    );
+    let target = persona("unchanged");
+    let target_snapshot = crate::managed_agents::persona_events::persona_snapshot(&target).unwrap();
+    let instructions = instruction_change(&current, &target);
+    let skills = skill_changes(&current.pinned_skills, &target.skills);
+    let changes = version_changes(&current, &target_snapshot);
+
+    assert_eq!(
+        preserved_overrides(&current, instructions.as_ref(), &skills, &changes),
+        AgentTemplateOverridesPreserved::default()
+    );
 }
 
 #[test]

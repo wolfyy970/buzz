@@ -67,6 +67,9 @@ pub(super) fn tool_changes(
             (*previous != requirement).then(|| AgentTemplateToolRequirementChange {
                 before: (*previous).clone(),
                 after: requirement.clone(),
+                label_changed: previous.label != requirement.label,
+                capability_changed: previous.capability != requirement.capability,
+                required_changed: previous.required != requirement.required,
             })
         })
         .collect();
@@ -79,6 +82,49 @@ pub(super) fn tool_changes(
         added,
         changed,
         removed,
+    }
+}
+
+pub(super) fn skill_file_changes(
+    before: &[crate::managed_agents::AgentSkillFile],
+    after: &[crate::managed_agents::AgentSkillFile],
+) -> AgentTemplateSkillFileChanges {
+    let before_by_path: BTreeMap<_, _> = before
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect();
+    let after_by_path: BTreeMap<_, _> = after
+        .iter()
+        .map(|file| (file.path.as_str(), file))
+        .collect();
+    AgentTemplateSkillFileChanges {
+        added: after
+            .iter()
+            .filter(|file| !before_by_path.contains_key(file.path.as_str()))
+            .map(|file| AgentTemplateSkillFileContent {
+                path: file.path.clone(),
+                content: file.content.clone(),
+            })
+            .collect(),
+        changed: after
+            .iter()
+            .filter_map(|file| {
+                let previous = before_by_path.get(file.path.as_str())?;
+                (previous.content != file.content).then(|| AgentTemplateSkillFileContentChange {
+                    path: file.path.clone(),
+                    before: previous.content.clone(),
+                    after: file.content.clone(),
+                })
+            })
+            .collect(),
+        removed: before
+            .iter()
+            .filter(|file| !after_by_path.contains_key(file.path.as_str()))
+            .map(|file| AgentTemplateSkillFileContent {
+                path: file.path.clone(),
+                content: file.content.clone(),
+            })
+            .collect(),
     }
 }
 
@@ -107,6 +153,7 @@ pub(super) fn skill_changes(
                 (*previous != skill).then(|| AgentTemplateSkillChange {
                     before: (*previous).clone(),
                     after: skill.clone(),
+                    file_changes: skill_file_changes(&previous.files, &skill.files),
                 })
             })
             .collect(),
@@ -130,6 +177,127 @@ pub(super) fn instruction_change(
         // remain private to the individual agent.
         private_override_preserved: record.system_prompt_override.is_some(),
     })
+}
+
+fn optional_string_change(
+    before: &Option<String>,
+    after: &Option<String>,
+) -> Option<AgentTemplateOptionalStringChange> {
+    (before != after).then(|| AgentTemplateOptionalStringChange {
+        before: before.clone(),
+        after: after.clone(),
+    })
+}
+
+fn sorted_set(values: &[String]) -> BTreeSet<&str> {
+    values.iter().map(String::as_str).collect()
+}
+
+pub(super) fn environment_changes(
+    before: &BTreeMap<String, String>,
+    after: &BTreeMap<String, String>,
+) -> AgentTemplateEnvironmentChanges {
+    AgentTemplateEnvironmentChanges {
+        added_keys: after
+            .keys()
+            .filter(|key| !before.contains_key(*key))
+            .cloned()
+            .collect(),
+        changed_keys: after
+            .iter()
+            .filter(|(key, value)| before.get(*key).is_some_and(|before| before != *value))
+            .map(|(key, _)| key.clone())
+            .collect(),
+        removed_keys: before
+            .keys()
+            .filter(|key| !after.contains_key(*key))
+            .cloned()
+            .collect(),
+    }
+}
+
+pub(super) fn version_changes(
+    record: &ManagedAgentRecord,
+    target: &crate::managed_agents::persona_events::PersonaSnapshot,
+) -> AgentTemplateVersionChanges {
+    let before_allowlist = sorted_set(&record.respond_to_allowlist);
+    let after_allowlist = sorted_set(&target.respond_to_allowlist);
+    let allowlist_added = after_allowlist
+        .difference(&before_allowlist)
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    let allowlist_removed = before_allowlist
+        .difference(&after_allowlist)
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    let access = (record.respond_to != target.respond_to
+        || !allowlist_added.is_empty()
+        || !allowlist_removed.is_empty())
+    .then_some(AgentTemplateAccessChange {
+        before: record.respond_to,
+        after: target.respond_to,
+        allowlist_added,
+        allowlist_removed,
+    });
+    let before_environment = record
+        .pinned_persona_env_vars
+        .as_ref()
+        .cloned()
+        .unwrap_or_default();
+
+    AgentTemplateVersionChanges {
+        runtime: optional_string_change(&record.runtime, &target.runtime),
+        provider: optional_string_change(&record.provider, &target.provider),
+        model: optional_string_change(&record.model, &target.model),
+        access,
+        parallelism: (record.parallelism != target.parallelism).then_some(
+            AgentTemplateParallelismChange {
+                before: record.parallelism,
+                after: target.parallelism,
+            },
+        ),
+        environment: environment_changes(&before_environment, &target.env_vars),
+    }
+}
+
+fn skill_changes_present(changes: &AgentTemplateSkillChanges) -> bool {
+    !changes.added.is_empty() || !changes.changed.is_empty() || !changes.removed.is_empty()
+}
+
+pub(super) fn preserved_overrides(
+    record: &ManagedAgentRecord,
+    instruction_change: Option<&AgentTemplateInstructionChange>,
+    skill_changes: &AgentTemplateSkillChanges,
+    version_changes: &AgentTemplateVersionChanges,
+) -> AgentTemplateOverridesPreserved {
+    let changed_environment_keys: BTreeSet<&str> = version_changes
+        .environment
+        .added_keys
+        .iter()
+        .chain(&version_changes.environment.changed_keys)
+        .chain(&version_changes.environment.removed_keys)
+        .map(String::as_str)
+        .collect();
+    let local_environment_keys = record
+        .env_vars
+        .keys()
+        .filter(|key| changed_environment_keys.contains(key.as_str()))
+        .cloned()
+        .collect::<Vec<_>>();
+
+    AgentTemplateOverridesPreserved {
+        instructions: instruction_change.is_some_and(|change| change.private_override_preserved),
+        runtime: version_changes.runtime.is_some()
+            && record
+                .agent_command_override
+                .as_deref()
+                .is_some_and(|value| !value.trim().is_empty()),
+        model: version_changes.model.is_some() && record.model_override.is_some(),
+        provider: version_changes.provider.is_some() && record.provider_override.is_some(),
+        skills: skill_changes_present(skill_changes) && record.skill_overrides.is_some(),
+        local_environment: !local_environment_keys.is_empty(),
+        local_environment_keys,
+    }
 }
 
 pub(super) fn prospective_record(
@@ -243,6 +411,7 @@ pub async fn preview_agent_template_update(
     })
     .await
     .map_err(|error| format!("Template version task failed: {error}"))??;
+    let target_snapshot = crate::managed_agents::persona_events::persona_snapshot(&target)?;
     if let Some(slot) = personas.iter_mut().find(|item| item.id == persona_id) {
         *slot = target.clone();
     }
@@ -283,6 +452,17 @@ pub async fn preview_agent_template_update(
                         .collect::<Vec<_>>()
                 })
                 .unwrap_or_else(|error| vec![error]);
+            let instruction_change = instruction_change(record, &target);
+            let tool_changes =
+                tool_changes(&record.pinned_tool_requirements, &target.tool_requirements);
+            let skill_changes = skill_changes(&record.pinned_skills, &target.skills);
+            let version_changes = version_changes(record, &target_snapshot);
+            let overrides_preserved = preserved_overrides(
+                record,
+                instruction_change.as_ref(),
+                &skill_changes,
+                &version_changes,
+            );
             AgentTemplateUpdateTarget {
                 pubkey: record.pubkey.clone(),
                 name: record.name.clone(),
@@ -293,12 +473,11 @@ pub async fn preview_agent_template_update(
                 blocked_reason,
                 project_scope: record.project_scope.clone(),
                 connection_bindings: bindings,
-                instruction_change: instruction_change(record, &target),
-                tool_changes: tool_changes(
-                    &record.pinned_tool_requirements,
-                    &target.tool_requirements,
-                ),
-                skill_changes: skill_changes(&record.pinned_skills, &target.skills),
+                instruction_change,
+                tool_changes,
+                skill_changes,
+                version_changes,
+                overrides_preserved,
                 tool_binding_issues,
             }
         })

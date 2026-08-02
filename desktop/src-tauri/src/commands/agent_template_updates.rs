@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use futures_util::future::join_all;
@@ -93,6 +93,12 @@ pub struct AgentTemplateUpdatePreview {
 pub struct AgentTemplateToolRequirementChange {
     pub before: crate::managed_agents::AgentToolRequirement,
     pub after: crate::managed_agents::AgentToolRequirement,
+    /// Whether the human-readable Tool label changed.
+    pub label_changed: bool,
+    /// Whether the stable Tool capability identifier changed.
+    pub capability_changed: bool,
+    /// Whether the Tool became required or optional.
+    pub required_changed: bool,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -108,6 +114,34 @@ pub struct AgentTemplateToolChanges {
 pub struct AgentTemplateSkillChange {
     pub before: crate::managed_agents::AgentSkill,
     pub after: crate::managed_agents::AgentSkill,
+    /// Exact file additions, edits, and removals within this Skill.
+    pub file_changes: AgentTemplateSkillFileChanges,
+}
+
+/// One exact portable Skill file, safe for byte-for-byte review.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateSkillFileContent {
+    pub path: String,
+    pub content: String,
+}
+
+/// An exact before/after content change for one stable Skill file path.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateSkillFileContentChange {
+    pub path: String,
+    pub before: String,
+    pub after: String,
+}
+
+/// Exact file-level changes within one changed Skill.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateSkillFileChanges {
+    pub added: Vec<AgentTemplateSkillFileContent>,
+    pub changed: Vec<AgentTemplateSkillFileContentChange>,
+    pub removed: Vec<AgentTemplateSkillFileContent>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -126,6 +160,74 @@ pub struct AgentTemplateInstructionChange {
     pub private_override_preserved: bool,
 }
 
+/// A before/after change for a nullable template string setting.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateOptionalStringChange {
+    pub before: Option<String>,
+    pub after: Option<String>,
+}
+
+/// A before/after change for template parallelism.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateParallelismChange {
+    pub before: u32,
+    pub after: u32,
+}
+
+/// Changes to who may instruct an existing agent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateAccessChange {
+    pub before: crate::managed_agents::RespondTo,
+    pub after: crate::managed_agents::RespondTo,
+    /// Public keys added to the template allowlist.
+    pub allowlist_added: Vec<String>,
+    /// Public keys removed from the template allowlist.
+    pub allowlist_removed: Vec<String>,
+}
+
+/// Redacted local environment changes. Values are intentionally unrepresentable.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateEnvironmentChanges {
+    pub added_keys: Vec<String>,
+    pub changed_keys: Vec<String>,
+    pub removed_keys: Vec<String>,
+}
+
+/// Existing-agent-relevant settings changed by one template version.
+///
+/// Template identity and name pools are intentionally absent because updating
+/// an existing agent does not apply them.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateVersionChanges {
+    pub runtime: Option<AgentTemplateOptionalStringChange>,
+    pub provider: Option<AgentTemplateOptionalStringChange>,
+    pub model: Option<AgentTemplateOptionalStringChange>,
+    pub access: Option<AgentTemplateAccessChange>,
+    pub parallelism: Option<AgentTemplateParallelismChange>,
+    pub environment: AgentTemplateEnvironmentChanges,
+}
+
+/// Private settings that continue to win after the template pin advances.
+///
+/// Only overrides relevant to this version's changes are disclosed. Secret
+/// values and unrelated local environment keys are never serialized.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateOverridesPreserved {
+    pub instructions: bool,
+    pub runtime: bool,
+    pub model: bool,
+    pub provider: bool,
+    pub skills: bool,
+    pub local_environment: bool,
+    pub local_environment_keys: Vec<String>,
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentTemplateUpdateTarget {
@@ -141,6 +243,8 @@ pub struct AgentTemplateUpdateTarget {
     pub instruction_change: Option<AgentTemplateInstructionChange>,
     pub tool_changes: AgentTemplateToolChanges,
     pub skill_changes: AgentTemplateSkillChanges,
+    pub version_changes: AgentTemplateVersionChanges,
+    pub overrides_preserved: AgentTemplateOverridesPreserved,
     pub tool_binding_issues: Vec<String>,
 }
 
