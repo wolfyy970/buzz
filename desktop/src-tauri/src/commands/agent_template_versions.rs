@@ -14,8 +14,8 @@ use crate::{
     app_state::AppState,
     events,
     managed_agents::{
-        load_personas, save_personas, validate_agent_skills, AgentDefinition, AgentSkill,
-        AgentTemplateVersionRef, AgentToolRequirement,
+        load_personas, save_personas, validate_agent_definition_text, validate_agent_skills,
+        AgentDefinition, AgentSkill, AgentTemplateVersionRef, AgentToolRequirement,
     },
 };
 
@@ -58,6 +58,7 @@ pub(crate) struct AgentTemplateArtifactV1 {
 
 impl AgentTemplateArtifactV1 {
     fn from_definition(definition: &AgentDefinition) -> Result<Self, String> {
+        validate_agent_definition_text(&definition.display_name, &definition.system_prompt)?;
         validate_agent_skills(&definition.skills)?;
         crate::managed_agents::project_connections::validate_tool_requirements(
             &definition.tool_requirements,
@@ -527,6 +528,9 @@ fn load_artifact_from_repo(
             artifact.schema_version
         ));
     }
+    validate_agent_definition_text(&artifact.display_name, &artifact.system_prompt).map_err(
+        |error| format!("The template version contains unsafe definition text: {error}"),
+    )?;
     validate_agent_skills(&artifact.skills)?;
     crate::managed_agents::project_connections::validate_tool_requirements(
         &artifact.tool_requirements,

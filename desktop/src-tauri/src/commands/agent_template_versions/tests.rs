@@ -69,6 +69,31 @@ fn artifact_is_deterministic_and_excludes_environment_secrets() {
 }
 
 #[test]
+fn artifact_rejects_unreviewable_definition_text_before_publish() {
+    let mut unsafe_definition = definition();
+    unsafe_definition.system_prompt = "Analyze\u{200B} weekly performance.".to_string();
+
+    let error = AgentTemplateArtifactV1::from_definition(&unsafe_definition)
+        .expect_err("invisible instructions must not enter an immutable version");
+
+    assert!(error.contains("U+200B"));
+}
+
+#[test]
+fn loading_an_immutable_artifact_revalidates_definition_text() {
+    let (_root, _remote, clone_url, auth) = local_repo_fixture();
+    let mut artifact = AgentTemplateArtifactV1::from_definition(&definition()).unwrap();
+    artifact.system_prompt = "Analyze\u{202E} weekly performance.".to_string();
+    let version = publish_artifact_to_repo(&clone_url, &repo_address(), &artifact, &auth).unwrap();
+
+    let error = load_artifact_from_repo(&clone_url, &version, &auth)
+        .expect_err("loaded version text must be safe before activation");
+
+    assert!(error.contains("unsafe definition text"));
+    assert!(error.contains("U+202E"));
+}
+
+#[test]
 fn exact_commit_and_digest_survive_a_newer_publish() {
     let (_root, _remote, clone_url, auth) = local_repo_fixture();
     let first_artifact = AgentTemplateArtifactV1::from_definition(&definition()).unwrap();

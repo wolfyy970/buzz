@@ -7,8 +7,8 @@ use tauri::AppHandle;
 use crate::{
     app_state::AppState,
     managed_agents::{
-        apply_persona_behavior, load_personas, save_personas, try_regenerate_nest, AgentDefinition,
-        UpdatePersonaRequest, validate_agent_definition_text,
+        apply_persona_behavior, load_personas, save_personas, try_regenerate_nest,
+        validate_agent_definition_text, AgentDefinition, UpdatePersonaRequest,
     },
     util::now_iso,
 };
