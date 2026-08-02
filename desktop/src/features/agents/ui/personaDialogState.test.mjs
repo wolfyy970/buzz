@@ -140,8 +140,11 @@ test("editPersonaDialogState preserves the persona id for updates", () => {
     updatedAt: "2025-01-02T00:00:00Z",
   });
 
-  assert.equal(state.title, "Edit Kit template");
-  assert.equal(state.description, "");
+  assert.equal(state.title, "Kit");
+  assert.equal(
+    state.description,
+    "Agent template. Edit the reusable setup for linked agents.",
+  );
   assert.equal(state.submitLabel, "Save changes");
   assert.deepEqual(state.initialValues, {
     id: "persona-2",

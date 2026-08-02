@@ -9,12 +9,15 @@ export function useAgentDefinitionSubmission(
 ) {
   const [pendingAction, setPendingAction] =
     React.useState<AgentDefinitionSubmitAction | null>(null);
+  const [lastAction, setLastAction] =
+    React.useState<AgentDefinitionSubmitAction | null>(null);
 
   async function submit(
     input: Parameters<typeof onSubmit>[0],
     action: AgentDefinitionSubmitAction,
     publishCatalogUpdates: boolean,
   ) {
+    setLastAction(action);
     setPendingAction(action);
     try {
       await onSubmit(input, {
@@ -26,5 +29,5 @@ export function useAgentDefinitionSubmission(
     }
   }
 
-  return { pendingAction, submit };
+  return { lastAction, pendingAction, submit };
 }

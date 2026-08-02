@@ -137,6 +137,18 @@ export function AgentTemplateUpdateDialog({
     );
   const activeProgressStage = progressStage ?? "preparing_update";
   const progressComplete = activeProgressStage === "updated";
+  const hasFailed = !isPending && !isComplete && error !== null;
+  const dialogTitle = isComplete
+    ? rollbackFailed
+      ? `${preview.personaName} needs attention`
+      : result.rolledBack
+        ? `${preview.personaName} update rolled back`
+        : `${preview.personaName} updated`
+    : isPending
+      ? `Updating ${preview.personaName}`
+      : hasFailed
+        ? `${preview.personaName} update failed`
+        : `Update ${preview.personaName}`;
 
   function setAgentSelected(pubkey: string, checked: boolean) {
     setSelected((current) => {
@@ -154,15 +166,7 @@ export function AgentTemplateUpdateDialog({
         data-testid="template-publish-review"
       >
         <DialogHeader className="shrink-0">
-          <DialogTitle>
-            {isComplete
-              ? rollbackFailed
-                ? "Some agents need attention"
-                : result.rolledBack
-                  ? "Update rolled back"
-                  : "Agents updated"
-              : "Update agents"}
-          </DialogTitle>
+          <DialogTitle className="break-words">{dialogTitle}</DialogTitle>
           <DialogDescription>
             {isComplete
               ? rollbackFailed
@@ -172,28 +176,31 @@ export function AgentTemplateUpdateDialog({
                   : `${result.agents.length} ${
                       result.agents.length === 1 ? "agent was" : "agents were"
                     } updated.`
-              : `${preview.personaName} is used by ${preview.agents.length} ${
-                  preview.agents.length === 1 ? "agent" : "agents"
-                }. Choose who should get this version now.`}
+              : isPending
+                ? `${selectedCount} ${
+                    selectedCount === 1 ? "agent" : "agents"
+                  } using ${preview.personaName} ${
+                    selectedCount === 1 ? "is" : "are"
+                  } being updated.`
+                : hasFailed
+                  ? `Buzz could not update the selected agents using ${preview.personaName}.`
+                  : `${preview.personaName} is used by ${preview.agents.length} ${
+                      preview.agents.length === 1 ? "agent" : "agents"
+                    }. Choose who should get this version now.`}
           </DialogDescription>
         </DialogHeader>
 
         <div className="min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
-          {!isComplete && commonInstructionChange ? (
-            <AgentTemplateInstructionChangesSummary
-              change={commonInstructionChange}
-            />
-          ) : null}
-          {!isComplete && commonVersionChanges ? (
-            <AgentTemplateVersionChangesSummary
-              changes={commonVersionChanges}
-            />
-          ) : null}
-          {!isComplete && commonToolChanges ? (
-            <AgentTemplateToolChangesSummary changes={commonToolChanges} />
-          ) : null}
-          {!isComplete && commonSkillChanges ? (
-            <AgentTemplateSkillChangesSummary changes={commonSkillChanges} />
+          {error ? (
+            <div
+              className="rounded-xl border border-destructive/30 bg-destructive/5 p-4"
+              role="alert"
+            >
+              <p className="text-sm font-medium text-destructive">
+                The agents were not updated.
+              </p>
+              <p className="mt-1 text-xs text-destructive">{error}</p>
+            </div>
           ) : null}
 
           {isPending ? (
@@ -223,7 +230,26 @@ export function AgentTemplateUpdateDialog({
                 window.
               </p>
             </div>
-          ) : (
+          ) : null}
+
+          {!isComplete && commonInstructionChange ? (
+            <AgentTemplateInstructionChangesSummary
+              change={commonInstructionChange}
+            />
+          ) : null}
+          {!isComplete && commonVersionChanges ? (
+            <AgentTemplateVersionChangesSummary
+              changes={commonVersionChanges}
+            />
+          ) : null}
+          {!isComplete && commonToolChanges ? (
+            <AgentTemplateToolChangesSummary changes={commonToolChanges} />
+          ) : null}
+          {!isComplete && commonSkillChanges ? (
+            <AgentTemplateSkillChangesSummary changes={commonSkillChanges} />
+          ) : null}
+
+          {!isPending ? (
             <div className="overflow-hidden rounded-xl border border-border">
               {preview.agents.map((agent) => {
                 const agentResult = result?.agents.find(
@@ -445,12 +471,6 @@ export function AgentTemplateUpdateDialog({
                 );
               })}
             </div>
-          )}
-
-          {error ? (
-            <p className="text-sm text-destructive" role="alert">
-              {error}
-            </p>
           ) : null}
           {!isComplete && selectedCount > 0 && !bindingsReady ? (
             <p className="text-sm text-destructive" role="alert">

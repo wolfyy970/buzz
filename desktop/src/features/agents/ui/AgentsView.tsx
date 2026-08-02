@@ -12,6 +12,7 @@ import { PersonaCatalogDialog } from "./PersonaCatalogDialog";
 import { PersonaDeleteDialog } from "./PersonaDeleteDialog";
 import { PersonaShareDialog } from "./PersonaShareDialog";
 import { AgentTemplateUpdateDialog } from "./AgentTemplateUpdateDialog";
+import { AgentTemplateRecoveryBanner } from "./AgentTemplateRecoveryBanner";
 import { AgentSnapshotExportDialog } from "./AgentSnapshotExportDialog";
 import { AgentSnapshotImportDialog } from "./AgentSnapshotImportDialog";
 import { TeamSnapshotExportDialog } from "./TeamSnapshotExportDialog";
@@ -113,6 +114,16 @@ export function AgentsView() {
         (agent) => agent.personaId === editedPersonaId,
       )
     : undefined;
+  const templateNamesById = React.useMemo(
+    () =>
+      new Map(
+        (personas.personasQuery.data ?? []).map((persona) => [
+          persona.id,
+          persona.displayName,
+        ]),
+      ),
+    [personas.personasQuery.data],
+  );
   // biome-ignore lint/correctness/useExhaustiveDependencies: mount-only; personas.handleImportSnapshotFile and teamActions.handleImportTeamSnapshotFile are stable
   React.useEffect(() => {
     // Consume a snapshot import that was enqueued before navigation (e.g. from
@@ -222,6 +233,16 @@ export function AgentsView() {
             description="Set up and manage your agents."
             title="Agents"
           />
+          <AgentTemplateRecoveryBanner
+            onRecovered={() => {
+              agents.setActionNoticeMessage(
+                "Previous agent versions restored.",
+              );
+              void agents.refetchManagedAgents();
+              void agents.refetchRelayAgents();
+            }}
+            templateNamesById={templateNamesById}
+          />
           {personas.templateUpdatePreview &&
           !personas.isTemplateUpdateDialogOpen &&
           (personas.isTemplateUpdatePending ||
@@ -239,21 +260,23 @@ export function AgentsView() {
                     : personas.templateUpdateResult?.agents.some(
                           (agent) => agent.outcome === "rollback_failed",
                         )
-                      ? "Some agents need attention"
+                      ? `${personas.templateUpdatePreview.personaName} needs attention`
                       : personas.templateUpdateResult?.rolledBack
-                        ? "Update rolled back"
+                        ? `${personas.templateUpdatePreview.personaName} update rolled back`
                         : personas.templateUpdateError
-                          ? "Agent update failed"
-                          : `${personas.templateUpdateResult?.agents.length ?? 0} ${
-                              personas.templateUpdateResult?.agents.length === 1
-                                ? "agent"
-                                : "agents"
-                            } updated`}
+                          ? `${personas.templateUpdatePreview.personaName} update failed`
+                          : `${personas.templateUpdatePreview.personaName} updated`}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {personas.isTemplateUpdatePending
                     ? "The update is continuing in the background."
-                    : "Open the result for agent-by-agent details."}
+                    : personas.templateUpdateError
+                      ? "Open the result to review what happened."
+                      : `${personas.templateUpdateResult?.agents.length ?? 0} ${
+                          personas.templateUpdateResult?.agents.length === 1
+                            ? "agent"
+                            : "agents"
+                        }. Open the result for details.`}
                 </p>
               </div>
               <Button
@@ -417,13 +440,16 @@ export function AgentsView() {
           affectedAgents={affectedAgents}
           description={personas.personaDialogState.description}
           error={
-            personas.updatePersonaMutation.error instanceof Error
-              ? personas.updatePersonaMutation.error
-              : personas.updatePersonaAndPublishMutation.error instanceof Error
-                ? personas.updatePersonaAndPublishMutation.error
-                : personas.createPersonaMutation.error instanceof Error
-                  ? personas.createPersonaMutation.error
-                  : null
+            personas.personaErrorMessage
+              ? new Error(personas.personaErrorMessage)
+              : personas.updatePersonaMutation.error instanceof Error
+                ? personas.updatePersonaMutation.error
+                : personas.updatePersonaAndPublishMutation.error instanceof
+                    Error
+                  ? personas.updatePersonaAndPublishMutation.error
+                  : personas.createPersonaMutation.error instanceof Error
+                    ? personas.createPersonaMutation.error
+                    : null
           }
           initialValues={personas.personaDialogState.initialValues}
           isPending={personas.isPending}

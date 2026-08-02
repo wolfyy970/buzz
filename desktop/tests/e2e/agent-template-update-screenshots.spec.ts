@@ -139,6 +139,25 @@ test.describe("agent template update screenshots", () => {
       },
       managedAgents: LINKED_AGENTS,
       agentTemplateUpdateStageDelayMs: 700,
+      agentTemplateUpdateRecoveries: testInfo.title.includes(
+        "interrupted update recovery",
+      )
+        ? [
+            {
+              transactionId: "recovery-transaction-1",
+              templateId: TEMPLATE_ID,
+              stage: "after_candidate_ready",
+              recovery: "restore previous version",
+              agents: LINKED_AGENTS.slice(0, 2).map((agent) => ({
+                pubkey: agent.pubkey,
+                name: agent.name,
+              })),
+              requiresAttention: true,
+              detail:
+                "An updated agent may have accepted work. Buzz blocked the affected agents instead of guessing which version owns that work.",
+            },
+          ]
+        : undefined,
       personas: [
         {
           id: TEMPLATE_ID,
@@ -187,26 +206,51 @@ test.describe("agent template update screenshots", () => {
 
     const templateEditor = page.getByTestId("persona-dialog");
     await expect(templateEditor).toBeVisible({ timeout: 10_000 });
+    await expect(
+      templateEditor.getByRole("heading", {
+        name: TEMPLATE_NAME,
+        exact: true,
+      }),
+    ).toBeVisible();
     await expect(page.locator("#persona-display-name")).toHaveValue(
       TEMPLATE_NAME,
     );
     const impactPreview = templateEditor.getByTestId("template-impact-preview");
+    const identitySection = templateEditor.locator("#persona-identity-section");
+    const templateContents = templateEditor.getByTestId(
+      "template-contents-nav",
+    );
+    const editorInstructions = templateEditor.locator(
+      "#persona-instructions-section",
+    );
     await expect(impactPreview).toContainText("Used by 4 agents");
     for (const agent of LINKED_AGENTS) {
       await expect(impactPreview).toContainText(agent.name);
     }
+    const [identityBox, impactBox, instructionsBox, contentsBox] =
+      await Promise.all([
+        identitySection.boundingBox(),
+        impactPreview.boundingBox(),
+        editorInstructions.boundingBox(),
+        templateContents.boundingBox(),
+      ]);
+    if (!identityBox || !impactBox || !instructionsBox || !contentsBox) {
+      throw new Error("Template editor hierarchy did not render.");
+    }
+    expect(identityBox.y + identityBox.height).toBeLessThanOrEqual(impactBox.y);
+    expect(impactBox.y + impactBox.height).toBeLessThanOrEqual(
+      instructionsBox.y,
+    );
+    expect(instructionsBox.y + instructionsBox.height).toBeLessThanOrEqual(
+      contentsBox.y,
+    );
     await capture(
       page,
       templateEditor,
       "02-template-editor-affected-agent-preview.png",
     );
 
-    const templateContents = templateEditor.getByTestId(
-      "template-contents-nav",
-    );
     await expect(templateContents).toContainText("Template setup");
-    await expect(templateContents).toContainText("Identity");
-    await expect(templateContents).toContainText("Instructions");
     await expect(templateContents).toContainText("AI configuration");
     await expect(templateContents).toContainText("1 Skill");
     await expect(templateContents).toContainText("0 requirements");
@@ -271,10 +315,8 @@ test.describe("agent template update screenshots", () => {
       .fill(
         "Analyze campaign performance, explain what changed, and recommend the next action.",
       );
-    await expect(
-      templateEditor.getByTestId("persona-dialog-template-version-notice"),
-    ).toHaveText(
-      "Save changes without affecting running agents. Publish a version when you are ready to update them.",
+    await expect(templateEditor).toContainText(
+      "Save keeps running agents unchanged. Publish lets you choose which agents to update.",
     );
     await expect(
       templateEditor.getByTestId("persona-dialog-save-template"),
@@ -300,7 +342,7 @@ test.describe("agent template update screenshots", () => {
         }, commandsBeforeSave),
       )
       .toBe(false);
-    await expect(updateReview).toContainText("Update agents");
+    await expect(updateReview).toContainText("Update Campaign Analyst");
     await expect(updateReview).toContainText("Choose who should get");
     await expect(updateReview).toContainText(
       "Buzz finishes current work before switching versions. If the update fails, it restores the previous version.",
@@ -345,6 +387,15 @@ test.describe("agent template update screenshots", () => {
       updateReview.getByTestId("template-rollout-progress"),
     ).toBeVisible({ timeout: 2_000 });
     await expect(
+      updateReview.getByRole("heading", {
+        name: "Updating Campaign Analyst",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(updateReview).toContainText(
+      "3 agents using Campaign Analyst are being updated.",
+    );
+    await expect(
       updateReview.getByTestId("template-rollout-progress"),
     ).toContainText("Preparing update");
     await expect(updateReview).toContainText(
@@ -353,6 +404,16 @@ test.describe("agent template update screenshots", () => {
     await expect(
       updateReview.getByRole("button", { name: "Continue working" }),
     ).toBeEnabled();
+    const [progressBox, instructionBox] = await Promise.all([
+      updateReview.getByTestId("template-rollout-progress").boundingBox(),
+      instructionChanges.boundingBox(),
+    ]);
+    if (!progressBox || !instructionBox) {
+      throw new Error("Template rollout hierarchy did not render.");
+    }
+    expect(progressBox.y + progressBox.height).toBeLessThanOrEqual(
+      instructionBox.y,
+    );
     await capture(page, updateReview, "04-preparing-update.png", 75);
 
     await expect(
@@ -373,21 +434,24 @@ test.describe("agent template update screenshots", () => {
       .getByRole("button", { name: "Continue working" })
       .click();
     await expect(updateReview).not.toBeVisible();
-    const backgroundNotice = page.getByText("3 agents updated.", {
-      exact: true,
-    });
+    const backgroundNotice = page.getByText(
+      "Campaign Analyst updated on 3 agents.",
+      {
+        exact: true,
+      },
+    );
     await expect(backgroundNotice).toBeVisible({ timeout: 10_000 });
     await capture(
       page,
       page
         .locator("[data-sonner-toast]")
-        .filter({ hasText: "3 agents updated." }),
+        .filter({ hasText: "Campaign Analyst updated on 3 agents." }),
       "08-background-update-finished.png",
     );
     await page.getByRole("button", { name: "View results" }).click();
 
     await expect(
-      updateReview.getByText("Agents updated", { exact: true }),
+      updateReview.getByText("Campaign Analyst updated", { exact: true }),
     ).toBeVisible({ timeout: 10_000 });
     await expect(updateReview).toContainText("3 agents were updated.");
     await expect(updateReview).toContainText("Updated and ready");
@@ -407,6 +471,11 @@ test.describe("agent template update screenshots", () => {
           "Mock Git failure";
       }
     });
+    expect(
+      await page.evaluate(
+        () => window.__BUZZ_E2E__?.mock?.publishAgentTemplateVersionError,
+      ),
+    ).toBe("Mock Git failure");
     await page.getByTestId("open-agents-view").click();
     await page
       .getByRole("button", {
@@ -426,28 +495,44 @@ test.describe("agent template update screenshots", () => {
     await page.locator("#persona-system-prompt").fill(savedInstructions);
     await templateEditor.getByTestId("persona-dialog-submit").click();
 
-    await expect(templateEditor).not.toBeVisible({ timeout: 10_000 });
+    await expect(templateEditor).toBeVisible({ timeout: 10_000 });
     await expect(
-      page.getByText("Template saved. Version wasn’t published. Try again.", {
+      templateEditor.getByText("Template saved. Try again.", {
         exact: true,
       }),
     ).toBeVisible();
-    await capture(
-      page,
-      page
-        .locator("[data-sonner-toast]")
-        .filter({ hasText: "Version wasn’t published" }),
-      "10-publish-failure.png",
-    );
-
-    await page.getByTestId("user-profile-edit-agent").click();
-    await page
-      .getByTestId("agent-edit-scope-dialog")
-      .getByTestId("agent-edit-scope-template")
-      .click();
+    await expect(
+      templateEditor.getByText("Version wasn’t published", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      templateEditor.getByRole("button", { name: "Retry publishing" }),
+    ).toBeVisible();
     await expect(page.locator("#persona-system-prompt")).toHaveValue(
       savedInstructions,
     );
+    const [errorBox, actionsBox] = await Promise.all([
+      templateEditor.getByTestId("persona-dialog-error").boundingBox(),
+      templateEditor.getByTestId("persona-dialog-actions").boundingBox(),
+    ]);
+    if (!errorBox || !actionsBox) {
+      throw new Error("Publish recovery footer did not render.");
+    }
+    expect(errorBox.y + errorBox.height).toBeLessThanOrEqual(actionsBox.y);
+    await capture(page, templateEditor, "10-publish-failure.png");
+
+    await page.evaluate(() => {
+      if (window.__BUZZ_E2E__?.mock) {
+        window.__BUZZ_E2E__.mock.publishAgentTemplateVersionError = undefined;
+      }
+    });
+    await templateEditor
+      .getByRole("button", { name: "Retry publishing" })
+      .click();
+    await expect(
+      page
+        .getByTestId("template-publish-review")
+        .getByText("Update Campaign Analyst", { exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   test("saving the mutable template does not open an agent update", async ({
@@ -516,6 +601,9 @@ test.describe("agent template update screenshots", () => {
     await templateEditor.getByRole("button", { name: "Cancel" }).click();
     const confirmation = page.getByTestId("persona-discard-confirmation");
     await expect(confirmation).toBeVisible();
+    await expect(confirmation).toContainText(
+      "Discard changes to Campaign Analyst?",
+    );
     await capture(page, confirmation, "12-discard-unsaved-confirmation.png");
     await confirmation.getByRole("button", { name: "Keep editing" }).click();
     await expect(templateEditor).toBeVisible();
@@ -534,6 +622,70 @@ test.describe("agent template update screenshots", () => {
     await expect(
       templateEditor.getByTestId("template-contents-nav"),
     ).toBeVisible();
+    await expect(
+      templateEditor.locator("#persona-instructions-section"),
+    ).toBeInViewport();
     await capturePage(page, "13-dark-compact-template-editor.png");
+  });
+
+  test("keeps the editor usable at the minimum desktop window size", async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 800, height: 500 });
+    const templateEditor = await openTemplateEditor(page);
+
+    await expect(
+      templateEditor.getByTestId("template-contents-nav"),
+    ).toBeVisible();
+    await expect(
+      templateEditor.getByRole("button", { name: "Save changes" }),
+    ).toBeVisible();
+    await expect(
+      templateEditor.getByRole("button", { name: "Publish version" }),
+    ).toBeVisible();
+    expect(
+      await templateEditor.evaluate(
+        (element) => element.scrollWidth <= element.clientWidth,
+      ),
+    ).toBe(true);
+
+    await capturePage(page, "14-minimum-window-template-editor.png");
+  });
+
+  test("shows an interrupted update recovery path", async ({ page }) => {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("open-agents-view").click();
+
+    const banner = page.getByTestId("agent-update-recovery-banner");
+    await expect(banner).toBeVisible({ timeout: 10_000 });
+    await expect(banner).toContainText("Agent updates are paused");
+    await expect(banner).toContainText("Campaign Analyst");
+    await expect(banner).toContainText("Atlas, Beacon");
+    await capture(page, banner, "15-interrupted-update-recovery.png");
+
+    await banner.getByTestId("agent-update-recovery-open").click();
+    const confirmation = page.getByTestId("agent-update-recovery-confirmation");
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation).toContainText(
+      "Work accepted during that update may be incomplete.",
+    );
+    await expect(confirmation).toContainText("Restore Campaign Analyst?");
+    await capture(page, confirmation, "16-interrupted-update-confirmation.png");
+
+    await confirmation
+      .getByRole("button", { name: "Stop and restore" })
+      .click();
+    await expect(banner).not.toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            window.__BUZZ_E2E_COMMAND_LOG__?.filter(
+              (entry) =>
+                entry.command === "restore_interrupted_agent_template_update",
+            ).length ?? 0,
+        ),
+      )
+      .toBe(1);
   });
 });

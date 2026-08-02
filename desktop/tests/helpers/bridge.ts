@@ -5,6 +5,7 @@ import type {
   RelayEvent,
 } from "../../src/shared/api/types";
 import type { ProjectConnection } from "../../src/shared/api/tauriProjectConnections";
+import type { AgentTemplateUpdateRecoveryStatus } from "../../src/shared/api/tauriAgentTemplateUpdates";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
 
 export const TEST_IDENTITIES = {
@@ -250,6 +251,10 @@ type MockBridgeOptions = {
    *  returns results[N]; when exhausted the last entry repeats. Takes precedence
    *  over `installAcpRuntimeResult`. Use for fail-then-succeed Retry tests. */
   installAcpRuntimeResults?: MockInstallRuntimeResult[];
+  /** Interrupted template updates returned to the operator recovery surface. */
+  agentTemplateUpdateRecoveries?: AgentTemplateUpdateRecoveryStatus[];
+  /** Reject the explicit restore command with this user-safe message. */
+  restoreAgentTemplateUpdateError?: string;
   activePersonaIds?: string[];
   /**
    * Listing returned by the mocked `get_agent_memory` command. Pass a single

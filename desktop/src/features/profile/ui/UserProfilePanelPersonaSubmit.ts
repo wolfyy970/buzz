@@ -13,7 +13,6 @@ type SubmitProfilePersonaDialogOptions = {
   ) => Promise<CreateManagedAgentResponse>;
   createPersona: (input: CreatePersonaInput) => Promise<AgentPersona>;
   input: CreatePersonaInput | UpdatePersonaInput;
-  onDone: () => void;
   showUpdateSuccess?: boolean;
   updatePersona: (input: UpdatePersonaInput) => Promise<AgentPersona>;
 };
@@ -22,7 +21,6 @@ export async function submitProfilePersonaDialog({
   createManagedAgentForPersona,
   createPersona,
   input,
-  onDone,
   showUpdateSuccess = true,
   updatePersona,
 }: SubmitProfilePersonaDialogOptions) {
@@ -62,7 +60,6 @@ export async function submitProfilePersonaDialog({
       }
     }
 
-    onDone();
     return savedPersona;
   } catch (error) {
     toast.error(

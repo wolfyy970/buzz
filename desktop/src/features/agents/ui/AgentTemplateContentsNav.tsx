@@ -1,9 +1,7 @@
 import {
-  Bot,
   Cpu,
   GraduationCap,
   KeyRound,
-  MessageSquareText,
   SlidersHorizontal,
   Wrench,
 } from "lucide-react";
@@ -33,18 +31,6 @@ export function AgentTemplateContentsNav({
 }) {
   const sections: TemplateSection[] = [
     {
-      detail: "Name and avatar",
-      icon: Bot,
-      id: "persona-identity-section",
-      label: "Identity",
-    },
-    {
-      detail: "Role and limits",
-      icon: MessageSquareText,
-      id: "persona-instructions-section",
-      label: "Instructions",
-    },
-    {
       detail: `${runtime} · ${model}`,
       icon: Cpu,
       id: "persona-model-section",
@@ -72,24 +58,24 @@ export function AgentTemplateContentsNav({
 
   return (
     <section
-      className="space-y-3 rounded-xl border border-border bg-muted/20 p-4"
+      className="space-y-2.5 rounded-xl border border-border bg-muted/20 px-3 py-2.5"
       data-testid="template-contents-nav"
     >
-      <div>
-        <h3 className="text-base font-semibold text-foreground">
+      <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h3 className="text-sm font-semibold text-foreground">
           Template setup
         </h3>
-        <p className="mt-1 text-xs text-muted-foreground">
-          Changes to these sections are versioned together.
+        <p className="text-2xs text-muted-foreground">
+          These sections are versioned together.
         </p>
       </div>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+      <div className="grid gap-1.5 sm:grid-cols-2 lg:grid-cols-4">
         {sections.map((section) => {
           const Icon = section.icon;
           return (
             <button
               className={cn(
-                "flex min-w-0 items-center gap-2.5 rounded-lg border border-border bg-background px-3 py-2.5 text-left",
+                "flex min-w-0 items-center gap-2 rounded-lg border border-border bg-background px-2.5 py-1.5 text-left",
                 "transition-colors hover:bg-muted/50 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
               )}
               data-testid={`template-section-${section.id}`}
@@ -112,7 +98,7 @@ export function AgentTemplateContentsNav({
       </div>
       <button
         className={cn(
-          "flex w-full items-center gap-2.5 rounded-lg px-1 py-1 text-left",
+          "flex w-full items-center gap-2 rounded-lg px-1 py-0.5 text-left",
           "text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring",
         )}
         data-testid="template-section-persona-environment-section"

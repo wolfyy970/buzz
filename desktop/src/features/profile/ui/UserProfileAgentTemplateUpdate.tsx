@@ -20,14 +20,16 @@ export type ProfileAgentTemplateUpdateController = {
     selectedPubkeys: string[],
     connectionBindingsByPubkey: Record<string, Record<string, string>>,
   ) => Promise<void>;
+  clearPublishError: () => void;
   dialogOpen: boolean;
   error: string | null;
   isPending: boolean;
   onOpenChange: (open: boolean) => void;
   preview: AgentTemplateUpdatePreview | null;
   progressStage: AgentTemplateUpdateProgressStage | null;
+  publishError: string | null;
   result: ApplyAgentTemplateUpdateResponse | null;
-  publishSavedTemplate: (persona: AgentPersona) => Promise<void>;
+  publishSavedTemplate: (persona: AgentPersona) => Promise<boolean>;
 };
 
 export function useProfileAgentTemplateUpdate({
@@ -45,9 +47,12 @@ export function useProfileAgentTemplateUpdate({
   const [isPending, setIsPending] = React.useState(false);
   const [progressStage, setProgressStage] =
     React.useState<AgentTemplateUpdateProgressStage | null>(null);
+  const [publishError, setPublishError] = React.useState<string | null>(null);
+  const clearPublishError = React.useCallback(() => setPublishError(null), []);
 
   const publishSavedTemplate = React.useCallback(
     async (persona: AgentPersona) => {
+      setPublishError(null);
       let published: PublishAgentTemplateVersionResult;
       try {
         published = await publishAgentTemplateVersion({
@@ -55,8 +60,9 @@ export function useProfileAgentTemplateUpdate({
           expectedUpdatedAt: persona.updatedAt,
         });
       } catch {
-        toast.error("Template saved. Version wasn’t published. Try again.");
-        return;
+        const message = "Template saved. Try again.";
+        setPublishError(message);
+        return false;
       }
       toast.success(`Published a new version of ${published.personaName}.`);
       try {
@@ -79,6 +85,7 @@ export function useProfileAgentTemplateUpdate({
             : `${published.personaName} was published, but Buzz could not load the affected agents.`,
         );
       }
+      return true;
     },
     [],
   );
@@ -122,17 +129,17 @@ export function useProfileAgentTemplateUpdate({
             duration: needsAttention ? Number.POSITIVE_INFINITY : 10_000,
           };
           if (needsAttention) {
-            toast.error("Some agents need attention.", options);
+            toast.error(`${preview.personaName} needs attention.`, options);
           } else if (nextResult.rolledBack) {
             toast.warning(
-              "Update rolled back. Previous version restored.",
+              `${preview.personaName} update rolled back. Previous version restored.`,
               options,
             );
           } else {
             toast.success(
-              `${nextResult.agents.length} ${
+              `${preview.personaName} updated on ${nextResult.agents.length} ${
                 nextResult.agents.length === 1 ? "agent" : "agents"
-              } updated.`,
+              }.`,
               options,
             );
           }
@@ -144,7 +151,7 @@ export function useProfileAgentTemplateUpdate({
             : "The agents were not updated.";
         setError(message);
         if (!dialogOpenRef.current) {
-          toast.error("Agent update failed.", {
+          toast.error(`${preview.personaName} update failed.`, {
             action: {
               label: "View details",
               onClick: () => {
@@ -178,12 +185,14 @@ export function useProfileAgentTemplateUpdate({
 
   return {
     apply,
+    clearPublishError,
     dialogOpen,
     error,
     isPending,
     onOpenChange,
     preview,
     progressStage,
+    publishError,
     result,
     publishSavedTemplate,
   };

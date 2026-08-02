@@ -15,9 +15,11 @@ use tokio::sync::Mutex as AsyncMutex;
 use crate::huddle::HuddleState;
 pub(crate) use crate::identity_storage::{IdentityStorage, RecoveryState, ResolvedIdentity};
 use crate::managed_agents::config_bridge::SessionConfigCache;
-use crate::managed_agents::{
-    ManagedAgentPairRuntime, ManagedAgentRuntimeKey, ManagedAgentUpdateLeaseRegistry,
-};
+use crate::managed_agents::{ManagedAgentPairRuntime, ManagedAgentRuntimeKey};
+
+#[path = "app_state_identity_env.rs"]
+mod identity_env;
+use identity_env::identity_from_env;
 
 pub struct AppState {
     pub keys: Mutex<Keys>,
@@ -52,9 +54,8 @@ pub struct AppState {
     /// Never perform network I/O while holding this lock.
     pub managed_agent_runtime_transition: Mutex<()>,
     pub managed_agents_store_lock: Mutex<()>,
-    /// Pubkey-level ownership for safe updates and conflicting agent
-    /// mutations. Unlike runtime-pair claims, these leases survive drain.
-    pub managed_agent_update_leases: Arc<ManagedAgentUpdateLeaseRegistry>,
+    /// Pubkey ownership for updates and conflicting mutations; survives drain.
+    pub managed_agent_update_leases: Arc<crate::managed_agents::ManagedAgentUpdateLeaseRegistry>,
     pub channel_templates_store_lock: Mutex<()>,
     pub managed_agent_processes: Mutex<HashMap<ManagedAgentRuntimeKey, ManagedAgentPairRuntime>>,
     pub huddle_state: Mutex<HuddleState>,
@@ -140,28 +141,6 @@ pub struct AppState {
     pub pending_owned_channels: Mutex<std::collections::HashSet<(String, String)>>,
 }
 
-/// Parse the `BUZZ_PRIVATE_KEY` env var into identity keys. `Some` means the
-/// env var was present and valid and MUST win over any persisted/keyring key
-/// (the dev/CI/harness override). `None` means absent or malformed — callers
-/// fall through to persisted resolution. A malformed value is logged and
-/// treated as absent rather than left on an ephemeral identity.
-fn identity_from_env() -> Option<Keys> {
-    match std::env::var("BUZZ_PRIVATE_KEY") {
-        Ok(nsec) => match Keys::parse(nsec.trim()) {
-            Ok(keys) => Some(keys),
-            Err(error) => {
-                eprintln!("buzz-desktop: invalid BUZZ_PRIVATE_KEY: {error}");
-                None
-            }
-        },
-        Err(std::env::VarError::NotUnicode(_)) => {
-            eprintln!("buzz-desktop: BUZZ_PRIVATE_KEY contains invalid UTF-8");
-            None
-        }
-        Err(std::env::VarError::NotPresent) => None,
-    }
-}
-
 /// Build the no-redirect HTTP client used for authenticated relay media
 /// fetches (download / copy).
 ///
@@ -218,7 +197,9 @@ pub fn build_app_state() -> AppState {
         managed_agent_runtime_transition: Mutex::new(()),
         identity_mutation: Mutex::new(()),
         managed_agents_store_lock: Mutex::new(()),
-        managed_agent_update_leases: Arc::new(ManagedAgentUpdateLeaseRegistry::default()),
+        managed_agent_update_leases: Arc::new(
+            crate::managed_agents::ManagedAgentUpdateLeaseRegistry::default(),
+        ),
         channel_templates_store_lock: Mutex::new(()),
         managed_agent_processes: Mutex::new(HashMap::new()),
         session_config_cache: Mutex::new(HashMap::new()),

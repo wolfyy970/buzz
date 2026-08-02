@@ -284,6 +284,7 @@ export function usePersonaActions() {
             setPersonaErrorMessage(
               "Template saved. Version wasn’t published. Try again.",
             );
+            return false;
           }
         }
       } else {
@@ -405,17 +406,17 @@ export function usePersonaActions() {
           duration: needsAttention ? Number.POSITIVE_INFINITY : 10_000,
         };
         if (needsAttention) {
-          toast.error("Some agents need attention.", options);
+          toast.error(`${preview.personaName} needs attention.`, options);
         } else if (result.rolledBack) {
           toast.warning(
-            "Update rolled back. Previous version restored.",
+            `${preview.personaName} update rolled back. Previous version restored.`,
             options,
           );
         } else {
           toast.success(
-            `${result.agents.length} ${
+            `${preview.personaName} updated on ${result.agents.length} ${
               result.agents.length === 1 ? "agent" : "agents"
-            } updated.`,
+            }.`,
             options,
           );
         }
@@ -425,7 +426,7 @@ export function usePersonaActions() {
         error instanceof Error ? error.message : "The agents were not updated.";
       setTemplateUpdateError(message);
       if (!isTemplateUpdateDialogOpenRef.current) {
-        toast.error("Agent update failed.", {
+        toast.error(`${preview.personaName} update failed.`, {
           action: {
             label: "View details",
             onClick: () => {

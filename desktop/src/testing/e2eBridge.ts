@@ -13,6 +13,7 @@ import {
 import { relayClient } from "@/shared/api/relayClient";
 import { activateRateLimit } from "@/shared/api/relayRateLimitGate";
 import type { ConnectionState } from "@/shared/api/relayClientShared";
+import type { AgentTemplateUpdateRecoveryStatus } from "@/shared/api/tauriAgentTemplateUpdates";
 import type {
   AgentProjectScope,
   AgentSkill,
@@ -294,6 +295,10 @@ type E2eConfig = {
     publishAgentTemplateVersionError?: string;
     /** Hold each real mocked update stage long enough for progress UI assertions. */
     agentTemplateUpdateStageDelayMs?: number;
+    /** Interrupted template updates returned to the operator recovery surface. */
+    agentTemplateUpdateRecoveries?: AgentTemplateUpdateRecoveryStatus[];
+    /** Reject the explicit restore command with this user-safe message. */
+    restoreAgentTemplateUpdateError?: string;
     teams?: MockTeamSeed[];
     relayAgents?: MockRelayAgentSeed[];
     /** Native-like huddle state seeded from authoritative role-bearing membership. */
@@ -10627,6 +10632,7 @@ export function maybeInstallE2eTauriMocks() {
       sourceUrl: null;
     };
   }> = [];
+  const restoredAgentTemplateUpdateIds = new Set<string>();
   const handleMockCommand = async (
     command: string,
     payload: unknown,
@@ -11845,6 +11851,37 @@ export function maybeInstallE2eTauriMocks() {
         return handleApplyAgentTemplateUpdate(
           payload as Parameters<typeof handleApplyAgentTemplateUpdate>[0],
         );
+      case "list_agent_template_update_recoveries":
+        return (activeConfig?.mock?.agentTemplateUpdateRecoveries ?? []).filter(
+          (status) =>
+            !status.transactionId ||
+            !restoredAgentTemplateUpdateIds.has(status.transactionId),
+        );
+      case "restore_interrupted_agent_template_update": {
+        if (activeConfig?.mock?.restoreAgentTemplateUpdateError) {
+          throw new Error(activeConfig.mock.restoreAgentTemplateUpdateError);
+        }
+        const transactionId = (
+          payload as {
+            input?: {
+              transactionId?: string;
+              confirmStopBuzzOwnedAgents?: boolean;
+            };
+          }
+        ).input?.transactionId;
+        const confirmed = (
+          payload as {
+            input?: {
+              confirmStopBuzzOwnedAgents?: boolean;
+            };
+          }
+        ).input?.confirmStopBuzzOwnedAgents;
+        if (!transactionId || confirmed !== true) {
+          throw new Error("Confirm the interrupted update recovery.");
+        }
+        restoredAgentTemplateUpdateIds.add(transactionId);
+        return null;
+      }
       case "delete_persona":
         return handleDeletePersona(
           payload as Parameters<typeof handleDeletePersona>[0],

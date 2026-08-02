@@ -395,6 +395,7 @@ export function UserProfilePanel({
       return;
     }
     if (resolvedPersona) {
+      templateUpdate.clearPublishError();
       setPersonaDialogState(editPersonaDialogState(resolvedPersona));
     }
   }, [
@@ -402,6 +403,7 @@ export function UserProfilePanel({
     openAgentEditScope,
     openAgentInstanceEdit,
     resolvedPersona,
+    templateUpdate.clearPublishError,
   ]);
 
   const { deleteManagedAgentRecord, deleteManagedAgentsForPersona } =
@@ -522,17 +524,20 @@ export function UserProfilePanel({
         createManagedAgentForPersona,
         createPersona: createPersonaMutation.mutateAsync,
         input,
-        onDone: () => {
-          setPersonaDialogState(null);
-          void personasQuery.refetch();
-        },
         showUpdateSuccess: !options.publishTemplateVersion,
         updatePersona: updatePersonaMutation.mutateAsync,
       });
-      if (!savedPersona || !("id" in input) || !options.publishTemplateVersion)
+      if (!savedPersona) return;
+      if (!("id" in input) || !options.publishTemplateVersion) {
+        setPersonaDialogState(null);
+        void personasQuery.refetch();
         return;
-      await templateUpdate.publishSavedTemplate(savedPersona);
+      }
+      const published = await templateUpdate.publishSavedTemplate(savedPersona);
       void personasQuery.refetch();
+      if (published) {
+        setPersonaDialogState(null);
+      }
     },
     [
       createPersonaMutation.mutateAsync,
@@ -545,8 +550,9 @@ export function UserProfilePanel({
 
   const handleEditPersona = React.useCallback(() => {
     if (!resolvedPersona) return;
+    templateUpdate.clearPublishError();
     setPersonaDialogState(editPersonaDialogState(resolvedPersona));
-  }, [resolvedPersona]);
+  }, [resolvedPersona, templateUpdate.clearPublishError]);
 
   const handleDuplicatePersona = React.useCallback(() => {
     if (!resolvedPersona) return;
@@ -908,6 +914,7 @@ export function UserProfilePanel({
         agent={managedAgent}
         controller={agentEditDialogs}
         onEditTemplate={(selectedPersona) => {
+          templateUpdate.clearPublishError();
           setPersonaDialogState(editPersonaDialogState(selectedPersona));
         }}
         persona={resolvedPersona}
@@ -945,13 +952,18 @@ export function UserProfilePanel({
         runtimes={acpRuntimesQuery.data ?? []}
         runtimesLoading={acpRuntimesQuery.isLoading}
         updateError={
-          updatePersonaMutation.error instanceof Error
-            ? updatePersonaMutation.error
-            : null
+          templateUpdate.publishError
+            ? new Error(templateUpdate.publishError)
+            : updatePersonaMutation.error instanceof Error
+              ? updatePersonaMutation.error
+              : null
         }
         onCloseCardMint={() => setCardMintTarget(null)}
         onCloseDelete={() => setPersonaToDelete(null)}
-        onCloseDialog={() => setPersonaDialogState(null)}
+        onCloseDialog={() => {
+          templateUpdate.clearPublishError();
+          setPersonaDialogState(null);
+        }}
         onCloseExportSnapshot={() => setPersonaToExportSnapshot(null)}
         onConfirmDelete={(selectedPersona) => {
           void handleConfirmDeletePersona(selectedPersona);

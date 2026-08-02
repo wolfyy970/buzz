@@ -1,27 +1,18 @@
 import * as React from "react";
-import { ChevronDown } from "lucide-react";
-import { AnimatePresence, motion, useReducedMotion } from "motion/react";
+import { AnimatePresence, useReducedMotion } from "motion/react";
 
 import { cn } from "@/shared/lib/cn";
 import { ChooserDialogContent } from "@/shared/ui/chooser-dialog-content";
 import { Dialog } from "@/shared/ui/dialog";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/shared/ui/alert-dialog";
-import { Button } from "@/shared/ui/button";
 import { Input } from "@/shared/ui/input";
-import { Textarea } from "@/shared/ui/textarea";
 import { AgentCreationPreview } from "./AgentCreationPreview";
 import { PersonaDropdownField } from "./PersonaDropdownField";
 import type { EnvVarsValue } from "./EnvVarsEditor";
-import { PersonaAdvancedFields } from "./PersonaAdvancedFields";
+import { PersonaBehaviorFields } from "./PersonaBehaviorFields";
+import { PersonaDiscardConfirmation } from "./PersonaDiscardConfirmation";
+import { PersonaIdentityFields } from "./PersonaIdentityFields";
+import { PersonaInstructionsFields } from "./PersonaInstructionsFields";
+import { PersonaLocalSettingsFields } from "./PersonaLocalSettingsFields";
 import { PersonaModelField } from "./PersonaModelField";
 import { runtimeAvailabilityWarning } from "./runtimeAvailabilityWarning";
 import { PersonaProviderApiKeyField } from "./PersonaProviderApiKeyField";
@@ -143,13 +134,8 @@ export function AgentDefinitionDialog({
   const [behaviorDraft, setBehaviorDraft] = React.useState(
     emptyPersonaBehaviorDraft,
   );
-  // The seed the draft is diffed against at submit: an untouched quad
-  // submits no behavior group, keeping unrelated edits hash-quiet.
   const behaviorSeedRef = React.useRef(emptyPersonaBehaviorDraft);
-  // Tracks when the runtime was auto-seeded by the default-runtime effect in
-  // edit mode (i.e. the user never explicitly chose a runtime). Used to omit
-  // the seeded runtime from the submit payload for builtin definitions whose
-  // canonical runtime is null — the sync would revert it anyway.
+  // Tracks runtime values seeded from defaults rather than chosen by the user.
   const isRuntimeAutoSeededRef = React.useRef(false);
   // Guards the seeding effect so it fires at most once per dialog-open.
   // Without this, clearing runtime back to "" via "No preference" would re-
@@ -652,10 +638,7 @@ export function AgentDefinitionDialog({
   );
 
   function navigateToTemplateSection(id: string) {
-    if (
-      id === "persona-behavior-section" ||
-      id === "persona-environment-section"
-    ) {
+    if (id === "persona-environment-section") {
       setShowAdvancedFields(true);
     }
     window.requestAnimationFrame(() => {
@@ -791,9 +774,11 @@ export function AgentDefinitionDialog({
           footer={
             <AgentDefinitionDialogFooter
               canSubmit={canSubmit}
+              errorMessage={error?.message ?? null}
               isAvatarUploadPending={isAvatarUploadPending}
               isPending={isPending}
               isTemplateEdit={!isCreateMode}
+              lastAction={submission.lastAction}
               onCancel={() => handleOpenChange(false)}
               onSaveTemplate={() => void handleSubmit("save")}
               pendingAction={submission.pendingAction}
@@ -814,11 +799,43 @@ export function AgentDefinitionDialog({
             onChangeCapture={() => setHasUserChanges(true)}
             onSubmit={handleSubmitForm}
           >
-            {affectedAgents ? (
-              <AgentTemplateImpactPreview agents={affectedAgents} />
-            ) : null}
             {!isCreateMode ? (
               <>
+                <PersonaIdentityFields
+                  avatarEditor={avatarEditor}
+                  disabled={isPending}
+                  displayName={displayName}
+                  isCreateMode={false}
+                  onDisplayNameChange={setDisplayName}
+                />
+                {affectedAgents ? (
+                  <AgentTemplateImpactPreview
+                    agents={affectedAgents}
+                    surface="plain"
+                  />
+                ) : null}
+              </>
+            ) : null}
+            {isCreateMode ? avatarEditor : null}
+
+            <div className="space-y-5">
+              {isCreateMode ? (
+                <PersonaIdentityFields
+                  avatarEditor={avatarEditor}
+                  disabled={isPending}
+                  displayName={displayName}
+                  isCreateMode
+                  onDisplayNameChange={setDisplayName}
+                />
+              ) : null}
+
+              <PersonaInstructionsFields
+                disabled={isPending}
+                onChange={setSystemPrompt}
+                value={systemPrompt}
+              />
+
+              {!isCreateMode ? (
                 <AgentTemplateContentsNav
                   model={
                     model.trim() ||
@@ -830,86 +847,7 @@ export function AgentDefinitionDialog({
                   skillCount={resourcesDraft.skills.length}
                   toolCount={resourcesDraft.requirements.length}
                 />
-                <p
-                  className="rounded-lg bg-muted/30 px-3 py-2 text-xs text-muted-foreground"
-                  data-testid="persona-dialog-template-version-notice"
-                >
-                  Save changes without affecting running agents. Publish a
-                  version when you are ready to update them.
-                </p>
-              </>
-            ) : null}
-            {isCreateMode ? avatarEditor : null}
-
-            <div className="space-y-5">
-              <div
-                className="scroll-mt-4 space-y-1.5"
-                id="persona-identity-section"
-                tabIndex={-1}
-              >
-                <h3 className="text-base font-semibold text-foreground">
-                  Identity
-                </h3>
-                <div className={cn(!isCreateMode && "flex items-end gap-4")}>
-                  {!isCreateMode ? avatarEditor : null}
-                  <div className="min-w-0 flex-1 space-y-1.5">
-                    <label
-                      className="text-sm font-medium text-foreground"
-                      htmlFor="persona-display-name"
-                    >
-                      {isCreateMode ? "Agent name" : "Template name"}
-                    </label>
-                    <div
-                      className={cn(
-                        "flex min-h-11 items-center px-3",
-                        PERSONA_FIELD_SHELL_CLASS,
-                      )}
-                    >
-                      <Input
-                        autoCorrect="off"
-                        className={cn(
-                          "h-8 px-0 py-0 leading-6",
-                          PERSONA_FIELD_CONTROL_CLASS,
-                        )}
-                        disabled={isPending}
-                        id="persona-display-name"
-                        onChange={(event) => setDisplayName(event.target.value)}
-                        placeholder="Fizz"
-                        value={displayName}
-                      />
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div
-                className="scroll-mt-4 space-y-1.5"
-                id="persona-instructions-section"
-                tabIndex={-1}
-              >
-                <h3 className="text-base font-semibold text-foreground">
-                  Instructions
-                </h3>
-                <label
-                  className="text-sm font-medium text-foreground"
-                  htmlFor="persona-system-prompt"
-                >
-                  Agent instructions
-                </label>
-                <div className={PERSONA_FIELD_SHELL_CLASS}>
-                  <Textarea
-                    className={cn(
-                      "min-h-40 resize-y px-3 py-3 leading-5",
-                      PERSONA_FIELD_CONTROL_CLASS,
-                    )}
-                    disabled={isPending}
-                    id="persona-system-prompt"
-                    onChange={(event) => setSystemPrompt(event.target.value)}
-                    placeholder="Describe what this agent should do."
-                    value={systemPrompt}
-                  />
-                </div>
-              </div>
+              ) : null}
 
               <div
                 className="space-y-5"
@@ -1062,128 +1000,46 @@ export function AgentDefinitionDialog({
                   : createRunSection
                 : null}
 
-              <div
-                className="scroll-mt-4 space-y-3"
-                id="persona-behavior-section"
-                tabIndex={-1}
-              >
-                <div>
-                  <h3>
-                    <button
-                      aria-expanded={showAdvancedFields}
-                      className="flex w-full items-center justify-between gap-3 rounded-lg py-1 text-left text-base font-semibold text-foreground transition-colors hover:text-foreground/80 focus-visible:outline-hidden focus-visible:ring-2 focus-visible:ring-ring"
-                      onClick={() =>
-                        setShowAdvancedFields((current) => !current)
-                      }
-                      type="button"
-                    >
-                      <span>Advanced settings</span>
-                      <span className="flex items-center gap-1.5">
-                        {localModeGate.missingEnvKeys.some((key) =>
-                          advancedRequiredEnvKeys.includes(key),
-                        ) ? (
-                          <span
-                            aria-hidden="true"
-                            className="rounded-full bg-destructive/10 px-2 py-0.5 text-xs text-destructive"
-                            data-testid="persona-advanced-required-badge"
-                          >
-                            Required
-                          </span>
-                        ) : null}
-                        <ChevronDown
-                          className={cn(
-                            "h-4 w-4 text-muted-foreground transition-transform duration-150 ease-out",
-                            showAdvancedFields && "rotate-180",
-                          )}
-                        />
-                      </span>
-                    </button>
-                  </h3>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    Behavior, local environment, and model tuning
-                  </p>
-                </div>
-                <AnimatePresence initial={false}>
-                  {showAdvancedFields ? (
-                    <motion.div
-                      animate={{ height: "auto", opacity: 1, scale: 1 }}
-                      className="origin-top overflow-hidden"
-                      exit={{ height: 0, opacity: 0, scale: 0.98 }}
-                      initial={{ height: 0, opacity: 0, scale: 0.98 }}
-                      key="persona-advanced-fields"
-                      transition={advancedFieldsTransition}
-                    >
-                      <PersonaAdvancedFields
-                        behaviorDraft={behaviorDraft}
-                        disabled={isPending}
-                        envVars={envVars}
-                        fileSatisfiedEnvKeys={
-                          localModeGate.fileSatisfiedEnvKeys
-                        }
-                        hiddenEnvKeys={
-                          topLevelSecretEnvVar ? [topLevelSecretEnvVar] : []
-                        }
-                        inheritedEnvVars={inheritedEnvVarsForAdvanced}
-                        model={model}
-                        modelTuningRuntimeId={runtime}
-                        namePoolText={namePoolText}
-                        onBehaviorDraftChange={(nextBehaviorDraft) => {
-                          setHasUserChanges(true);
-                          setBehaviorDraft(nextBehaviorDraft);
-                        }}
-                        onEnvVarsChange={setEnvVars}
-                        onNamePoolTextChange={setNamePoolText}
-                        provider={effectiveProvider}
-                        requiredEnvKeys={advancedRequiredEnvKeys}
-                      />
-                    </motion.div>
-                  ) : null}
-                </AnimatePresence>
-              </div>
+              <PersonaBehaviorFields
+                disabled={isPending}
+                draft={behaviorDraft}
+                onChange={(nextBehaviorDraft) => {
+                  setHasUserChanges(true);
+                  setBehaviorDraft(nextBehaviorDraft);
+                }}
+              />
 
-              {error ? (
-                <p
-                  aria-live="assertive"
-                  className="text-sm text-destructive"
-                  role="alert"
-                >
-                  {error.message}
-                </p>
-              ) : null}
+              <PersonaLocalSettingsFields
+                disabled={isPending}
+                envVars={envVars}
+                fileSatisfiedEnvKeys={localModeGate.fileSatisfiedEnvKeys}
+                hiddenEnvKeys={
+                  topLevelSecretEnvVar ? [topLevelSecretEnvVar] : []
+                }
+                inheritedEnvVars={inheritedEnvVarsForAdvanced}
+                missingEnvKeys={localModeGate.missingEnvKeys}
+                model={model}
+                modelTuningRuntimeId={runtime}
+                namePoolText={namePoolText}
+                onEnvVarsChange={setEnvVars}
+                onNamePoolTextChange={setNamePoolText}
+                onOpenChange={setShowAdvancedFields}
+                open={showAdvancedFields}
+                provider={effectiveProvider}
+                requiredEnvKeys={advancedRequiredEnvKeys}
+                transition={advancedFieldsTransition}
+              />
             </div>
           </form>
         </ChooserDialogContent>
       </Dialog>
-      <AlertDialog
+      <PersonaDiscardConfirmation
+        isCreateMode={isCreateMode}
+        onDiscard={closeAndReset}
         onOpenChange={setDiscardConfirmOpen}
         open={discardConfirmOpen}
-      >
-        <AlertDialogContent data-testid="persona-discard-confirmation">
-          <AlertDialogHeader>
-            <AlertDialogTitle>Discard unsaved changes?</AlertDialogTitle>
-            <AlertDialogDescription>
-              Your changes to this {isCreateMode ? "agent" : "template"} will be
-              lost.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel asChild>
-              <Button type="button" variant="outline">
-                Keep editing
-              </Button>
-            </AlertDialogCancel>
-            <AlertDialogAction asChild>
-              <Button
-                onClick={closeAndReset}
-                type="button"
-                variant="destructive"
-              >
-                Discard changes
-              </Button>
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+        templateName={displayName}
+      />
     </>
   );
 }

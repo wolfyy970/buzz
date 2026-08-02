@@ -1,8 +1,6 @@
 import { Input } from "@/shared/ui/input";
 import { cn } from "@/shared/lib/cn";
 import { EnvVarsEditor, type EnvVarsValue } from "./EnvVarsEditor";
-import { CreateAgentRespondToField } from "./RespondToField";
-import type { PersonaBehaviorDraft } from "./personaBehaviorDraft";
 import { isBuzzAgentRuntime } from "./buzzAgentConfig";
 import { BuzzAgentModelTuningFields } from "./buzzAgentModelTuningFields";
 import {
@@ -12,14 +10,12 @@ import {
 } from "./agentConfigOptions";
 
 export function PersonaAdvancedFields({
-  behaviorDraft,
   disabled,
   envVars,
   inheritedEnvVars = {},
   model,
   modelTuningRuntimeId = "",
   namePoolText,
-  onBehaviorDraftChange,
   onEnvVarsChange,
   onNamePoolTextChange,
   provider,
@@ -27,7 +23,6 @@ export function PersonaAdvancedFields({
   fileSatisfiedEnvKeys = [],
   hiddenEnvKeys = [],
 }: {
-  behaviorDraft: PersonaBehaviorDraft;
   disabled: boolean;
   envVars: EnvVarsValue;
   /** Env vars to display as inherited defaults in tuning-field placeholders.
@@ -38,7 +33,6 @@ export function PersonaAdvancedFields({
   /** Runtime id for the buzz-agent tuning knobs visibility gate. */
   modelTuningRuntimeId?: string;
   namePoolText: string;
-  onBehaviorDraftChange: (value: PersonaBehaviorDraft) => void;
   onEnvVarsChange: (value: EnvVarsValue) => void;
   onNamePoolTextChange: (value: string) => void;
   /** Active LLM provider id — forwarded to BuzzAgentModelTuningFields for effort filtering. */
@@ -50,70 +44,10 @@ export function PersonaAdvancedFields({
   return (
     <div className="space-y-5 pt-2">
       <section className="space-y-4">
-        <h4 className="text-sm font-semibold text-foreground">Behavior</h4>
-        <CreateAgentRespondToField
-          allowlist={behaviorDraft.respondToAllowlist}
-          disabled={disabled}
-          mode={behaviorDraft.respondTo ?? "owner-only"}
-          onAllowlistChange={(allowlist) =>
-            onBehaviorDraftChange({
-              ...behaviorDraft,
-              respondToAllowlist: allowlist,
-            })
-          }
-          onModeChange={(mode) =>
-            onBehaviorDraftChange({ ...behaviorDraft, respondTo: mode })
-          }
-          variant="persona"
-        />
-
-        <div className="grid gap-5 sm:grid-cols-2">
-          <div className="space-y-1.5">
-            <label
-              className="text-sm font-medium text-foreground"
-              htmlFor="persona-parallelism"
-            >
-              Parallelism
-              <span className={PERSONA_LABEL_OPTIONAL_CLASS}>Optional</span>
-            </label>
-            <div
-              className={cn(
-                "flex min-h-11 items-center px-3",
-                PERSONA_FIELD_SHELL_CLASS,
-              )}
-            >
-              <Input
-                aria-describedby="persona-parallelism-help"
-                className={cn(
-                  "h-8 px-0 py-0 leading-6",
-                  PERSONA_FIELD_CONTROL_CLASS,
-                )}
-                disabled={disabled}
-                id="persona-parallelism"
-                inputMode="numeric"
-                max={32}
-                min={1}
-                onChange={(event) =>
-                  onBehaviorDraftChange({
-                    ...behaviorDraft,
-                    parallelism: event.target.value,
-                  })
-                }
-                placeholder="1"
-                type="number"
-                value={behaviorDraft.parallelism}
-              />
-            </div>
-            <p
-              className="text-xs text-muted-foreground"
-              id="persona-parallelism-help"
-            >
-              Conversations each running instance can handle at once (1–32).
-            </p>
-          </div>
-        </div>
-
         <div className="space-y-1.5">
+          <h4 className="text-sm font-semibold text-foreground">
+            Instance names
+          </h4>
           <label
             className="text-sm font-medium text-foreground"
             htmlFor="persona-name-pool"

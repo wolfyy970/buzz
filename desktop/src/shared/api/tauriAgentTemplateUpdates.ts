@@ -158,6 +158,36 @@ export type AgentTemplateUpdateProgress = {
   stage: AgentTemplateUpdateProgressStage;
 };
 
+export type AgentTemplateUpdateRecoveryStage =
+  | "prepared"
+  | "before_original_handoff"
+  | "after_original_handoff"
+  | "before_candidate_commit"
+  | "after_candidate_commit"
+  | "before_candidate_launch"
+  | "after_candidate_ready"
+  | "before_candidate_handoff"
+  | "after_candidate_handoff"
+  | "before_original_restore"
+  | "after_original_restore"
+  | "before_original_restart"
+  | "after_original_restart"
+  | "update_completed"
+  | "rollback_completed";
+
+export type AgentTemplateUpdateRecoveryStatus = {
+  transactionId: string | null;
+  templateId: string | null;
+  stage: AgentTemplateUpdateRecoveryStage | null;
+  recovery: string;
+  agents: Array<{
+    pubkey: string;
+    name: string;
+  }>;
+  requiresAttention: boolean;
+  detail: string;
+};
+
 function fallbackSkillFileChanges(
   before: AgentSkill,
   after: AgentSkill,
@@ -337,6 +367,25 @@ export async function applyAgentTemplateUpdate(
   } finally {
     unlisten();
   }
+}
+
+export async function listAgentTemplateUpdateRecoveries(): Promise<
+  AgentTemplateUpdateRecoveryStatus[]
+> {
+  return invokeTauri<AgentTemplateUpdateRecoveryStatus[]>(
+    "list_agent_template_update_recoveries",
+  );
+}
+
+export async function restoreInterruptedAgentTemplateUpdate(
+  transactionId: string,
+): Promise<void> {
+  return invokeTauri<void>("restore_interrupted_agent_template_update", {
+    input: {
+      transactionId,
+      confirmStopBuzzOwnedAgents: true,
+    },
+  });
 }
 
 export type PublishAgentTemplateVersionResult = {

@@ -108,8 +108,8 @@ export function editPersonaDialogState(
   persona: AgentPersona,
 ): PersonaDialogState {
   return {
-    title: `Edit ${persona.displayName} template`,
-    description: "",
+    title: persona.displayName,
+    description: "Agent template. Edit the reusable setup for linked agents.",
     submitLabel: "Save changes",
     initialValues: {
       id: persona.id,
