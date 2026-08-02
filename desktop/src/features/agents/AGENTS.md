@@ -153,7 +153,16 @@ with a TypeScript lookup table or an id comparison in a component.
    themselves. Never synthesize a run location a surface doesn't have. Don't
    expose `respond-to`, `allowlist`, Nostr, or harness jargon in primary UI
    copy.
-12. **Templates carry portable Skills and declare Tools; Projects own
+12. **Shared instructions must be reviewable byte-for-byte.** Agent definitions
+    execute their `system_prompt` verbatim, so catalog and snapshot review
+    surfaces render the literal prompt, never the chat Markdown projection
+    (which can conceal spoilers, link destinations, and image sources). Reject
+    Unicode default-ignorable, bidirectional-formatting, and non-layout control
+    characters at both the untrusted catalog parser and the Rust persistence /
+    import boundary. Do not silently strip them: rejection keeps the reviewed
+    string identical to the executed string. New sharing paths must reuse the
+    same validation before they persist or activate a definition.
+13. **Templates carry portable Skills and declare Tools; Projects own
     Connections.** A template stores bounded `AgentSkill` instruction bundles
     and portable `AgentToolRequirement` values. Every Skill has a safe relative
     `SKILL.md` path and may carry supporting files; validate file count, size,
@@ -163,14 +172,14 @@ with a TypeScript lookup table or an id comparison in a component.
     never enter persona or team events. Secret values live only in the system
     keyring. Product copy uses Skills, Tools, Connections, Project, agent
     template, and agent. MCP is reserved for technical details.
-13. **Tool access is a Project boundary.** Every MCP-enabled agent has one
+14. **Tool access is a Project boundary.** Every MCP-enabled agent has one
     canonical `AgentProjectScope`: relay URL, operator pubkey, NIP-34 repository
     address, and Project discussion channel. Local desktop Project ids are not
     persisted. The runtime sets `BUZZ_ACP_CHANNELS` to that discussion channel
     so Project tools cannot be used from another channel. Remote agents with
     Project Connections remain unsupported until the provider contract can
     broker scoped secrets safely.
-14. **Connection and template changes use controlled restarts.** Required
+15. **Connection and template changes use controlled restarts.** Required
     unresolved tools block launch. A connection must initialize, return its
     tool list, and be Ready before it can satisfy a requirement. Editing a
     connection or applying a template update restarts affected running agents,
@@ -180,19 +189,19 @@ with a TypeScript lookup table or an id comparison in a component.
     backend event scoped to the frontend-generated request id. Render only
     stages emitted for that request, remove the listener when the command
     settles, and never simulate rollout progress with frontend timers.
-15. **Template rollout is explicit and impact-aware.** Agents retain their
+16. **Template rollout is explicit and impact-aware.** Agents retain their
     pinned template snapshot until the operator chooses Update agents. The
     preview shows each affected agent, its own added, changed, and removed tool
     requirements and Skills, plus any connection choices that must be resolved.
     The apply request carries the complete binding map for every selected agent
     and the backend validates it again under the update transaction.
-16. **Linked agents may privately change instructions and Skills.** The
+17. **Linked agents may privately change instructions and Skills.** The
     instance editor labels each divergence as "Changed for this agent" and
     provides an explicit "Reset to template" action. Reset requests use named
     reset fields rather than copying template values and pretending the
     override still exists. Template rollout preserves private overrides.
     Editing or resetting these fields must not change model or provider.
-17. **Published template versions are immutable Git artifacts.** Save template
+18. **Published template versions are immutable Git artifacts.** Save template
     edits only the mutable definition head. Publish version writes canonical,
     secret-free template content to the owner's hidden Buzz-hosted Git
     repository and records the full repository coordinate, commit OID, artifact
@@ -203,7 +212,6 @@ with a TypeScript lookup table or an id comparison in a component.
     the published version, and never enter Git, Nostr events, portable
     snapshots, logs, or screenshots. Product copy says template, version, and
     Update agents; repository and storage-channel details stay out of the UI.
-
 ## The tests that enforce this
 
 - `lib/agentConfigCore.test.mjs` — field model per harness × scope, clearing
@@ -223,6 +231,9 @@ with a TypeScript lookup table or an id comparison in a component.
 - `lib/agentAccessWarning.test.mjs` — every mode × run-location copy variant
   plus both resolvers, including unknown-reads-as-local and
   blank-`runOn`-is-not-a-provider.
+- `lib/personaCatalogRelay.test.mjs` and
+  `ui/personaCatalogOwnerLabel.test.mjs` — reject invisible definition text
+  and keep Markdown concealment syntax literal in the review surface.
 - `desktop/tests/e2e/onboarding-agent-defaults.spec.ts` — onboarding behavior
   acceptance coverage for readiness, failure states, defaults, session-draft
   restoration, zero-write Skip, Next save failure/retry, navigation, and
@@ -243,6 +254,8 @@ with a TypeScript lookup table or an id comparison in a component.
 - `desktop/tests/e2e/agent-template-update-screenshots.spec.ts` and
   `desktop/tests/e2e/edit-agent.spec.ts` cover Skill editing, update review,
   private-change labels, and explicit reset actions.
+- Rust: `definition_validation` and inbound persona tests pin the shared
+  Unicode/control-character policy at local, import, publish, and sync gates.
 
 ## Keep this file true
 

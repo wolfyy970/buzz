@@ -20,8 +20,10 @@ function personaEvent({
   sourcePersonaId = "reviewer",
   shared = true,
   avatarUrl = null,
+  displayName = "Relay Reviewer",
   respondTo = null,
   skills,
+  systemPrompt = "Review changes.",
   sharedTag,
 }) {
   return {
@@ -38,8 +40,8 @@ function personaEvent({
           : []),
     ],
     content: JSON.stringify({
-      display_name: "Relay Reviewer",
-      system_prompt: "Review changes.",
+      display_name: displayName,
+      system_prompt: systemPrompt,
       avatar_url: avatarUrl,
       runtime: "goose",
       model: "claude",
@@ -213,6 +215,73 @@ test("catalog Skills keep safe bundles and drop an unsafe payload", () => {
     BOB,
   );
   assert.deepEqual(unsafe[0].skills, []);
+});
+
+test("catalog rejects invisible or bidirectional formatting characters", () => {
+  for (const [index, character] of [
+    "\u00ad",
+    "\u034f",
+    "\u200b",
+    "\u200d",
+    "\u202e",
+    "\u2060",
+    "\u2066",
+    "\u3164",
+    "\ufe0f",
+    "\u{e007f}",
+  ].entries()) {
+    assert.deepEqual(
+      catalogPublicationsFromEvents([
+        personaEvent({
+          createdAt: index + 1,
+          displayName: `Review${character}er`,
+          id: `unsafe-name-${index}`,
+        }),
+      ]),
+      [],
+    );
+    assert.deepEqual(
+      catalogPublicationsFromEvents([
+        personaEvent({
+          createdAt: index + 1,
+          id: `unsafe-prompt-${index}`,
+          systemPrompt: `Review code.${character}`,
+        }),
+      ]),
+      [],
+    );
+  }
+});
+
+test("catalog rejects layout controls in display names", () => {
+  for (const [index, character] of ["\n", "\t"].entries()) {
+    assert.deepEqual(
+      catalogPublicationsFromEvents([
+        personaEvent({
+          createdAt: index + 1,
+          displayName: `Relay${character}Reviewer`,
+          id: `unsafe-layout-name-${index}`,
+        }),
+      ]),
+      [],
+    );
+  }
+});
+
+test("catalog keeps visible unicode and literal markdown instructions", () => {
+  const systemPrompt =
+    "Review changes.\n\t||This syntax must be shown literally.||";
+  const publications = catalogPublicationsFromEvents([
+    personaEvent({
+      createdAt: 1,
+      displayName: "Relay Reviewer 🐝",
+      id: "visible-unicode",
+      systemPrompt,
+    }),
+  ]);
+
+  assert.equal(publications[0].agent.displayName, "Relay Reviewer 🐝");
+  assert.equal(publications[0].agent.systemPrompt, systemPrompt);
 });
 
 /** The avatar a catalog entry projects for `avatarUrl`, or null if dropped. */
