@@ -189,6 +189,17 @@ with a TypeScript lookup table or an id comparison in a component.
     reset fields rather than copying template values and pretending the
     override still exists. Template rollout preserves private overrides.
     Editing or resetting these fields must not change model or provider.
+17. **Published template versions are immutable Git artifacts.** Save template
+    edits only the mutable definition head. Publish version writes canonical,
+    secret-free template content to the owner's hidden Buzz-hosted Git
+    repository and records the full repository coordinate, commit OID, artifact
+    path, and SHA-256 digest. Publishing never updates running agents. Update
+    agents loads and verifies that exact version before changing any instance;
+    later template edits or publishes cannot change the reviewed target.
+    Environment values stay in the restricted local store, pinned alongside
+    the published version, and never enter Git, Nostr events, portable
+    snapshots, logs, or screenshots. Product copy says template, version, and
+    Update agents; repository and storage-channel details stay out of the UI.
 
 ## The tests that enforce this
 

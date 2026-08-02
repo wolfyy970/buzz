@@ -77,6 +77,8 @@ fn bare_agent_record(
 fn persona_record(id: &str, model: Option<&str>, provider: Option<&str>) -> AgentDefinition {
     use std::collections::BTreeMap;
     AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: id.to_string(),
         display_name: "Test Persona".to_string(),
         avatar_url: None,

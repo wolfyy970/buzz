@@ -10,6 +10,7 @@ import type {
 
 export type AgentDefinitionSubmitOptions = {
   publishCatalogUpdates: boolean;
+  publishTemplateVersion: boolean;
 };
 
 export type AgentDefinitionDialogProps = {

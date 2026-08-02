@@ -16,6 +16,7 @@ import type { ConnectionState } from "@/shared/api/relayClientShared";
 import type {
   AgentProjectScope,
   AgentSkill,
+  AgentTemplateVersionRef,
   AgentToolRequirement,
   ChannelTemplate,
   RelayEvent,
@@ -289,6 +290,8 @@ type E2eConfig = {
     personaCatalogEvents?: RelayEvent[];
     /** Outcomes for successive explicit persona share publications. */
     personaSharePublicationStatuses?: Array<"published" | "queued">;
+    /** Reject immutable template publishing after the mutable edit is saved. */
+    publishAgentTemplateVersionError?: string;
     teams?: MockTeamSeed[];
     relayAgents?: MockRelayAgentSeed[];
     /** Native-like huddle state seeded from authoritative role-bearing membership. */
@@ -907,6 +910,7 @@ type RawPersona = {
   env_vars?: Record<string, string>;
   tool_requirements?: AgentToolRequirement[];
   skills?: AgentSkill[];
+  published_version?: AgentTemplateVersionRef | null;
   respond_to?: string | null;
   respond_to_allowlist?: string[];
   parallelism?: number | null;
@@ -7981,6 +7985,61 @@ function mockPersonaRevision(persona: RawPersona): string {
   return revision;
 }
 
+function mockTemplateVersion(persona: RawPersona): AgentTemplateVersionRef {
+  const artifactSha256 = mockPersonaRevision(persona);
+  return {
+    repoAddress: `30617:${MOCK_IDENTITY_PUBKEY}:buzz-agent-templates`,
+    commitOid: artifactSha256.slice(0, 40),
+    artifactPath: `templates/${persona.id}/versions/${artifactSha256}/template.json`,
+    artifactSha256,
+  };
+}
+
+function mockTemplateVersionToken(version: AgentTemplateVersionRef): string {
+  return `git:${version.repoAddress}:${version.commitOid}:${version.artifactPath}:${version.artifactSha256}`;
+}
+
+function templateVersionsEqual(
+  left: AgentTemplateVersionRef,
+  right: AgentTemplateVersionRef,
+): boolean {
+  return (
+    left.repoAddress === right.repoAddress &&
+    left.commitOid === right.commitOid &&
+    left.artifactPath === right.artifactPath &&
+    left.artifactSha256 === right.artifactSha256
+  );
+}
+
+function handlePublishAgentTemplateVersion(
+  args: {
+    input: { personaId: string; expectedUpdatedAt: string };
+  },
+  config?: E2eConfig,
+) {
+  if (config?.mock?.publishAgentTemplateVersionError) {
+    throw new Error(config.mock.publishAgentTemplateVersionError);
+  }
+  const persona = mockPersonas.find(
+    (candidate) => candidate.id === args.input.personaId,
+  );
+  if (!persona) {
+    throw new Error(`Template ${args.input.personaId} no longer exists.`);
+  }
+  if (persona.updated_at !== args.input.expectedUpdatedAt) {
+    throw new Error(
+      "This template changed while it was being published. Save and try again.",
+    );
+  }
+  const version = mockTemplateVersion(persona);
+  persona.published_version = version;
+  return {
+    personaId: persona.id,
+    personaName: persona.display_name,
+    version,
+  };
+}
+
 function mockToolChanges(
   current: NonNullable<RawPersona["tool_requirements"]>,
   target: NonNullable<RawPersona["tool_requirements"]>,
@@ -8021,18 +8080,26 @@ function mockSkillChanges(
   };
 }
 
-function handlePreviewAgentTemplateUpdate(args: { personaId: string }) {
+function handlePreviewAgentTemplateUpdate(args: {
+  personaId: string;
+  targetVersion?: AgentTemplateVersionRef;
+}) {
   const persona = mockPersonas.find(
     (candidate) => candidate.id === args.personaId,
   );
   if (!persona) {
     throw new Error(`Template ${args.personaId} no longer exists.`);
   }
-  const targetVersion = mockPersonaRevision(persona);
+  const targetVersion =
+    args.targetVersion ??
+    persona.published_version ??
+    mockTemplateVersion(persona);
+  const targetVersionToken = mockTemplateVersionToken(targetVersion);
   return {
     personaId: persona.id,
     personaName: persona.display_name,
     targetVersion,
+    targetVersionToken,
     targetToolRequirements: persona.tool_requirements ?? [],
     targetSkills: persona.skills ?? [],
     agents: mockManagedAgents
@@ -8203,7 +8270,7 @@ function handleDeleteProjectConnection(args: { connectionId: string }) {
 async function handleApplyAgentTemplateUpdate(args: {
   input: {
     personaId: string;
-    expectedVersion: string;
+    expectedVersion: AgentTemplateVersionRef;
     selectedPubkeys: string[];
     connectionBindingsByPubkey?: Record<string, Record<string, string>>;
   };
@@ -8211,7 +8278,9 @@ async function handleApplyAgentTemplateUpdate(args: {
   const preview = handlePreviewAgentTemplateUpdate({
     personaId: args.input.personaId,
   });
-  if (preview.targetVersion !== args.input.expectedVersion) {
+  if (
+    !templateVersionsEqual(preview.targetVersion, args.input.expectedVersion)
+  ) {
     throw new Error(
       "This template changed while you were reviewing it. Review the affected agents again.",
     );
@@ -8225,7 +8294,7 @@ async function handleApplyAgentTemplateUpdate(args: {
         (candidate) => candidate.pubkey === agent.pubkey,
       );
       if (stored) {
-        stored.persona_source_version = preview.targetVersion;
+        stored.persona_source_version = preview.targetVersionToken;
         stored.tool_requirements = preview.targetToolRequirements;
         if (!stored.skills_changed_for_agent) {
           stored.skills = preview.targetSkills.map((skill) => ({
@@ -11597,6 +11666,11 @@ export function maybeInstallE2eTauriMocks() {
       case "update_persona_and_publish":
         return handleUpdatePersonaAndPublish(
           payload as Parameters<typeof handleUpdatePersonaAndPublish>[0],
+          activeConfig,
+        );
+      case "publish_agent_template_version":
+        return handlePublishAgentTemplateVersion(
+          payload as Parameters<typeof handlePublishAgentTemplateVersion>[0],
           activeConfig,
         );
       case "preview_agent_template_update":

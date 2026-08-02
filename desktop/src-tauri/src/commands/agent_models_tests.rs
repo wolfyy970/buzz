@@ -386,6 +386,8 @@ fn model_discovery_uses_selected_revision_for_linked_agent() {
     .expect("sample managed agent record");
 
     let persona = crate::managed_agents::AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "persona-1".to_string(),
         display_name: "Persona".to_string(),
         avatar_url: None,

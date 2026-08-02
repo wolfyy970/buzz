@@ -741,6 +741,7 @@ pub fn run() {
             list_managed_agents,
             preview_agent_template_update,
             apply_agent_template_update,
+            publish_agent_template_version,
             list_managed_agent_runtimes,
             start_managed_agent_runtime,
             stop_managed_agent_runtime,

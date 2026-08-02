@@ -50,6 +50,9 @@ pub async fn list_personas(app: AppHandle) -> Result<Vec<AgentDefinition>, Strin
             .map_err(|error| error.to_string())?;
         let mut personas = load_personas(&app)?;
         pending::project_active_persona_sharing(&app, &state, &mut personas);
+        for persona in &mut personas {
+            persona.published_version_env_vars = None;
+        }
         Ok(personas)
     })
     .await
@@ -290,13 +293,16 @@ pub async fn set_persona_active(
         )?;
 
         if persona.is_active == active {
-            return Ok(persona.clone());
+            let mut result = persona.clone();
+            result.published_version_env_vars = None;
+            return Ok(result);
         }
 
         persona.is_active = active;
         persona.updated_at = now_iso();
 
-        let updated = persona.clone();
+        let mut updated = persona.clone();
+        updated.published_version_env_vars = None;
         save_personas(&app, &personas)?;
         try_regenerate_nest(&app);
         Ok(updated)

@@ -1,5 +1,4 @@
 //! Import helpers and Tauri commands for `buzz-agent-snapshot v1`.
-
 use nostr::ToBech32;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, State};
@@ -549,7 +548,6 @@ pub async fn confirm_agent_snapshot_import(
         let now = now_iso();
         let persona_id = uuid::Uuid::new_v4().to_string();
 
-        // Build persona from snapshot definition.
         let persona = AgentDefinition {
             id: persona_id.clone(),
             display_name: display_name.clone(),
@@ -572,6 +570,8 @@ pub async fn confirm_agent_snapshot_import(
             env_vars: std::collections::BTreeMap::new(),
             tool_requirements: snapshot.definition.tool_requirements.clone(),
             skills: snapshot.definition.skills.clone(),
+            published_version: None,
+            published_version_env_vars: None,
             respond_to: respond_to_wire.clone(),
             respond_to_allowlist: minted.respond_to_allowlist.clone(),
             parallelism: minted_parallelism,

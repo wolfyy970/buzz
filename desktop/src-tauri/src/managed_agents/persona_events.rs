@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 
 use super::{
     resolve_mint_behavioral_defaults, validate_agent_skills, AgentDefinition, AgentSkill,
-    AgentToolRequirement, ManagedAgentRecord, PersonaSnapshotHistoryEntry, RespondTo,
-    DEFAULT_AGENT_PARALLELISM,
+    AgentTemplateVersionRef, AgentToolRequirement, ManagedAgentRecord, PersonaSnapshotHistoryEntry,
+    RespondTo, DEFAULT_AGENT_PARALLELISM,
 };
 use crate::app_state::AppState;
 
@@ -60,6 +60,10 @@ pub struct PersonaEventContent {
     /// before publication and again when an event is imported.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<AgentSkill>,
+    /// Latest immutable Git-backed version. Local environment bindings are
+    /// intentionally absent from this public projection.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub published_version: Option<AgentTemplateVersionRef>,
 }
 
 /// Derive the d-tag (persona slug) from a `AgentDefinition`.
@@ -194,6 +198,9 @@ pub fn persona_from_event(event: &nostr::Event) -> Result<AgentDefinition, Strin
     let created_at = event.created_at.to_human_datetime();
 
     validate_agent_skills(&content.skills)?;
+    if let Some(version) = &content.published_version {
+        version.validate()?;
+    }
     Ok(AgentDefinition {
         id: d_tag.clone(),
         display_name: content.display_name,
@@ -212,6 +219,8 @@ pub fn persona_from_event(event: &nostr::Event) -> Result<AgentDefinition, Strin
         env_vars: BTreeMap::new(),
         tool_requirements: content.tool_requirements,
         skills: content.skills,
+        published_version: content.published_version,
+        published_version_env_vars: None,
         respond_to: content.respond_to,
         respond_to_allowlist: content.respond_to_allowlist,
         parallelism: content.parallelism,
@@ -432,6 +441,7 @@ pub fn persona_event_content(record: &AgentDefinition) -> PersonaEventContent {
         parallelism: record.parallelism,
         tool_requirements: record.tool_requirements.clone(),
         skills: record.skills.clone(),
+        published_version: record.published_version.clone(),
     }
 }
 

@@ -21,6 +21,8 @@ fn requirement(required: bool) -> AgentToolRequirement {
 
 fn record(required: bool) -> ManagedAgentRecord {
     let definition = crate::managed_agents::AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "analytics".to_string(),
         display_name: "Analytics".to_string(),
         avatar_url: None,

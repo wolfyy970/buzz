@@ -1,13 +1,22 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { hasOutdatedAgentTemplateInstances } from "./agentTemplateUpdatePreview.ts";
+import {
+  hasOutdatedAgentTemplateInstances,
+  shortAgentTemplateVersionToken,
+} from "./agentTemplateUpdatePreview.ts";
 
 function preview(agents) {
   return {
     personaId: "persona-1",
     personaName: "Analytics",
-    targetVersion: "version-2",
+    targetVersion: {
+      repoAddress: `30617:${"a".repeat(64)}:buzz-agent-templates`,
+      commitOid: "b".repeat(40),
+      artifactPath: `templates/analytics/versions/${"c".repeat(64)}/template.json`,
+      artifactSha256: "c".repeat(64),
+    },
+    targetVersionToken: "version-2",
     agents,
   };
 }
@@ -40,4 +49,14 @@ test("does not open a review when every linked agent is current", () => {
     ),
     false,
   );
+});
+
+test("shows the commit from a full immutable version token", () => {
+  const token = `git:30617:${"a".repeat(64)}:buzz-agent-templates:${"b".repeat(
+    40,
+  )}:templates/analytics/versions/${"c".repeat(64)}/template.json:${"c".repeat(
+    64,
+  )}`;
+  assert.equal(shortAgentTemplateVersionToken(token), "bbbbbbb");
+  assert.equal(shortAgentTemplateVersionToken(null), "unversioned");
 });

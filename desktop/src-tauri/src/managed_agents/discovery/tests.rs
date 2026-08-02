@@ -186,6 +186,8 @@ fn classifies_cli_missing_when_adapter_found_but_cli_absent() {
 
 fn persona_with_runtime(id: &str, runtime: Option<&str>) -> crate::managed_agents::AgentDefinition {
     crate::managed_agents::AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: id.to_string(),
         display_name: id.to_string(),
         avatar_url: None,

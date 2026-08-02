@@ -24,6 +24,20 @@ fn persona(updated_at: &str) -> crate::managed_agents::AgentDefinition {
         updated_at: updated_at.to_string(),
         tool_requirements: Vec::new(),
         skills: Vec::new(),
+        published_version: None,
+        published_version_env_vars: None,
+    }
+}
+
+fn version(commit: char) -> AgentTemplateVersionRef {
+    AgentTemplateVersionRef {
+        repo_address: format!("30617:{}:buzz-agent-templates", "a".repeat(64)),
+        commit_oid: commit.to_string().repeat(40),
+        artifact_path: format!(
+            "templates/analytics/versions/{}/template.json",
+            "c".repeat(64)
+        ),
+        artifact_sha256: "c".repeat(64),
     }
 }
 
@@ -65,20 +79,22 @@ fn selection_rejects_duplicates() {
 }
 
 #[test]
-fn expected_version_check_rejects_a_newer_locked_persona_head() {
-    let previewed = persona("2026-08-02T10:00:00.000000001Z");
-    let edited = persona("2026-08-02T10:00:00.000000002Z");
-    let expected = persona_version(&previewed);
+fn expected_version_check_rejects_a_newer_published_version() {
+    let mut previewed = persona("2026-08-02T10:00:00.000000001Z");
+    previewed.published_version = Some(version('b'));
+    let mut edited = previewed.clone();
+    edited.published_version = Some(version('d'));
+    let expected = previewed.published_version.clone().unwrap();
 
     assert_eq!(
-        checked_persona_version(&previewed, &expected).unwrap(),
+        checked_published_version(&previewed, &expected).unwrap(),
         expected
     );
     assert!(
-        checked_persona_version(&edited, &expected)
+        checked_published_version(&edited, &expected)
             .unwrap_err()
-            .contains("changed while you were reviewing"),
-        "the head reloaded under the store lock must be revalidated"
+            .contains("newer template version"),
+        "the published version reloaded under the store lock must be revalidated"
     );
 }
 

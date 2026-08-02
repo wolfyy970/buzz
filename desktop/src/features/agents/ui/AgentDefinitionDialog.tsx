@@ -88,6 +88,7 @@ import {
 } from "./addCustomHarness";
 import { AgentTemplateImpactPreview } from "./AgentTemplateImpactPreview";
 import { useAgentTemplateResourcesDraft } from "./useAgentTemplateResourcesDraft";
+import { useAgentDefinitionSubmission } from "./useAgentDefinitionSubmission";
 import type { AgentDefinitionDialogProps } from "./AgentDefinitionDialogTypes";
 export type { AgentDefinitionSubmitOptions } from "./AgentDefinitionDialogTypes";
 
@@ -144,6 +145,7 @@ export function AgentDefinitionDialog({
   const [isAvatarUploadPending, setIsAvatarUploadPending] =
     React.useState(false);
   const [hasUserChanges, setHasUserChanges] = React.useState(false);
+  const submission = useAgentDefinitionSubmission(onSubmit);
   const resourcesDraft = useAgentTemplateResourcesDraft({
     createSubmitBlocked,
     createSubmitBlockReason,
@@ -296,14 +298,13 @@ export function AgentDefinitionDialog({
       setIsAvatarUploadPending(false);
       setHasUserChanges(false);
       setIsAddHarnessOpen(false);
-      // isRuntimeAutoSeededRef and hasSeededForOpenRef are NOT reset here — the
-      // [initialValues, open] effect resets both when the dialog re-opens.
+      // The open effect resets both runtime-seeding refs when the dialog reopens.
     }
 
     onOpenChange(next);
   }
 
-  async function handleSubmit() {
+  async function handleSubmit(action: "save" | "publish") {
     // Keep Enter from bypassing the same credential gate as the button.
     if (!initialValues || !localModeSatisfied || !canSubmit) return;
 
@@ -348,24 +349,20 @@ export function AgentDefinitionDialog({
     };
 
     if ("id" in initialValues) {
-      await onSubmit(
-        {
-          id: initialValues.id,
-          ...baseInput,
-        },
-        {
-          publishCatalogUpdates: publishCatalogUpdatesOnSave && hasUserChanges,
-        },
+      await submission.submit(
+        { id: initialValues.id, ...baseInput },
+        action,
+        publishCatalogUpdatesOnSave && hasUserChanges,
       );
       return;
     }
 
-    await onSubmit(baseInput, { publishCatalogUpdates: false });
+    await submission.submit(baseInput, "save", false);
   }
 
   function handleSubmitForm(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    void handleSubmit();
+    void handleSubmit(isCreateMode ? "save" : "publish");
   }
 
   const selectedRuntime = runtimes.find((p) => p.id === runtime);
@@ -734,7 +731,10 @@ export function AgentDefinitionDialog({
             canSubmit={canSubmit}
             isAvatarUploadPending={isAvatarUploadPending}
             isPending={isPending}
+            isTemplateEdit={!isCreateMode}
             onCancel={() => handleOpenChange(false)}
+            onSaveTemplate={() => void handleSubmit("save")}
+            pendingAction={submission.pendingAction}
             publishesCatalogUpdates={
               publishCatalogUpdatesOnSave && hasUserChanges
             }

@@ -114,5 +114,7 @@ pub(super) async fn update_persona_with<R: Send + 'static>(
     .await
     .map_err(|e| format!("spawn_blocking failed: {e}"))??;
 
-    Ok((result, retained))
+    let mut public_result = result;
+    public_result.published_version_env_vars = None;
+    Ok((public_result, retained))
 }

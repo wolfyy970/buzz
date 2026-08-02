@@ -136,6 +136,8 @@ fn definition_from_snapshot(
         env_vars: Default::default(),
         tool_requirements: member.definition.tool_requirements.clone(),
         skills: member.definition.skills.clone(),
+        published_version: None,
+        published_version_env_vars: None,
         respond_to,
         respond_to_allowlist: behavior.respond_to_allowlist,
         parallelism: behavior.parallelism,

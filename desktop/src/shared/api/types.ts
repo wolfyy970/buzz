@@ -680,12 +680,22 @@ export type AgentPersona = {
   toolRequirements: AgentToolRequirement[];
   /** Portable instruction sets and supporting files bundled with this template. */
   skills: AgentSkill[];
+  /** Latest immutable template version published to Buzz-hosted Git. */
+  publishedVersion: AgentTemplateVersionRef | null;
   /** NIP-AP behavioral defaults (wire shape). Null/empty = unset. */
   respondTo: RespondToMode | null;
   respondToAllowlist: string[];
   parallelism: number | null;
   createdAt: string;
   updatedAt: string;
+};
+
+/** Full authority for one immutable agent template version. */
+export type AgentTemplateVersionRef = {
+  repoAddress: string;
+  commitOid: string;
+  artifactPath: string;
+  artifactSha256: string;
 };
 
 /**

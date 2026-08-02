@@ -1,6 +1,7 @@
 import { invokeTauri } from "@/shared/api/tauri";
 import type {
   AgentPersona,
+  AgentTemplateVersionRef,
   CreatePersonaInput,
   RespondToMode,
   UpdatePersonaInput,
@@ -28,6 +29,7 @@ export type RawPersona = {
   env_vars?: Record<string, string>;
   tool_requirements?: AgentPersona["toolRequirements"];
   skills?: AgentPersona["skills"];
+  published_version?: AgentTemplateVersionRef | null;
   respond_to?: string | null;
   respond_to_allowlist?: string[];
   parallelism?: number | null;
@@ -60,6 +62,7 @@ export function fromRawPersona(persona: RawPersona): AgentPersona {
     envVars: persona.env_vars ?? {},
     toolRequirements: persona.tool_requirements ?? [],
     skills: persona.skills ?? [],
+    publishedVersion: persona.published_version ?? null,
     respondTo: (persona.respond_to as RespondToMode | undefined) ?? null,
     respondToAllowlist: persona.respond_to_allowlist ?? [],
     parallelism: persona.parallelism ?? null,

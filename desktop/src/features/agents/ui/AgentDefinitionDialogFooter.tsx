@@ -4,7 +4,10 @@ type AgentDefinitionDialogFooterProps = {
   canSubmit: boolean;
   isAvatarUploadPending: boolean;
   isPending: boolean;
+  isTemplateEdit: boolean;
   onCancel: () => void;
+  onSaveTemplate: () => void;
+  pendingAction: "save" | "publish" | null;
   publishesCatalogUpdates: boolean;
   submitBlockReason: string | null;
   submitLabel: string;
@@ -14,7 +17,10 @@ export function AgentDefinitionDialogFooter({
   canSubmit,
   isAvatarUploadPending,
   isPending,
+  isTemplateEdit,
   onCancel,
+  onSaveTemplate,
+  pendingAction,
   publishesCatalogUpdates,
   submitBlockReason,
   submitLabel,
@@ -39,6 +45,15 @@ export function AgentDefinitionDialogFooter({
             published when you save.
           </p>
         ) : null}
+        {isTemplateEdit ? (
+          <p
+            className="max-w-md text-xs text-muted-foreground"
+            data-testid="persona-dialog-template-version-notice"
+          >
+            Publishing creates a version you can use to update agents. Running
+            agents do not change.
+          </p>
+        ) : null}
       </div>
 
       <div className="flex items-center gap-2">
@@ -50,6 +65,19 @@ export function AgentDefinitionDialogFooter({
         >
           Cancel
         </Button>
+        {isTemplateEdit ? (
+          <Button
+            data-testid="persona-dialog-save-template"
+            disabled={!canSubmit}
+            onClick={onSaveTemplate}
+            type="button"
+            variant="outline"
+          >
+            {isPending && pendingAction === "save"
+              ? "Saving..."
+              : "Save template"}
+          </Button>
+        ) : null}
         <Button
           data-testid="persona-dialog-submit"
           disabled={!canSubmit}
@@ -57,12 +85,16 @@ export function AgentDefinitionDialogFooter({
           type="submit"
         >
           {isPending
-            ? "Saving..."
+            ? pendingAction === "publish"
+              ? "Publishing..."
+              : "Saving..."
             : isAvatarUploadPending
               ? "Uploading..."
-              : publishesCatalogUpdates
-                ? "Save and publish"
-                : submitLabel}
+              : isTemplateEdit
+                ? "Publish version"
+                : publishesCatalogUpdates
+                  ? "Save and publish"
+                  : submitLabel}
         </Button>
       </div>
     </div>

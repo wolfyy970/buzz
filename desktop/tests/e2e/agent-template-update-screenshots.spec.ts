@@ -190,12 +190,21 @@ test.describe("agent template update screenshots", () => {
       .fill(
         "Analyze campaign performance, explain what changed, and recommend the next action.",
       );
-    const saveButton = templateEditor.getByTestId("persona-dialog-submit");
-    await expect(saveButton).toBeEnabled({ timeout: 10_000 });
+    await expect(
+      templateEditor.getByTestId("persona-dialog-template-version-notice"),
+    ).toHaveText(
+      "Publishing creates a version you can use to update agents. Running agents do not change.",
+    );
+    await expect(
+      templateEditor.getByTestId("persona-dialog-save-template"),
+    ).toHaveText("Save template");
+    const publishButton = templateEditor.getByTestId("persona-dialog-submit");
+    await expect(publishButton).toHaveText("Publish version");
+    await expect(publishButton).toBeEnabled({ timeout: 10_000 });
     const commandsBeforeSave = await page.evaluate(
       () => window.__BUZZ_E2E_COMMAND_LOG__?.length ?? 0,
     );
-    await saveButton.click();
+    await publishButton.click();
     await expect(templateEditor).not.toBeVisible({ timeout: 10_000 });
 
     const updateReview = page.getByTestId("template-publish-review");
@@ -214,6 +223,9 @@ test.describe("agent template update screenshots", () => {
       `Update agents using ${TEMPLATE_NAME}?`,
     );
     await expect(updateReview).toContainText("Choose which agents");
+    await expect(updateReview).toContainText(
+      "Safe to update now. Buzz stops new work and lets the current task finish. If it cannot, the new version recovers it after the update.",
+    );
     await expect(updateReview).toContainText("Skills in this update");
     await expect(updateReview).toContainText("Changed campaign-analysis");
     await expect(updateReview).toContainText(
@@ -228,16 +240,17 @@ test.describe("agent template update screenshots", () => {
       "template-publish-and-update",
     );
     await expect(updateButton).toHaveText("Update 3 agents");
-    await capture(
-      page,
-      updateReview,
-      "03-update-selection-review-after-save.png",
-    );
+    await capture(page, updateReview, "03-update-selection-review.png");
 
     await updateButton.click();
     await expect(
       updateReview.getByTestId("template-rollout-progress"),
     ).toBeVisible({ timeout: 2_000 });
+    await expect(
+      updateReview.getByTestId("template-rollout-progress"),
+    ).toContainText(
+      "Buzz stops new work, lets the current task finish, then starts the selected version. If a task can’t finish cleanly, Buzz recovers it after the update.",
+    );
     // The mock rollout settles after 700 ms. A short animation ceiling lets
     // the progress surface paint without waiting through the entire rollout.
     await capture(page, updateReview, "04-pending-update-progress.png", 75);
@@ -251,5 +264,94 @@ test.describe("agent template update screenshots", () => {
       "Updated · starts on this version next time",
     );
     await capture(page, updateReview, "05-completed-update.png");
+  });
+
+  test("keeps the saved edit when version publishing fails", async ({
+    page,
+  }) => {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.evaluate(() => {
+      if (window.__BUZZ_E2E__?.mock) {
+        window.__BUZZ_E2E__.mock.publishAgentTemplateVersionError =
+          "Mock Git failure";
+      }
+    });
+    await page.getByTestId("open-agents-view").click();
+    await page
+      .getByRole("button", {
+        exact: true,
+        name: `${TEMPLATE_NAME} agent profile`,
+      })
+      .click();
+    await page.getByTestId("user-profile-edit-agent").click();
+    await page
+      .getByTestId("agent-edit-scope-dialog")
+      .getByTestId("agent-edit-scope-template")
+      .click();
+
+    const templateEditor = page.getByTestId("persona-dialog");
+    const savedInstructions =
+      "Keep the template edit even if publishing cannot reach Git.";
+    await page.locator("#persona-system-prompt").fill(savedInstructions);
+    await templateEditor.getByTestId("persona-dialog-submit").click();
+
+    await expect(templateEditor).not.toBeVisible({ timeout: 10_000 });
+    await expect(
+      page.getByText("Template saved. Version wasn’t published. Try again.", {
+        exact: true,
+      }),
+    ).toBeVisible();
+
+    await page.getByTestId("user-profile-edit-agent").click();
+    await page
+      .getByTestId("agent-edit-scope-dialog")
+      .getByTestId("agent-edit-scope-template")
+      .click();
+    await expect(page.locator("#persona-system-prompt")).toHaveValue(
+      savedInstructions,
+    );
+  });
+
+  test("saving the mutable template does not open an agent update", async ({
+    page,
+  }) => {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("open-agents-view").click();
+    await page
+      .getByRole("button", {
+        exact: true,
+        name: `${TEMPLATE_NAME} agent profile`,
+      })
+      .click();
+    await page.getByTestId("user-profile-edit-agent").click();
+    await page
+      .getByTestId("agent-edit-scope-dialog")
+      .getByTestId("agent-edit-scope-template")
+      .click();
+
+    const templateEditor = page.getByTestId("persona-dialog");
+    await page
+      .locator("#persona-system-prompt")
+      .fill("Save this draft without publishing a template version.");
+    const commandCount = await page.evaluate(
+      () => window.__BUZZ_E2E_COMMAND_LOG__?.length ?? 0,
+    );
+    await templateEditor.getByTestId("persona-dialog-save-template").click();
+    await expect(templateEditor).not.toBeVisible({ timeout: 10_000 });
+    await expect(page.getByTestId("template-publish-review")).not.toBeVisible();
+
+    const templateCommands = await page.evaluate((start) => {
+      return (window.__BUZZ_E2E_COMMAND_LOG__ ?? [])
+        .slice(start)
+        .map((entry) => entry.command)
+        .filter((command) =>
+          [
+            "update_persona",
+            "publish_agent_template_version",
+            "preview_agent_template_update",
+          ].includes(command),
+        );
+    }, commandCount);
+    expect(templateCommands).toEqual(["update_persona"]);
   });
 });

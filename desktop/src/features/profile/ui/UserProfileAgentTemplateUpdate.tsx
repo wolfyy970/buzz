@@ -5,11 +5,13 @@ import { hasOutdatedAgentTemplateInstances } from "@/features/agents/lib/agentTe
 import { AgentTemplateUpdateDialog } from "@/features/agents/ui/AgentTemplateUpdateDialog";
 import {
   applyAgentTemplateUpdate,
+  publishAgentTemplateVersion,
   previewAgentTemplateUpdate,
   type AgentTemplateUpdatePreview,
   type ApplyAgentTemplateUpdateResponse,
+  type PublishAgentTemplateVersionResult,
 } from "@/shared/api/tauriAgentTemplateUpdates";
-import type { UpdatePersonaInput } from "@/shared/api/types";
+import type { AgentPersona } from "@/shared/api/types";
 
 export type ProfileAgentTemplateUpdateController = {
   apply: (
@@ -21,7 +23,7 @@ export type ProfileAgentTemplateUpdateController = {
   onOpenChange: (open: boolean) => void;
   preview: AgentTemplateUpdatePreview | null;
   result: ApplyAgentTemplateUpdateResponse | null;
-  reviewSavedTemplate: (input: UpdatePersonaInput) => Promise<void>;
+  publishSavedTemplate: (persona: AgentPersona) => Promise<void>;
 };
 
 export function useProfileAgentTemplateUpdate({
@@ -36,10 +38,24 @@ export function useProfileAgentTemplateUpdate({
   const [error, setError] = React.useState<string | null>(null);
   const [isPending, setIsPending] = React.useState(false);
 
-  const reviewSavedTemplate = React.useCallback(
-    async (input: UpdatePersonaInput) => {
+  const publishSavedTemplate = React.useCallback(
+    async (persona: AgentPersona) => {
+      let published: PublishAgentTemplateVersionResult;
       try {
-        const nextPreview = await previewAgentTemplateUpdate(input.id);
+        published = await publishAgentTemplateVersion({
+          personaId: persona.id,
+          expectedUpdatedAt: persona.updatedAt,
+        });
+      } catch {
+        toast.error("Template saved. Version wasn’t published. Try again.");
+        return;
+      }
+      toast.success(`Published a new version of ${published.personaName}.`);
+      try {
+        const nextPreview = await previewAgentTemplateUpdate(
+          published.personaId,
+          published.version,
+        );
         if (hasOutdatedAgentTemplateInstances(nextPreview)) {
           setResult(null);
           setError(null);
@@ -48,8 +64,8 @@ export function useProfileAgentTemplateUpdate({
       } catch (previewError) {
         toast.error(
           previewError instanceof Error
-            ? `${input.displayName} was saved, but Buzz could not load the affected agents: ${previewError.message}`
-            : `${input.displayName} was saved, but Buzz could not load the affected agents.`,
+            ? `${published.personaName} was published, but Buzz could not load the affected agents: ${previewError.message}`
+            : `${published.personaName} was published, but Buzz could not load the affected agents.`,
         );
       }
     },
@@ -103,7 +119,7 @@ export function useProfileAgentTemplateUpdate({
     onOpenChange,
     preview,
     result,
-    reviewSavedTemplate,
+    publishSavedTemplate,
   };
 }
 

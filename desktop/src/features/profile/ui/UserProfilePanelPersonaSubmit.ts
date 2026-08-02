@@ -14,6 +14,7 @@ type SubmitProfilePersonaDialogOptions = {
   createPersona: (input: CreatePersonaInput) => Promise<AgentPersona>;
   input: CreatePersonaInput | UpdatePersonaInput;
   onDone: () => void;
+  showUpdateSuccess?: boolean;
   updatePersona: (input: UpdatePersonaInput) => Promise<AgentPersona>;
 };
 
@@ -22,17 +23,22 @@ export async function submitProfilePersonaDialog({
   createPersona,
   input,
   onDone,
+  showUpdateSuccess = true,
   updatePersona,
 }: SubmitProfilePersonaDialogOptions) {
   try {
+    let savedPersona: AgentPersona;
     if ("id" in input) {
       // Saving a template and applying it to an instance are separate user
       // decisions. Keep every linked instance pinned to its current revision
       // until the affected-agent review explicitly applies the new snapshot.
-      await updatePersona(input);
-      toast.success(`Updated ${input.displayName}.`);
+      savedPersona = await updatePersona(input);
+      if (showUpdateSuccess) {
+        toast.success(`Updated ${input.displayName}.`);
+      }
     } else {
       const persona = await createPersona(input);
+      savedPersona = persona;
       try {
         const created = await createManagedAgentForPersona(persona);
         if (created.spawnError) {
@@ -57,11 +63,11 @@ export async function submitProfilePersonaDialog({
     }
 
     onDone();
-    return true;
+    return savedPersona;
   } catch (error) {
     toast.error(
       error instanceof Error ? error.message : "Failed to save agent.",
     );
-    return false;
+    return null;
   }
 }

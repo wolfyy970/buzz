@@ -28,3 +28,22 @@ test("fromRawPersona maps source_team to sourceTeam", () => {
 
   assert.equal(persona.sourceTeam, "team-research");
 });
+
+test("fromRawPersona maps the latest published template version", () => {
+  const publishedVersion = {
+    repoAddress: `30617:${"a".repeat(64)}:buzz-agent-templates`,
+    commitOid: "b".repeat(40),
+    artifactPath: `templates/analytics/versions/${"c".repeat(64)}/template.json`,
+    artifactSha256: "c".repeat(64),
+  };
+
+  const persona = fromRawPersona(
+    rawPersona({ published_version: publishedVersion }),
+  );
+
+  assert.deepEqual(persona.publishedVersion, publishedVersion);
+});
+
+test("fromRawPersona defaults an unpublished template to null", () => {
+  assert.equal(fromRawPersona(rawPersona()).publishedVersion, null);
+});

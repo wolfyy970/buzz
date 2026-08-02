@@ -43,6 +43,7 @@ import type {
 } from "@/shared/api/tauriPersonas";
 import {
   applyAgentTemplateUpdate,
+  publishAgentTemplateVersion,
   previewAgentTemplateUpdate,
   type AgentTemplateUpdatePreview,
   type ApplyAgentTemplateUpdateResponse,
@@ -195,7 +196,10 @@ export function usePersonaActions() {
     backendIntent?: BackendIntent | null,
     launchContext?: AgentLaunchContext,
     targetChannel?: Pick<Channel, "id" | "name"> | null,
-    options?: { publishCatalogUpdates?: boolean },
+    options?: {
+      publishCatalogUpdates?: boolean;
+      publishTemplateVersion?: boolean;
+    },
   ): Promise<boolean> {
     if (isPersonaSubmitPending) {
       return false;
@@ -205,37 +209,72 @@ export function usePersonaActions() {
     setIsPersonaSubmitPending(true);
     try {
       if ("id" in input) {
+        let savedPersona: AgentPersona;
         // "Save and publish" promises the community catalog sees this edit, so
         // it must use the command that awaits the relay. A plain save only
         // enqueues the head and cannot report the outcome.
         if (options?.publishCatalogUpdates) {
           const result =
             await updatePersonaAndPublishMutation.mutateAsync(input);
+          savedPersona = result.persona;
           if (result.publicationStatus === "queued" && result.relayMessage) {
             console.warn(
               `[updatePersonaAndPublish] relay publication queued: ${result.relayMessage}`,
             );
           }
-          setPersonaNoticeMessage(
-            personaSaveNotice(input.displayName, result.publicationStatus),
-          );
-        } else {
-          await updatePersonaMutation.mutateAsync(input);
-          setPersonaNoticeMessage(personaSaveNotice(input.displayName, null));
-        }
-        try {
-          const preview = await previewAgentTemplateUpdate(input.id);
-          if (hasOutdatedAgentTemplateInstances(preview)) {
-            setTemplateUpdateResult(null);
-            setTemplateUpdateError(null);
-            setTemplateUpdatePreview(preview);
+          if (!options?.publishTemplateVersion) {
+            setPersonaNoticeMessage(
+              personaSaveNotice(input.displayName, result.publicationStatus),
+            );
           }
-        } catch (error) {
-          setPersonaErrorMessage(
-            error instanceof Error
-              ? `${input.displayName} was saved, but Buzz could not load the affected agents: ${error.message}`
-              : `${input.displayName} was saved, but Buzz could not load the affected agents.`,
-          );
+        } else {
+          savedPersona = await updatePersonaMutation.mutateAsync(input);
+          if (!options?.publishTemplateVersion) {
+            setPersonaNoticeMessage(personaSaveNotice(input.displayName, null));
+          }
+        }
+
+        if (options?.publishTemplateVersion) {
+          try {
+            const published = await publishAgentTemplateVersion({
+              personaId: savedPersona.id,
+              expectedUpdatedAt: savedPersona.updatedAt,
+            });
+            queryClient.setQueryData<AgentPersona[]>(
+              personasQueryKey,
+              (current) =>
+                current?.map((persona) =>
+                  persona.id === published.personaId
+                    ? { ...persona, publishedVersion: published.version }
+                    : persona,
+                ),
+            );
+            setPersonaNoticeMessage(
+              `Published a new version of ${published.personaName}.`,
+            );
+            try {
+              const preview = await previewAgentTemplateUpdate(
+                published.personaId,
+                published.version,
+              );
+              if (hasOutdatedAgentTemplateInstances(preview)) {
+                setTemplateUpdateResult(null);
+                setTemplateUpdateError(null);
+                setTemplateUpdatePreview(preview);
+              }
+            } catch (error) {
+              setPersonaErrorMessage(
+                error instanceof Error
+                  ? `${published.personaName} was published, but Buzz could not load the affected agents: ${error.message}`
+                  : `${published.personaName} was published, but Buzz could not load the affected agents.`,
+              );
+            }
+          } catch {
+            setPersonaNoticeMessage(null);
+            setPersonaErrorMessage(
+              "Template saved. Version wasn’t published. Try again.",
+            );
+          }
         }
       } else {
         const runtime = availableRuntimes.find(

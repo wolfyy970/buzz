@@ -201,6 +201,18 @@ pub async fn get_channels(state: State<'_, AppState>) -> Result<Vec<ChannelInfo>
         }
     }
 
+    // The template-version repository is bound to a private owner-only
+    // channel for normal relay authorization. It is product storage, not a
+    // conversation, so hide only Buzz's exact deterministic channel.
+    let relay_scope = crate::relay::relay_api_base_url_with_override(&state);
+    channels.retain(|channel| {
+        !super::agent_template_versions::is_internal_agent_template_channel(
+            channel,
+            &relay_scope,
+            &my_pubkey,
+        )
+    });
+
     // Populate member_count by batch-fetching kind:39002 for every listed
     // channel and counting unique p-tag pubkeys. The kind:40901 summary
     // sidecar that channel_info_from_event prefers isn't emitted by the

@@ -1,6 +1,7 @@
 import { invokeTauri } from "@/shared/api/tauri";
 import type {
   AgentProjectScope,
+  AgentTemplateVersionRef,
   AgentToolRequirement,
 } from "@/shared/api/types";
 import type { AgentSkill } from "@/shared/api/agentSkillTypes";
@@ -9,7 +10,7 @@ export type AgentTemplateUpdateTarget = {
   pubkey: string;
   name: string;
   currentVersion: string | null;
-  targetVersion: string;
+  targetVersion: AgentTemplateVersionRef;
   runningRelays: string[];
   eligible: boolean;
   blockedReason: string | null;
@@ -41,7 +42,8 @@ export type AgentTemplateSkillChanges = {
 export type AgentTemplateUpdatePreview = {
   personaId: string;
   personaName: string;
-  targetVersion: string;
+  targetVersion: AgentTemplateVersionRef;
+  targetVersionToken: string;
   targetToolRequirements: AgentToolRequirement[];
   targetSkills: AgentSkill[];
   agents: AgentTemplateUpdateTarget[];
@@ -62,13 +64,14 @@ export type AgentTemplateUpdateResult = {
 
 export type ApplyAgentTemplateUpdateResponse = {
   personaId: string;
-  version: string;
+  version: AgentTemplateVersionRef;
   rolledBack: boolean;
   agents: AgentTemplateUpdateResult[];
 };
 
 export async function previewAgentTemplateUpdate(
   personaId: string,
+  targetVersion?: AgentTemplateVersionRef,
 ): Promise<AgentTemplateUpdatePreview> {
   const preview = await invokeTauri<
     Omit<
@@ -78,7 +81,7 @@ export async function previewAgentTemplateUpdate(
       targetToolRequirements?: AgentToolRequirement[];
       targetSkills?: AgentSkill[];
     }
-  >("preview_agent_template_update", { personaId });
+  >("preview_agent_template_update", { personaId, targetVersion });
   return {
     ...preview,
     targetToolRequirements: preview.targetToolRequirements ?? [],
@@ -104,12 +107,40 @@ export async function previewAgentTemplateUpdate(
 
 export async function applyAgentTemplateUpdate(input: {
   personaId: string;
-  expectedVersion: string;
+  expectedVersion: AgentTemplateVersionRef;
   selectedPubkeys: string[];
   connectionBindingsByPubkey: Record<string, Record<string, string>>;
 }): Promise<ApplyAgentTemplateUpdateResponse> {
   return invokeTauri<ApplyAgentTemplateUpdateResponse>(
     "apply_agent_template_update",
     { input },
+  );
+}
+
+export type PublishAgentTemplateVersionResult = {
+  personaId: string;
+  personaName: string;
+  version: AgentTemplateVersionRef;
+};
+
+export function publishAgentTemplateVersionPayload(input: {
+  personaId: string;
+  expectedUpdatedAt: string;
+}) {
+  return {
+    input: {
+      personaId: input.personaId,
+      expectedUpdatedAt: input.expectedUpdatedAt,
+    },
+  };
+}
+
+export async function publishAgentTemplateVersion(input: {
+  personaId: string;
+  expectedUpdatedAt: string;
+}): Promise<PublishAgentTemplateVersionResult> {
+  return invokeTauri<PublishAgentTemplateVersionResult>(
+    "publish_agent_template_version",
+    publishAgentTemplateVersionPayload(input),
   );
 }

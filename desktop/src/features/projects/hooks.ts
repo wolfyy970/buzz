@@ -41,6 +41,7 @@ import type {
 import { summarizeProjectActivityEvents } from "./projectActivity.mjs";
 import { resolveProjectDefaultBranch } from "./lib/projectBranches";
 import { effectiveCloneUrls } from "./lib/projectCloneUrl";
+import { dedupProjectEvents } from "./lib/projectEvents";
 import type { ProjectIssue } from "./projectIssues.mjs";
 import { projectIssueEventsToIssues } from "./projectIssues.mjs";
 import type {
@@ -55,6 +56,7 @@ import {
   projectPullRequestEventsToPullRequests,
 } from "./projectPullRequests.mjs";
 import { fetchProjectsWorkItems } from "./projectWorkItems";
+import { isInternalAgentTemplateProject } from "./lib/internalAgentTemplateProject";
 
 export type {
   ProjectIssue,
@@ -80,6 +82,7 @@ export type Project = {
   status: string;
   defaultBranch: string;
   repoAddress: string;
+  purpose?: string | null;
 };
 
 export type RepoState = {
@@ -227,27 +230,12 @@ export function eventToProject(
     status: getTag(event, "status") ?? "active",
     defaultBranch: getTag(event, "default-branch") ?? "main",
     repoAddress: projectCoordinate({ owner: event.pubkey, dtag: d }),
+    purpose: getTag(event, "buzz-purpose") ?? null,
   };
 }
 
-function dedup(events: RelayEvent[]): RelayEvent[] {
-  const best = new Map<string, RelayEvent>();
-
-  for (const e of events) {
-    const d = getTag(e, "d") ?? "";
-    const key = `${e.pubkey}:${e.kind}:${d}`;
-    const prev = best.get(key);
-
-    if (!prev || e.created_at > prev.created_at) {
-      best.set(key, e);
-    }
-  }
-
-  return [...best.values()];
-}
-
 export async function fetchProjects(): Promise<Project[]> {
-  const [events, deletionEvents] = await Promise.all([
+  const [events, deletionEvents, identity] = await Promise.all([
     relayClient.fetchEvents({
       kinds: [KIND_REPO_ANNOUNCEMENT],
       limit: 200,
@@ -256,13 +244,16 @@ export async function fetchProjects(): Promise<Project[]> {
       kinds: [KIND_DELETION],
       limit: 500,
     }),
+    getIdentity(),
   ]);
 
-  return dedup(events)
+  return dedupProjectEvents(events)
     .map((event) => eventToProject(event, getCachedRelayOrigin()))
     .filter(
       (project) =>
-        !isHiddenLocally(project) && !isDeletedByA(project, deletionEvents),
+        !isHiddenLocally(project) &&
+        !isDeletedByA(project, deletionEvents) &&
+        !isInternalAgentTemplateProject(project, identity.pubkey),
     )
     .sort((a, b) => b.createdAt - a.createdAt);
 }
@@ -294,7 +285,7 @@ async function fetchProject(projectId: string): Promise<Project | null> {
     limit: 10,
   });
 
-  const deduped = dedup(events).filter(
+  const deduped = dedupProjectEvents(events).filter(
     (event) => !owner || event.pubkey.toLowerCase() === owner,
   );
   const project =
@@ -302,6 +293,10 @@ async function fetchProject(projectId: string): Promise<Project | null> {
       ? eventToProject(deduped[0], getCachedRelayOrigin())
       : null;
   if (!project) {
+    return null;
+  }
+  const identity = await getIdentity();
+  if (isInternalAgentTemplateProject(project, identity.pubkey)) {
     return null;
   }
 

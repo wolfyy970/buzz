@@ -10,10 +10,12 @@ use crate::{
         agent_readiness, find_managed_agent_mut, known_acp_runtime, load_global_agent_config,
         load_managed_agents, load_personas, managed_agent_runtime_keys,
         resolve_effective_agent_env, save_managed_agents, start_managed_agent_runtime_pair_lazy,
-        stop_managed_agent_process, AgentReadiness, BackendKind, ManagedAgentRecord,
-        ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
+        stop_managed_agent_process, AgentReadiness, AgentTemplateVersionRef, BackendKind,
+        ManagedAgentRecord, ManagedAgentRuntimeKey, ManagedAgentRuntimeLifecycle,
     },
 };
+
+use super::agent_template_versions::load_agent_template_version;
 
 const UPDATE_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const UPDATE_READY_POLL: Duration = Duration::from_millis(200);
@@ -22,7 +24,7 @@ const UPDATE_READY_POLL: Duration = Duration::from_millis(200);
 #[serde(rename_all = "camelCase")]
 pub struct ApplyAgentTemplateUpdateRequest {
     pub persona_id: String,
-    pub expected_version: String,
+    pub expected_version: AgentTemplateVersionRef,
     pub selected_pubkeys: Vec<String>,
     #[serde(default)]
     pub connection_bindings_by_pubkey: BTreeMap<String, BTreeMap<String, String>>,
@@ -33,7 +35,8 @@ pub struct ApplyAgentTemplateUpdateRequest {
 pub struct AgentTemplateUpdatePreview {
     pub persona_id: String,
     pub persona_name: String,
-    pub target_version: String,
+    pub target_version: AgentTemplateVersionRef,
+    pub target_version_token: String,
     pub target_tool_requirements: Vec<crate::managed_agents::AgentToolRequirement>,
     pub target_skills: Vec<crate::managed_agents::AgentSkill>,
     pub agents: Vec<AgentTemplateUpdateTarget>,
@@ -75,7 +78,7 @@ pub struct AgentTemplateUpdateTarget {
     pub pubkey: String,
     pub name: String,
     pub current_version: Option<String>,
-    pub target_version: String,
+    pub target_version: AgentTemplateVersionRef,
     pub running_relays: Vec<String>,
     pub eligible: bool,
     pub blocked_reason: Option<String>,
@@ -107,27 +110,27 @@ pub struct AgentTemplateUpdateResult {
 #[serde(rename_all = "camelCase")]
 pub struct ApplyAgentTemplateUpdateResponse {
     pub persona_id: String,
-    pub version: String,
+    pub version: AgentTemplateVersionRef,
     pub rolled_back: bool,
     pub agents: Vec<AgentTemplateUpdateResult>,
 }
 
-fn persona_version(persona: &crate::managed_agents::AgentDefinition) -> String {
-    crate::managed_agents::persona_events::persona_snapshot_version(persona)
-}
-
-fn checked_persona_version(
+fn checked_published_version(
     persona: &crate::managed_agents::AgentDefinition,
-    expected_version: &str,
-) -> Result<String, String> {
-    let current_version = persona_version(persona);
+    expected_version: &AgentTemplateVersionRef,
+) -> Result<AgentTemplateVersionRef, String> {
+    let current_version = persona
+        .published_version
+        .as_ref()
+        .ok_or_else(|| "Publish a template version before updating agents.".to_string())?;
     if current_version != expected_version {
         return Err(
-            "This template changed while you were reviewing it. Review the affected agents again."
+            "A newer template version was published while you were reviewing it. Review the affected agents again."
                 .to_string(),
         );
     }
-    Ok(current_version)
+    current_version.validate()?;
+    Ok(current_version.clone())
 }
 
 fn running_relays_for(
@@ -300,29 +303,57 @@ fn validate_selection(
 }
 
 #[tauri::command]
-pub fn preview_agent_template_update(
+pub async fn preview_agent_template_update(
     persona_id: String,
+    target_version: Option<AgentTemplateVersionRef>,
     app: AppHandle,
 ) -> Result<AgentTemplateUpdatePreview, String> {
     let state = app.state::<AppState>();
-    let _store = state
-        .managed_agents_store_lock
-        .lock()
-        .map_err(|error| error.to_string())?;
-    let records = load_managed_agents(&app)?;
-    let personas = load_personas(&app)?;
-    let persona = personas
-        .iter()
-        .find(|persona| persona.id == persona_id)
-        .ok_or_else(|| format!("Template {persona_id} no longer exists."))?;
-    let target_version = persona_version(persona);
+    let (records, mut personas, persona, target_version) = {
+        let _store = state
+            .managed_agents_store_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let records = load_managed_agents(&app)?;
+        let personas = load_personas(&app)?;
+        let persona = personas
+            .iter()
+            .find(|persona| persona.id == persona_id)
+            .cloned()
+            .ok_or_else(|| format!("Template {persona_id} no longer exists."))?;
+        let published = persona
+            .published_version
+            .clone()
+            .ok_or_else(|| "Publish a template version before updating agents.".to_string())?;
+        if target_version
+            .as_ref()
+            .is_some_and(|requested| requested != &published)
+        {
+            return Err(
+                "A newer template version was published. Open the update review again.".to_string(),
+            );
+        }
+        (records, personas, persona, published)
+    };
+    let target_version_token = target_version.authority_token()?;
+    let load_app = app.clone();
+    let load_persona = persona.clone();
+    let load_version = target_version.clone();
+    let target = tokio::task::spawn_blocking(move || {
+        load_agent_template_version(&load_app, &load_persona, &load_version)
+    })
+    .await
+    .map_err(|error| format!("Template version task failed: {error}"))??;
+    if let Some(slot) = personas.iter_mut().find(|item| item.id == persona_id) {
+        *slot = target.clone();
+    }
     let global = load_global_agent_config(&app).unwrap_or_default();
     let preview_rows: Vec<(&ManagedAgentRecord, Option<String>)> = records
         .iter()
         .filter(|record| record.persona_id.as_deref() == Some(persona_id.as_str()))
         .map(|record| {
             let readiness_error = (record.backend == BackendKind::Local)
-                .then(|| prospective_readiness(record, persona, &personas, &global).err())
+                .then(|| prospective_readiness(record, &target, &personas, &global).err())
                 .flatten();
             (
                 record,
@@ -338,8 +369,8 @@ pub fn preview_agent_template_update(
     let mut agents: Vec<AgentTemplateUpdateTarget> = preview_rows
         .into_iter()
         .map(|(record, blocked_reason)| {
-            let bindings = retained_bindings(record, persona);
-            let tool_binding_issues = prospective_record(record, persona, bindings.clone())
+            let bindings = retained_bindings(record, &target);
+            let tool_binding_issues = prospective_record(record, &target, bindings.clone())
                 .and_then(|prospective| {
                     crate::managed_agents::project_connections::agent_tool_binding_issues(
                         &app,
@@ -365,9 +396,9 @@ pub fn preview_agent_template_update(
                 connection_bindings: bindings,
                 tool_changes: tool_changes(
                     &record.pinned_tool_requirements,
-                    &persona.tool_requirements,
+                    &target.tool_requirements,
                 ),
-                skill_changes: skill_changes(&record.pinned_skills, &persona.skills),
+                skill_changes: skill_changes(&record.pinned_skills, &target.skills),
                 tool_binding_issues,
             }
         })
@@ -383,8 +414,9 @@ pub fn preview_agent_template_update(
         persona_id,
         persona_name: persona.display_name.clone(),
         target_version,
-        target_tool_requirements: persona.tool_requirements.clone(),
-        target_skills: persona.skills.clone(),
+        target_version_token,
+        target_tool_requirements: target.tool_requirements,
+        target_skills: target.skills,
         agents,
     })
 }
@@ -615,8 +647,31 @@ pub async fn apply_agent_template_update(
     app: AppHandle,
 ) -> Result<ApplyAgentTemplateUpdateResponse, String> {
     let state = app.state::<AppState>();
+    let (persona_head, target_version) = {
+        let _store = state
+            .managed_agents_store_lock
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let personas = load_personas(&app)?;
+        let persona = personas
+            .iter()
+            .find(|persona| persona.id == input.persona_id)
+            .cloned()
+            .ok_or_else(|| format!("Template {} no longer exists.", input.persona_id))?;
+        let target_version = checked_published_version(&persona, &input.expected_version)?;
+        (persona, target_version)
+    };
+    let load_app = app.clone();
+    let load_persona = persona_head.clone();
+    let load_version = target_version.clone();
+    let target_persona = tokio::task::spawn_blocking(move || {
+        load_agent_template_version(&load_app, &load_persona, &load_version)
+    })
+    .await
+    .map_err(|error| format!("Template version task failed: {error}"))??;
+    let target_version_token = target_version.authority_token()?;
 
-    let (selected, originals, attempted, original_relays, names, prepare_error, target_version) = {
+    let (selected, originals, attempted, original_relays, names, prepare_error) = {
         let _transition = state
             .managed_agent_runtime_transition
             .lock()
@@ -625,16 +680,23 @@ pub async fn apply_agent_template_update(
             .managed_agents_store_lock
             .lock()
             .map_err(|error| error.to_string())?;
-        // Persona writes use the same store lock. Read, validate, and retain
-        // the exact head under that lock so an edit cannot race between the
-        // optimistic version check and the snapshot actually installed.
-        let personas = load_personas(&app)?;
+        // Recheck the published reference under the update transaction. The
+        // artifact was already loaded and verified outside these locks, so a
+        // concurrent publish rejects the update without substituting a newer
+        // mutable head or holding a lock across Git I/O.
+        let mut personas = load_personas(&app)?;
         let persona = personas
             .iter()
             .find(|persona| persona.id == input.persona_id)
             .cloned()
             .ok_or_else(|| format!("Template {} no longer exists.", input.persona_id))?;
-        let target_version = checked_persona_version(&persona, &input.expected_version)?;
+        checked_published_version(&persona, &input.expected_version)?;
+        if let Some(slot) = personas
+            .iter_mut()
+            .find(|candidate| candidate.id == input.persona_id)
+        {
+            *slot = target_persona.clone();
+        }
         let global = load_global_agent_config(&app).unwrap_or_default();
         let mut records = load_managed_agents(&app)?;
         let selected = validate_selection(&records, &input.persona_id, &input.selected_pubkeys)?;
@@ -654,13 +716,13 @@ pub async fn apply_agent_template_update(
                 .iter()
                 .find(|record| record.pubkey.eq_ignore_ascii_case(pubkey))
                 .ok_or_else(|| format!("Agent {pubkey} no longer exists."))?;
-            prospective_readiness(record, &persona, &personas, &global)?;
+            prospective_readiness(record, &target_persona, &personas, &global)?;
             let bindings = input
                 .connection_bindings_by_pubkey
                 .get(pubkey)
                 .cloned()
-                .unwrap_or_else(|| retained_bindings(record, &persona));
-            let prospective = prospective_record(record, &persona, bindings.clone())?;
+                .unwrap_or_else(|| retained_bindings(record, &target_persona));
+            let prospective = prospective_record(record, &target_persona, bindings.clone())?;
             crate::managed_agents::project_connections::validate_agent_project_connections(
                 &app,
                 &prospective,
@@ -712,11 +774,13 @@ pub async fn apply_agent_template_update(
                     }
                 };
                 if let Err(error) = crate::managed_agents::persona_events::advance_persona_snapshot(
-                    record, &persona,
+                    record,
+                    &target_persona,
                 ) {
                     prepare_error = Some(format!("Could not update {}: {error}", record.name));
                     break;
                 }
+                record.persona_source_version = Some(target_version_token.clone());
                 record.connection_bindings =
                     staged_bindings.get(pubkey).cloned().unwrap_or_default();
                 record.updated_at = crate::util::now_iso();
@@ -744,7 +808,6 @@ pub async fn apply_agent_template_update(
             original_relays,
             names,
             prepare_error,
-            target_version,
         )
     };
 

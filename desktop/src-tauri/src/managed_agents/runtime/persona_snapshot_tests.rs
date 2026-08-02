@@ -101,6 +101,39 @@ fn env_only_edit_drifts_until_advanced() {
 }
 
 #[test]
+fn mutable_template_edits_do_not_change_a_published_version_pin() {
+    let mut published = persona_with_env("published prompt", "published key");
+    let version = crate::managed_agents::AgentTemplateVersionRef {
+        repo_address: format!("30617:{}:buzz-agent-templates", "a".repeat(64)),
+        commit_oid: "b".repeat(40),
+        artifact_path: format!("templates/p/versions/{}/template.json", "c".repeat(64)),
+        artifact_sha256: "c".repeat(64),
+    };
+    published.published_version = Some(version.clone());
+
+    let mut record = fixture(RespondTo::Anyone, vec![], Some("tag".into()));
+    pin(&mut record, &published);
+    record.persona_source_version = Some(version.authority_token().unwrap());
+
+    let mut edited_head = published.clone();
+    edited_head.system_prompt = "unpublished edit".to_string();
+    edited_head.updated_at = "2026-06-09T00:00:00.000000001Z".to_string();
+    assert_eq!(
+        super::super::persona_drift_state(&record, std::slice::from_ref(&edited_head)),
+        (false, false)
+    );
+
+    edited_head.published_version = Some(crate::managed_agents::AgentTemplateVersionRef {
+        commit_oid: "d".repeat(40),
+        ..version
+    });
+    assert_eq!(
+        super::super::persona_drift_state(&record, std::slice::from_ref(&edited_head)),
+        (true, false)
+    );
+}
+
+#[test]
 fn legacy_equal_pseudo_override_is_removed_without_losing_real_override() {
     let first = persona_with_env("prompt", "key-v0");
     let mut record = fixture(RespondTo::Anyone, vec![], Some("tag".into()));

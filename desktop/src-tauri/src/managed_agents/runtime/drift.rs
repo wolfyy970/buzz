@@ -14,11 +14,22 @@ pub(super) fn persona_drift_state(
     let Some(persona) = personas.iter().find(|persona| persona.id == persona_id) else {
         return (false, true);
     };
-    let current = crate::managed_agents::persona_events::persona_snapshot_version(persona);
+    let current = if record
+        .persona_source_version
+        .as_deref()
+        .is_some_and(|version| version.starts_with("git:"))
+    {
+        persona
+            .published_version
+            .as_ref()
+            .and_then(|version| version.authority_token().ok())
+    } else {
+        Some(crate::managed_agents::persona_events::persona_snapshot_version(persona))
+    };
     let out_of_date = record
         .persona_source_version
         .as_deref()
-        .is_some_and(|pinned| pinned != current);
+        .is_some_and(|pinned| current.as_deref() != Some(pinned));
     (out_of_date, false)
 }
 

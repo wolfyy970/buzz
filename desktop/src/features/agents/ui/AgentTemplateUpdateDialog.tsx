@@ -5,6 +5,8 @@ import type {
   AgentTemplateUpdatePreview,
   ApplyAgentTemplateUpdateResponse,
 } from "@/shared/api/tauriAgentTemplateUpdates";
+import type { AgentTemplateVersionRef } from "@/shared/api/types";
+import { shortAgentTemplateVersionToken } from "../lib/agentTemplateUpdatePreview";
 import { Badge } from "@/shared/ui/badge";
 import { Button } from "@/shared/ui/button";
 import {
@@ -40,8 +42,8 @@ type AgentTemplateUpdateDialogProps = {
   result: ApplyAgentTemplateUpdateResponse | null;
 };
 
-function shortVersion(version: string | null): string {
-  return version ? version.slice(0, 7) : "unversioned";
+function shortPublishedVersion(version: AgentTemplateVersionRef): string {
+  return version.commitOid.slice(0, 7);
 }
 
 export function AgentTemplateUpdateDialog({
@@ -68,7 +70,8 @@ export function AgentTemplateUpdateDialog({
         preview.agents
           .filter(
             (agent) =>
-              agent.eligible && agent.currentVersion !== preview.targetVersion,
+              agent.eligible &&
+              agent.currentVersion !== preview.targetVersionToken,
           )
           .map((agent) => agent.pubkey),
       ),
@@ -99,7 +102,7 @@ export function AgentTemplateUpdateDialog({
 
   const selectedCount = selected.size;
   const changedAgents = preview.agents.filter(
-    (agent) => agent.currentVersion !== preview.targetVersion,
+    (agent) => agent.currentVersion !== preview.targetVersionToken,
   );
   const hasEligibleChanges = changedAgents.some((agent) => agent.eligible);
   const isComplete = result !== null;
@@ -168,9 +171,10 @@ export function AgentTemplateUpdateDialog({
               <div>
                 <p className="text-sm font-medium">Updating agents</p>
                 <p className="mt-1 text-xs text-muted-foreground">
-                  Starting the updated agents and checking they&apos;re ready.
-                  If a check fails, Buzz attempts to restore the previous
-                  version.
+                  Buzz stops new work, lets the current task finish, then starts
+                  the selected version. If a task can’t finish cleanly, Buzz
+                  recovers it after the update. If the new version cannot start,
+                  Buzz restores the previous version.
                 </p>
               </div>
             </div>
@@ -182,7 +186,8 @@ export function AgentTemplateUpdateDialog({
                 (candidate) => candidate.pubkey === agent.pubkey,
               );
               const checked = selected.has(agent.pubkey);
-              const isCurrent = agent.currentVersion === preview.targetVersion;
+              const isCurrent =
+                agent.currentVersion === preview.targetVersionToken;
               const Row = "div";
               return (
                 <Row
@@ -260,8 +265,8 @@ export function AgentTemplateUpdateDialog({
                         : isComplete
                           ? "Not updated"
                           : isCurrent
-                            ? `Already using ${shortVersion(preview.targetVersion)}`
-                            : `${shortVersion(agent.currentVersion)} → ${shortVersion(
+                            ? `Already using ${shortPublishedVersion(preview.targetVersion)}`
+                            : `${shortAgentTemplateVersionToken(agent.currentVersion)} → ${shortPublishedVersion(
                                 preview.targetVersion,
                               )}`}
                     </p>
@@ -341,9 +346,9 @@ export function AgentTemplateUpdateDialog({
           (agent) =>
             selected.has(agent.pubkey) && agent.runningRelays.length > 0,
         ) ? (
-          <p className="rounded-lg bg-amber-500/10 px-3 py-2 text-xs text-muted-foreground">
-            Running agents restart briefly. Update after any important active
-            work has finished.
+          <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+            Safe to update now. Buzz stops new work and lets the current task
+            finish. If it cannot, the new version recovers it after the update.
           </p>
         ) : null}
 

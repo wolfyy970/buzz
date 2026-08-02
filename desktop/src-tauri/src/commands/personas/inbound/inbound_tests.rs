@@ -10,6 +10,8 @@ const UUID: &str = "11111111-2222-3333-4444-555555555555";
 /// IS its UUID id. Carries env_vars + source_team that must survive a patch.
 fn local_in_app() -> AgentDefinition {
     AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: UUID.to_string(),
         display_name: "Local".to_string(),
         avatar_url: None,
@@ -39,6 +41,8 @@ fn local_in_app() -> AgentDefinition {
 /// slug = Some(d-tag), empty env_vars, source_team None.
 fn inbound_for(d_tag: &str, display_name: &str) -> AgentDefinition {
     AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: d_tag.to_string(),
         display_name: display_name.to_string(),
         avatar_url: Some("https://example.com/a.png".to_string()),

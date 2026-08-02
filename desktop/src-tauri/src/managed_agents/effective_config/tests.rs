@@ -8,6 +8,8 @@ fn definition(
     prompt: &str,
 ) -> AgentDefinition {
     AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: id.to_string(),
         display_name: "Test Definition".to_string(),
         avatar_url: None,

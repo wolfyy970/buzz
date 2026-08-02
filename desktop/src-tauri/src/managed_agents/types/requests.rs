@@ -312,6 +312,8 @@ mod tests {
 
     fn record_without_quad() -> AgentDefinition {
         AgentDefinition {
+            published_version: None,
+            published_version_env_vars: None,
             id: "p-1".to_string(),
             display_name: "Test".to_string(),
             avatar_url: None,

@@ -294,6 +294,8 @@ fn persona_with_provider(
     provider: Option<&str>,
 ) -> crate::managed_agents::AgentDefinition {
     crate::managed_agents::AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: id.to_string(),
         display_name: id.to_string(),
         avatar_url: None,

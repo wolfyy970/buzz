@@ -367,6 +367,8 @@ fn bare_record() -> ManagedAgentRecord {
 
 fn persona(id: &str, model: Option<&str>, provider: Option<&str>) -> AgentDefinition {
     AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: id.to_string(),
         display_name: "Test Persona".to_string(),
         avatar_url: None,
@@ -628,6 +630,8 @@ fn record_runtime_wins_over_persona_runtime_for_command_resolution() {
     record.persona_id = Some("p1".to_string());
 
     let persona = AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "p1".to_string(),
         display_name: "Goose persona".to_string(),
         avatar_url: None,

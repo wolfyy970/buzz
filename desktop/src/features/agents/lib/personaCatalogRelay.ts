@@ -308,6 +308,7 @@ function publicationToPersona(
     envVars: {},
     toolRequirements: [],
     skills: publication.agent.skills,
+    publishedVersion: null,
     respondTo: publication.agent.respondTo,
     respondToAllowlist: [],
     parallelism: publication.agent.parallelism,

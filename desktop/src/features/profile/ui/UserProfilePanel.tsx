@@ -90,6 +90,7 @@ import {
 import { useProfileDmAction } from "@/features/profile/ui/useProfileDmAction";
 import { useUserStatusQuery } from "@/features/user-status/hooks";
 import { useOpenAgentActivity } from "@/features/agents/useOpenAgentActivity";
+import type { AgentDefinitionSubmitOptions } from "@/features/agents/ui/AgentDefinitionDialog";
 import { useEscapeKey } from "@/shared/hooks/useEscapeKey";
 import { useIsThreadPanelOverlay } from "@/shared/hooks/use-mobile";
 import { AuxiliaryPanelBody } from "@/shared/layout/AuxiliaryPanel";
@@ -513,8 +514,11 @@ export function UserProfilePanel({
   }, [deleteManagedAgentRecord, managedAgent, onClose]);
 
   const handleSubmitPersona = React.useCallback(
-    async (input: CreatePersonaInput | UpdatePersonaInput) => {
-      const saved = await submitProfilePersonaDialog({
+    async (
+      input: CreatePersonaInput | UpdatePersonaInput,
+      options: AgentDefinitionSubmitOptions,
+    ) => {
+      const savedPersona = await submitProfilePersonaDialog({
         createManagedAgentForPersona,
         createPersona: createPersonaMutation.mutateAsync,
         input,
@@ -522,16 +526,19 @@ export function UserProfilePanel({
           setPersonaDialogState(null);
           void personasQuery.refetch();
         },
+        showUpdateSuccess: !options.publishTemplateVersion,
         updatePersona: updatePersonaMutation.mutateAsync,
       });
-      if (!saved || !("id" in input)) return;
-      await templateUpdate.reviewSavedTemplate(input);
+      if (!savedPersona || !("id" in input) || !options.publishTemplateVersion)
+        return;
+      await templateUpdate.publishSavedTemplate(savedPersona);
+      void personasQuery.refetch();
     },
     [
       createPersonaMutation.mutateAsync,
       createManagedAgentForPersona,
       personasQuery.refetch,
-      templateUpdate.reviewSavedTemplate,
+      templateUpdate.publishSavedTemplate,
       updatePersonaMutation.mutateAsync,
     ],
   );

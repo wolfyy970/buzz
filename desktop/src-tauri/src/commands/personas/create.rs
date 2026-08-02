@@ -73,6 +73,8 @@ pub async fn create_persona(
             env_vars: input.env_vars,
             tool_requirements: input.tool_requirements,
             skills: input.skills,
+            published_version: None,
+            published_version_env_vars: None,
             respond_to: None,
             respond_to_allowlist: Vec::new(),
             parallelism: None,

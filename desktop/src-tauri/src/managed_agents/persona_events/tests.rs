@@ -71,6 +71,8 @@ fn sample_record() -> ManagedAgentRecord {
 
 fn sample_persona() -> AgentDefinition {
     AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "test-persona".to_string(),
         display_name: "Test Persona".to_string(),
         avatar_url: Some("https://example.com/avatar.png".to_string()),
@@ -360,6 +362,7 @@ fn content_matches_nip_ap_vector() {
     const VECTOR: &str = r#"{"display_name":"Test Agent","system_prompt":"You are a test assistant.","avatar_url":"https://example.com/avatar.png","runtime":"goose","model":"claude-opus-4","provider":"anthropic","name_pool":["Alpha","Beta"]}"#;
 
     let content = PersonaEventContent {
+        published_version: None,
         display_name: "Test Agent".to_string(),
         system_prompt: Some("You are a test assistant.".to_string()),
         avatar_url: Some("https://example.com/avatar.png".to_string()),
@@ -416,6 +419,8 @@ fn content_matches_nip_ap_vector() {
     // signed content, so a second implementer following the spec computes
     // the same NIP-01 id.
     let record = AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "test-agent".to_string(),
         display_name: "Test Agent".to_string(),
         avatar_url: Some("https://example.com/avatar.png".to_string()),
@@ -449,6 +454,8 @@ fn content_matches_nip_ap_vector() {
 #[test]
 fn round_trip_minimal_persona() {
     let record = AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "minimal".to_string(),
         display_name: "Minimal".to_string(),
         avatar_url: None,
@@ -548,6 +555,8 @@ fn behavioral_defaults_survive_record_round_trip() {
 #[test]
 fn quad_absent_definition_hash_stable_across_activation() {
     let record = AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "quad-absent".to_string(),
         display_name: "Test".to_string(),
         avatar_url: None,
@@ -594,6 +603,8 @@ fn quad_absent_definition_hash_stable_across_activation() {
 /// way `persona_from_event` maps fields, without needing a signed event.
 fn persona_from_event_content_for_test(content: PersonaEventContent) -> AgentDefinition {
     AgentDefinition {
+        published_version: None,
+        published_version_env_vars: None,
         id: "staged".to_string(),
         display_name: content.display_name,
         avatar_url: content.avatar_url,
@@ -617,52 +628,6 @@ fn persona_from_event_content_for_test(content: PersonaEventContent) -> AgentDef
         tool_requirements: Vec::new(),
         skills: Vec::new(),
     }
-}
-
-#[test]
-fn persona_content_hash_is_deterministic() {
-    let content = PersonaEventContent {
-        display_name: "Test".to_string(),
-        avatar_url: None,
-        system_prompt: Some("Hello".to_string()),
-        runtime: None,
-        model: None,
-        provider: None,
-        name_pool: vec![],
-        respond_to: None,
-        respond_to_allowlist: Vec::new(),
-        parallelism: None,
-        tool_requirements: Vec::new(),
-        skills: Vec::new(),
-    };
-    let hash1 = persona_content_hash(&content);
-    let hash2 = persona_content_hash(&content);
-    assert_eq!(hash1, hash2);
-    assert_eq!(hash1.len(), 64); // SHA-256 hex
-}
-
-#[test]
-fn persona_content_hash_changes_on_edit() {
-    let content1 = PersonaEventContent {
-        display_name: "Test".to_string(),
-        avatar_url: None,
-        system_prompt: Some("Hello".to_string()),
-        runtime: None,
-        model: None,
-        provider: None,
-        name_pool: vec![],
-        respond_to: None,
-        respond_to_allowlist: Vec::new(),
-        parallelism: None,
-        tool_requirements: Vec::new(),
-        skills: Vec::new(),
-    };
-    let mut content2 = content1.clone();
-    content2.system_prompt = Some("Goodbye".to_string());
-    assert_ne!(
-        persona_content_hash(&content1),
-        persona_content_hash(&content2)
-    );
 }
 
 // ── PersonaSnapshot.runtime ───────────────────────────────────────────────
@@ -690,6 +655,9 @@ fn snapshot_runtime_verbatim_from_persona() {
         "persona runtime None must produce None snapshot (clears stale materialized value)"
     );
 }
+
+#[path = "persona_hash_tests.rs"]
+mod persona_hash_tests;
 
 // ── persona_snapshot (definition-authoritative) ──────────────────────────
 
