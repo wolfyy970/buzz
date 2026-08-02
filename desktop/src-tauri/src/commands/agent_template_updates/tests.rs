@@ -448,6 +448,47 @@ fn preview_eligibility_blocks_remote_and_unready_local_agents() {
 }
 
 #[test]
+fn template_updates_pin_the_current_global_runtime_defaults() {
+    let mut target = persona("2026-08-02T10:00:00.000000002Z");
+    target.runtime = None;
+    let global = crate::managed_agents::GlobalAgentConfig {
+        preferred_runtime: Some("codex".to_string()),
+        provider: Some("openai".to_string()),
+        model: Some("gpt-5".to_string()),
+        ..Default::default()
+    };
+    let mut prospective = record();
+
+    crate::managed_agents::persona_events::apply_persona_snapshot(&mut prospective, &target)
+        .unwrap();
+    materialize_template_runtime_defaults(&mut prospective, &global);
+
+    assert_eq!(prospective.runtime.as_deref(), Some("codex"));
+    assert_eq!(prospective.provider.as_deref(), Some("openai"));
+    assert_eq!(prospective.model.as_deref(), Some("gpt-5"));
+}
+
+#[test]
+fn explicit_template_runtime_values_win_over_global_defaults() {
+    let global = crate::managed_agents::GlobalAgentConfig {
+        preferred_runtime: Some("codex".to_string()),
+        provider: Some("openai".to_string()),
+        model: Some("gpt-5".to_string()),
+        ..Default::default()
+    };
+    let mut prospective = record();
+    prospective.runtime = Some("claude".to_string());
+    prospective.provider = Some("anthropic".to_string());
+    prospective.model = Some("claude-opus-4-5".to_string());
+
+    materialize_template_runtime_defaults(&mut prospective, &global);
+
+    assert_eq!(prospective.runtime.as_deref(), Some("claude"));
+    assert_eq!(prospective.provider.as_deref(), Some("anthropic"));
+    assert_eq!(prospective.model.as_deref(), Some("claude-opus-4-5"));
+}
+
+#[test]
 fn readiness_formatter_is_actionable_without_rust_debug_syntax() {
     let text = format_readiness_requirements(&[
         crate::managed_agents::Requirement::NormalizedField {

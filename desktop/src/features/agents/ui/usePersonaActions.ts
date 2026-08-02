@@ -279,10 +279,14 @@ export function usePersonaActions() {
                   : `${published.personaName} was published, but Buzz could not load the affected agents.`,
               );
             }
-          } catch {
+          } catch (error) {
             setPersonaNoticeMessage(null);
+            const detail =
+              error instanceof Error && error.message.trim()
+                ? ` ${error.message.trim()}`
+                : "";
             setPersonaErrorMessage(
-              "Template saved. Version wasn’t published. Try again.",
+              `Template saved, but the version wasn’t published.${detail}`,
             );
             return false;
           }

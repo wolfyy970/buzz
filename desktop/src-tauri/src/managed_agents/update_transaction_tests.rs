@@ -3,6 +3,7 @@ use std::{collections::BTreeMap, fs, time::Duration};
 use tempfile::TempDir;
 
 use super::*;
+use crate::managed_agents::template_artifact_path_component;
 
 fn target() -> ImmutableUpdateTarget {
     ImmutableUpdateTarget {
@@ -164,6 +165,25 @@ fn create_load_list_update_and_delete_round_trip() {
         .delete(&transaction.transaction_id, current.revision)
         .unwrap();
     assert!(journal.list().unwrap().is_empty());
+}
+
+#[test]
+fn builtin_template_id_uses_the_same_safe_path_as_version_publishing() {
+    let mut value = transaction();
+    value.target.persona_id = "builtin:fizz".to_string();
+    let component = template_artifact_path_component(&value.target.persona_id).unwrap();
+    value.target.version.artifact_path = format!(
+        "templates/{component}/versions/{}/template.json",
+        "c".repeat(64)
+    );
+    let target_token = value.target.version.authority_token().unwrap();
+    for records in value.selected.values_mut() {
+        records.original.persona_id = Some(value.target.persona_id.clone());
+        records.attempted.persona_id = Some(value.target.persona_id.clone());
+        records.attempted.persona_source_version = Some(target_token.clone());
+    }
+
+    value.validate().unwrap();
 }
 
 #[test]

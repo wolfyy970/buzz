@@ -29,8 +29,14 @@ impl AgentDefinition {
             model_override: None,
             provider: self.provider,
             provider_override: None,
-            persona_source_version: None,
-            pinned_persona_env_vars: None,
+            // Definition records reuse the existing revision token and pinned
+            // env slots so immutable template state survives the unified-store
+            // compatibility projection without adding a second sidecar store.
+            persona_source_version: self
+                .published_version
+                .as_ref()
+                .and_then(|version| version.authority_token().ok()),
+            pinned_persona_env_vars: self.published_version_env_vars,
             previous_persona_snapshots: Vec::new(),
             env_vars: self.env_vars,
             pinned_tool_requirements: self.tool_requirements,

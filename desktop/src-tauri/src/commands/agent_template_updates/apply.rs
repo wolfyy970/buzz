@@ -101,6 +101,7 @@ pub(super) async fn apply_agent_template_update(
                 &mut prospective,
                 &target_persona,
             )?;
+            materialize_template_runtime_defaults(&mut prospective, &global);
             prospective.persona_source_version = Some(target_version_token.clone());
             prospective.connection_bindings = bindings;
             crate::managed_agents::project_connections::validate_agent_project_connections(

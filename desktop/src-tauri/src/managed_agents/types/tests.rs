@@ -1,4 +1,4 @@
-use super::{AgentDefinition, CatalogSource, ManagedAgentRecord};
+use super::{AgentDefinition, AgentTemplateVersionRef, CatalogSource, ManagedAgentRecord};
 use std::path::PathBuf;
 
 #[test]
@@ -590,6 +590,38 @@ fn persona_view_round_trips_through_agent_record() {
         serde_json::to_value(&view).unwrap(),
         serde_json::to_value(&persona).unwrap(),
         "fold + view must round-trip every persona field"
+    );
+}
+
+#[test]
+fn published_template_state_survives_the_agent_store_fold() {
+    let mut persona = sample_persona();
+    persona.published_version = Some(AgentTemplateVersionRef {
+        repo_address: format!("30617:{}:buzz-agent-templates", "a".repeat(64)),
+        commit_oid: "b".repeat(40),
+        artifact_path: format!(
+            "templates/{}/versions/{}/template.json",
+            "c".repeat(64),
+            "d".repeat(64)
+        ),
+        artifact_sha256: "d".repeat(64),
+    });
+    persona.published_version_env_vars =
+        Some([("LOCAL_TOKEN".to_string(), "secret".to_string())].into());
+
+    let record = persona.clone().into_agent_record();
+    assert!(record
+        .persona_source_version
+        .as_deref()
+        .is_some_and(|value| value.starts_with("git:")));
+    let view = record
+        .to_definition_view()
+        .expect("slugged record must present a persona view");
+
+    assert_eq!(view.published_version, persona.published_version);
+    assert_eq!(
+        view.published_version_env_vars,
+        persona.published_version_env_vars
     );
 }
 

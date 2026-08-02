@@ -1,6 +1,25 @@
 //! Immutable Buzz-hosted Git identity for an agent template version.
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest as _, Sha256};
+
+pub(crate) fn template_artifact_path_component(template_id: &str) -> Result<String, String> {
+    if template_id.is_empty()
+        || template_id.len() > 512
+        || template_id.chars().any(char::is_control)
+    {
+        return Err("Template id is invalid.".to_string());
+    }
+    if template_id.len() <= 64
+        && template_id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
+        })
+    {
+        Ok(template_id.to_string())
+    } else {
+        Ok(hex::encode(Sha256::digest(template_id.as_bytes())))
+    }
+}
 
 /// Full authority tuple for one published agent template version.
 ///
@@ -23,6 +42,26 @@ impl AgentTemplateVersionRef {
             "git:{}:{}:{}:{}",
             self.repo_address, self.commit_oid, self.artifact_path, self.artifact_sha256
         ))
+    }
+
+    /// Restore a version reference from its stable local authority token.
+    pub fn from_authority_token(value: &str) -> Result<Self, String> {
+        let value = value
+            .strip_prefix("git:")
+            .ok_or_else(|| "Template version authority token is invalid.".to_string())?;
+        let mut parts = value.rsplitn(4, ':');
+        let artifact_sha256 = parts.next();
+        let artifact_path = parts.next();
+        let commit_oid = parts.next();
+        let repo_address = parts.next();
+        let version = Self {
+            repo_address: repo_address.unwrap_or_default().to_string(),
+            commit_oid: commit_oid.unwrap_or_default().to_string(),
+            artifact_path: artifact_path.unwrap_or_default().to_string(),
+            artifact_sha256: artifact_sha256.unwrap_or_default().to_string(),
+        };
+        version.validate()?;
+        Ok(version)
     }
 
     /// Reject malformed values before any field reaches Git as an argument.
@@ -88,7 +127,7 @@ fn is_template_id(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::AgentTemplateVersionRef;
+    use super::{template_artifact_path_component, AgentTemplateVersionRef};
 
     fn version() -> AgentTemplateVersionRef {
         AgentTemplateVersionRef {
@@ -105,10 +144,13 @@ mod tests {
     #[test]
     fn complete_authority_tuple_validates() {
         assert!(version().validate().is_ok());
-        assert!(version()
-            .authority_token()
-            .expect("authority token")
-            .starts_with("git:"));
+        let value = version();
+        let token = value.authority_token().expect("authority token");
+        assert!(token.starts_with("git:"));
+        assert_eq!(
+            AgentTemplateVersionRef::from_authority_token(&token).unwrap(),
+            value
+        );
     }
 
     #[test]
@@ -124,5 +166,16 @@ mod tests {
         let mut value = version();
         value.repo_address = format!("30617:{}:foreign", "a".repeat(64));
         assert!(value.validate().is_err());
+    }
+
+    #[test]
+    fn builtin_template_ids_use_a_stable_safe_path_component() {
+        let component = template_artifact_path_component("builtin:fizz").unwrap();
+        assert_eq!(component.len(), 64);
+        assert!(component.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_eq!(
+            component,
+            template_artifact_path_component("builtin:fizz").unwrap()
+        );
     }
 }

@@ -195,13 +195,15 @@ impl UpdateTransaction {
         {
             return Err("The update transaction has invalid timestamps.".to_string());
         }
-        validate_safe_id(&self.target.persona_id, "template id")?;
+        let template_path_component =
+            super::template_artifact_path_component(&self.target.persona_id)
+                .map_err(|_| "The update transaction template id is invalid.".to_string())?;
         self.target.version.validate()?;
         if !self
             .target
             .version
             .artifact_path
-            .starts_with(&format!("templates/{}/versions/", self.target.persona_id))
+            .starts_with(&format!("templates/{template_path_component}/versions/"))
         {
             return Err(
                 "The immutable template version does not match the selected template.".to_string(),
@@ -822,19 +824,6 @@ fn validate_canonical_uuid(value: &str, label: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("The {label} is invalid."))
-    }
-}
-
-fn validate_safe_id(value: &str, label: &str) -> Result<(), String> {
-    if !value.is_empty()
-        && value.len() <= 128
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
-    {
-        Ok(())
-    } else {
-        Err(format!("The update transaction {label} is invalid."))
     }
 }
 

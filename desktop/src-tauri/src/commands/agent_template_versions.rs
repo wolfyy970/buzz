@@ -14,8 +14,9 @@ use crate::{
     app_state::AppState,
     events,
     managed_agents::{
-        load_personas, save_personas, validate_agent_definition_text, validate_agent_skills,
-        AgentDefinition, AgentSkill, AgentTemplateVersionRef, AgentToolRequirement,
+        load_personas, save_personas, template_artifact_path_component,
+        validate_agent_definition_text, validate_agent_skills, AgentDefinition, AgentSkill,
+        AgentTemplateVersionRef, AgentToolRequirement,
     },
 };
 
@@ -328,19 +329,15 @@ async fn ensure_agent_template_git_storage(
 }
 
 fn safe_artifact_path(template_id: &str, digest: &str) -> Result<String, String> {
-    if template_id.is_empty()
-        || template_id.len() > 64
-        || !template_id.bytes().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'-' | b'_')
-        })
-    {
-        return Err("Template id cannot be used as a version path.".to_string());
+    if template_id.is_empty() {
+        return Err("Template id cannot be empty.".to_string());
     }
     if digest.len() != 64 || !digest.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("Template version digest is invalid.".to_string());
     }
+    let template_path_component = template_artifact_path_component(template_id)?;
     Ok(format!(
-        "templates/{template_id}/versions/{digest}/template.json"
+        "templates/{template_path_component}/versions/{digest}/template.json"
     ))
 }
 

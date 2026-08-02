@@ -129,6 +129,27 @@ fn publishing_the_same_public_content_still_creates_a_new_version() {
 }
 
 #[test]
+fn builtin_template_ids_publish_through_a_safe_hashed_directory() {
+    let (_root, _remote, clone_url, auth) = local_repo_fixture();
+    let mut builtin = definition();
+    builtin.id = "builtin:fizz".to_string();
+    let artifact = AgentTemplateArtifactV1::from_definition(&builtin).unwrap();
+
+    let version = publish_artifact_to_repo(&clone_url, &repo_address(), &artifact, &auth).unwrap();
+
+    let template_path_component = version.artifact_path.split('/').nth(1).unwrap();
+    assert_eq!(template_path_component.len(), 64);
+    assert!(template_path_component
+        .bytes()
+        .all(|byte| byte.is_ascii_hexdigit()));
+    assert!(!version.artifact_path.contains(':'));
+    assert_eq!(
+        load_artifact_from_repo(&clone_url, &version, &auth).unwrap(),
+        artifact
+    );
+}
+
+#[test]
 fn altered_digest_and_path_are_rejected() {
     let (_root, _remote, clone_url, auth) = local_repo_fixture();
     let artifact = AgentTemplateArtifactV1::from_definition(&definition()).unwrap();

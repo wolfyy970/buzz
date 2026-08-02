@@ -508,6 +508,7 @@ pub(super) fn prospective_readiness(
 ) -> Result<(), String> {
     let mut prospective = record.clone();
     crate::managed_agents::persona_events::apply_persona_snapshot(&mut prospective, persona)?;
+    materialize_template_runtime_defaults(&mut prospective, global);
     let command = crate::managed_agents::record_agent_command(&prospective, personas);
     let runtime = known_acp_runtime(&command);
     let effective = resolve_effective_agent_env(&prospective, personas, runtime, global);
@@ -518,6 +519,33 @@ pub(super) fn prospective_readiness(
             record.name,
             format_readiness_requirements(&requirements)
         )),
+    }
+}
+
+pub(super) fn materialize_template_runtime_defaults(
+    record: &mut ManagedAgentRecord,
+    global: &crate::managed_agents::GlobalAgentConfig,
+) {
+    if record
+        .runtime
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        record.runtime = global.preferred_runtime.clone();
+    }
+    if record
+        .provider
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        record.provider = global.provider.clone();
+    }
+    if record
+        .model
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+    {
+        record.model = global.model.clone();
     }
 }
 

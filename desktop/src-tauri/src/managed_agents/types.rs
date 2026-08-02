@@ -139,8 +139,11 @@ impl ManagedAgentRecord {
             env_vars: self.env_vars.clone(),
             tool_requirements: self.pinned_tool_requirements.clone(),
             skills: self.pinned_skills.clone(),
-            published_version: None,
-            published_version_env_vars: None,
+            published_version: self
+                .persona_source_version
+                .as_deref()
+                .and_then(|token| AgentTemplateVersionRef::from_authority_token(token).ok()),
+            published_version_env_vars: self.pinned_persona_env_vars.clone(),
             respond_to: self.definition_respond_to.clone(),
             respond_to_allowlist: self.definition_respond_to_allowlist.clone(),
             parallelism: self.definition_parallelism,
@@ -933,6 +936,7 @@ mod template_skills;
 pub use template_skills::{AgentSkill, AgentSkillFile};
 mod agent_definition;
 mod template_version;
+pub(crate) use template_version::template_artifact_path_component;
 pub use template_version::AgentTemplateVersionRef;
 
 #[cfg(test)]
