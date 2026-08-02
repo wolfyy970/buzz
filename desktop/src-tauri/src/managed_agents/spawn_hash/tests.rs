@@ -62,6 +62,9 @@ fn record() -> ManagedAgentRecord {
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 
@@ -88,6 +91,19 @@ fn persona(id: &str, runtime: Option<&str>, prompt: &str) -> AgentDefinition {
         created_at: "now".into(),
         updated_at: "now".into(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
+    }
+}
+
+fn skill(name: &str, body: &str) -> crate::managed_agents::AgentSkill {
+    let description = "A test skill";
+    crate::managed_agents::AgentSkill {
+        name: name.to_string(),
+        description: description.to_string(),
+        files: vec![crate::managed_agents::AgentSkillFile {
+            path: "SKILL.md".to_string(),
+            content: format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+        }],
     }
 }
 
@@ -170,6 +186,20 @@ fn record_prompt_edit_changes_hash() {
         spawn_config_hash(&rec, &[], &[], "wss://ws.example", &Default::default()),
         spawn_config_hash(&edited, &[], &[], "wss://ws.example", &Default::default())
     );
+}
+
+#[test]
+fn private_skill_edit_changes_hash_without_mutating_the_pin() {
+    let mut original = record();
+    original.pinned_skills = vec![skill("analysis", "Template workflow")];
+    let mut edited = original.clone();
+    edited.skill_overrides = Some(vec![skill("analysis", "Agent-only workflow")]);
+
+    assert_ne!(
+        spawn_config_hash(&original, &[], &[], "wss://ws.example", &Default::default()),
+        spawn_config_hash(&edited, &[], &[], "wss://ws.example", &Default::default())
+    );
+    assert_eq!(original.pinned_skills, edited.pinned_skills);
 }
 
 #[test]

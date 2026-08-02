@@ -3,6 +3,7 @@ import type {
   AgentProjectScope,
   AgentToolRequirement,
 } from "@/shared/api/types";
+import type { AgentSkill } from "@/shared/api/agentSkillTypes";
 
 export type AgentTemplateUpdateTarget = {
   pubkey: string;
@@ -15,6 +16,7 @@ export type AgentTemplateUpdateTarget = {
   projectScope: AgentProjectScope | null;
   connectionBindings: Record<string, string>;
   toolChanges: AgentTemplateToolChanges;
+  skillChanges: AgentTemplateSkillChanges;
   toolBindingIssues: string[];
 };
 
@@ -27,11 +29,21 @@ export type AgentTemplateToolChanges = {
   removed: AgentToolRequirement[];
 };
 
+export type AgentTemplateSkillChanges = {
+  added: AgentSkill[];
+  changed: Array<{
+    before: AgentSkill;
+    after: AgentSkill;
+  }>;
+  removed: AgentSkill[];
+};
+
 export type AgentTemplateUpdatePreview = {
   personaId: string;
   personaName: string;
   targetVersion: string;
   targetToolRequirements: AgentToolRequirement[];
+  targetSkills: AgentSkill[];
   agents: AgentTemplateUpdateTarget[];
 };
 
@@ -59,18 +71,28 @@ export async function previewAgentTemplateUpdate(
   personaId: string,
 ): Promise<AgentTemplateUpdatePreview> {
   const preview = await invokeTauri<
-    Omit<AgentTemplateUpdatePreview, "targetToolRequirements"> & {
+    Omit<
+      AgentTemplateUpdatePreview,
+      "targetToolRequirements" | "targetSkills"
+    > & {
       targetToolRequirements?: AgentToolRequirement[];
+      targetSkills?: AgentSkill[];
     }
   >("preview_agent_template_update", { personaId });
   return {
     ...preview,
     targetToolRequirements: preview.targetToolRequirements ?? [],
+    targetSkills: preview.targetSkills ?? [],
     agents: preview.agents.map((agent) => ({
       ...agent,
       projectScope: agent.projectScope ?? null,
       connectionBindings: agent.connectionBindings ?? {},
       toolChanges: agent.toolChanges ?? {
+        added: [],
+        changed: [],
+        removed: [],
+      },
+      skillChanges: agent.skillChanges ?? {
         added: [],
         changed: [],
         removed: [],

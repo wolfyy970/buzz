@@ -67,6 +67,9 @@ fn bare_agent_record(
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 fn persona_record(id: &str, model: Option<&str>, provider: Option<&str>) -> AgentDefinition {
@@ -93,6 +96,7 @@ fn persona_record(id: &str, model: Option<&str>, provider: Option<&str>) -> Agen
         created_at: "".to_string(),
         updated_at: "".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 

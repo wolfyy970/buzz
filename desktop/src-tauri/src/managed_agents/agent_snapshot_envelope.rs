@@ -345,6 +345,7 @@ mod tests {
                 max_turn_duration_seconds: None,
                 source_is_builtin: false,
                 tool_requirements: Vec::new(),
+                skills: Vec::new(),
             },
             profile: AgentSnapshotProfile {
                 display_name: "Locked Test".to_string(),
@@ -425,6 +426,9 @@ mod tests {
             connection_bindings: std::collections::BTreeMap::new(),
             pinned_tool_requirements: Vec::new(),
             project_scope: None,
+            system_prompt_override: None,
+            pinned_skills: Vec::new(),
+            skill_overrides: None,
         }
     }
 

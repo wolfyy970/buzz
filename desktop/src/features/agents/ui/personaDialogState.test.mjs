@@ -94,6 +94,8 @@ test("duplicatePersonaDialogState copies persona fields into a new draft", () =>
     provider: undefined,
     namePool: [],
     envVars: {},
+    toolRequirements: [],
+    skills: [],
   });
 });
 
@@ -151,7 +153,65 @@ test("editPersonaDialogState preserves the persona id for updates", () => {
     provider: undefined,
     namePool: [],
     envVars: {},
+    toolRequirements: [],
+    skills: [],
   });
+});
+
+test("edit and duplicate preserve portable Tools and Skills", () => {
+  const toolRequirements = [
+    {
+      id: "analytics",
+      label: "Analytics reports",
+      capability: "mcp.tool.run_report",
+      required: true,
+    },
+  ];
+  const skills = [
+    {
+      name: "campaign-analysis",
+      description: "Analyze campaign performance.",
+      files: [
+        {
+          path: "SKILL.md",
+          content:
+            "---\nname: campaign-analysis\ndescription: Analyze campaign performance.\n---\n\n# Campaign analysis",
+        },
+      ],
+    },
+  ];
+  const persona = {
+    id: "persona-resources",
+    displayName: "Analyst",
+    avatarUrl: null,
+    systemPrompt: "Analyze campaigns.",
+    runtime: null,
+    model: null,
+    provider: null,
+    isBuiltIn: false,
+    isActive: true,
+    toolRequirements,
+    skills,
+    createdAt: "2025-01-01T00:00:00Z",
+    updatedAt: "2025-01-02T00:00:00Z",
+  };
+
+  assert.deepEqual(
+    editPersonaDialogState(persona).initialValues.toolRequirements,
+    toolRequirements,
+  );
+  assert.deepEqual(
+    editPersonaDialogState(persona).initialValues.skills,
+    skills,
+  );
+  assert.deepEqual(
+    duplicatePersonaDialogState(persona).initialValues.toolRequirements,
+    toolRequirements,
+  );
+  assert.deepEqual(
+    duplicatePersonaDialogState(persona).initialValues.skills,
+    skills,
+  );
 });
 
 test("editPersonaDialogState seeds envVars and namePool from the persona", () => {

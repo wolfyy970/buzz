@@ -87,7 +87,7 @@ import {
   usePendingHarnessSelection,
 } from "./addCustomHarness";
 import { AgentTemplateImpactPreview } from "./AgentTemplateImpactPreview";
-import { useAgentToolRequirementsDraft } from "./useAgentToolRequirementsDraft";
+import { useAgentTemplateResourcesDraft } from "./useAgentTemplateResourcesDraft";
 import type { AgentDefinitionDialogProps } from "./AgentDefinitionDialogTypes";
 export type { AgentDefinitionSubmitOptions } from "./AgentDefinitionDialogTypes";
 
@@ -144,7 +144,7 @@ export function AgentDefinitionDialog({
   const [isAvatarUploadPending, setIsAvatarUploadPending] =
     React.useState(false);
   const [hasUserChanges, setHasUserChanges] = React.useState(false);
-  const toolsDraft = useAgentToolRequirementsDraft({
+  const resourcesDraft = useAgentTemplateResourcesDraft({
     createSubmitBlocked,
     createSubmitBlockReason,
     disabled: isPending,
@@ -304,8 +304,7 @@ export function AgentDefinitionDialog({
   }
 
   async function handleSubmit() {
-    // D1: the same localModeSatisfied gate as canSubmit prevents form-submit
-    // (Enter) from bypassing a missing credential.
+    // Keep Enter from bypassing the same credential gate as the button.
     if (!initialValues || !localModeSatisfied || !canSubmit) return;
 
     const {
@@ -339,7 +338,8 @@ export function AgentDefinitionDialog({
       provider: providerForSubmit,
       namePool: namePoolInput,
       envVars,
-      toolRequirements: toolsDraft.requirements,
+      toolRequirements: resourcesDraft.requirements,
+      skills: resourcesDraft.skills,
       behavior: behaviorForSubmit(
         behaviorDraft,
         behaviorSeedRef.current,
@@ -484,11 +484,11 @@ export function AgentDefinitionDialog({
     canSubmitPersonaDialog({ displayName, isPending }) &&
     (!isCreateMode || runtime.trim().length > 0) &&
     (!isCreateMode || selectedRuntimeIsAvailable) &&
-    (!isCreateMode || !toolsDraft.createSubmitBlocked) &&
+    (!isCreateMode || !resourcesDraft.createSubmitBlocked) &&
     // Crash-loop guard, create AND edit: an empty allowlist would crash
     // every instance minted from this definition at startup.
     personaBehaviorDraftValid(behaviorDraft) &&
-    toolsDraft.valid &&
+    resourcesDraft.valid &&
     // D1: localModeSatisfied covers both missingNormalizedFields AND
     // missingEnvKeys — credential env keys now block submit, not just display.
     localModeSatisfied &&
@@ -738,7 +738,7 @@ export function AgentDefinitionDialog({
             publishesCatalogUpdates={
               publishCatalogUpdatesOnSave && hasUserChanges
             }
-            submitBlockReason={toolsDraft.submitBlockReason}
+            submitBlockReason={resourcesDraft.submitBlockReason}
             submitLabel={submitLabel}
           />
         }
@@ -961,10 +961,10 @@ export function AgentDefinitionDialog({
               onSaved={selectSavedHarness}
               open={isAddHarnessOpen}
             />
-            {toolsDraft.section}
+            {resourcesDraft.section}
             {isCreateMode
               ? typeof createRunSection === "function"
-                ? createRunSection(toolsDraft.requirements)
+                ? createRunSection(resourcesDraft.requirements)
                 : createRunSection
               : null}
 

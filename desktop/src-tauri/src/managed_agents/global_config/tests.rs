@@ -357,6 +357,9 @@ fn bare_record() -> ManagedAgentRecord {
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 
@@ -383,6 +386,7 @@ fn persona(id: &str, model: Option<&str>, provider: Option<&str>) -> AgentDefini
         created_at: "".to_string(),
         updated_at: "".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 
@@ -643,6 +647,7 @@ fn record_runtime_wins_over_persona_runtime_for_command_resolution() {
         created_at: "".to_string(),
         updated_at: "".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
 
     let cmd = crate::managed_agents::record_agent_command(&record, &[persona]);

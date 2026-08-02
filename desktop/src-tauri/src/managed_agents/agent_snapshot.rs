@@ -45,7 +45,11 @@ use png::{BitDepth, ColorType, Decoder, Encoder};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
 
-use crate::managed_agents::types::{AgentToolRequirement, ManagedAgentRecord};
+use crate::managed_agents::{
+    effective_agent_skills,
+    types::{AgentSkill, AgentToolRequirement, ManagedAgentRecord},
+    validate_agent_skills,
+};
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -117,6 +121,9 @@ pub struct AgentSnapshotDefinition {
     /// commands, endpoints, and credentials are deliberately excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_requirements: Vec<AgentToolRequirement>,
+    /// Portable Skills included in the exported agent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<AgentSkill>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_timeout_seconds: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -204,7 +211,10 @@ pub fn build_snapshot(
             .clone()
             .unwrap_or_else(|| record.name.clone()),
         source_is_builtin: record.is_builtin,
-        system_prompt: record.system_prompt.clone(),
+        system_prompt: record
+            .system_prompt_override
+            .clone()
+            .or_else(|| record.system_prompt.clone()),
         runtime: record.runtime.clone(),
         model: record.model.clone(),
         provider: record.provider.clone(),
@@ -213,6 +223,7 @@ pub fn build_snapshot(
         respond_to_allowlist: record.definition_respond_to_allowlist.clone(),
         name_pool: record.name_pool.clone(),
         tool_requirements: record.pinned_tool_requirements.clone(),
+        skills: effective_agent_skills(record).to_vec(),
         idle_timeout_seconds: record.idle_timeout_seconds,
         max_turn_duration_seconds: record.max_turn_duration_seconds,
     };
@@ -408,6 +419,7 @@ pub(crate) fn validate_snapshot(snapshot: &AgentSnapshot) -> Result<(), String> 
     if snapshot.profile.display_name.trim().is_empty() {
         return Err("Snapshot profile.displayName is empty".to_string());
     }
+    validate_agent_skills(&snapshot.definition.skills)?;
     Ok(())
 }
 

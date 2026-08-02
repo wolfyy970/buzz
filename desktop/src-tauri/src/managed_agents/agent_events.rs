@@ -197,6 +197,7 @@ mod tests {
                 respond_to_allowlist: Vec::new(),
                 parallelism: 10,
                 tool_requirements: Vec::new(),
+                skills: Vec::new(),
             }],
             env_vars: BTreeMap::from([("OPENAI_API_KEY".to_string(), "sk-secret".to_string())]),
             start_on_app_launch: true,
@@ -239,6 +240,9 @@ mod tests {
             connection_bindings: std::collections::BTreeMap::new(),
             pinned_tool_requirements: Vec::new(),
             project_scope: None,
+            system_prompt_override: None,
+            pinned_skills: Vec::new(),
+            skill_overrides: None,
         }
     }
 

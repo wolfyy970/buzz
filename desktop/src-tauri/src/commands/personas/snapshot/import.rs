@@ -57,6 +57,8 @@ pub struct AgentSnapshotImportPreview {
     pub system_prompt: Option<String>,
     /// Portable tools the imported template expects.
     pub tool_requirements: Vec<crate::managed_agents::AgentToolRequirement>,
+    /// Portable Skills bundled with the snapshot.
+    pub skills: Vec<crate::managed_agents::AgentSkill>,
     /// Effective avatar: data URL if present, otherwise the source URL fallback.
     /// The UI renders this as a single avatar source.
     pub avatar_url: Option<String>,
@@ -117,13 +119,6 @@ pub struct AgentSnapshotImportResult {
 // ── Import helpers ─────────────────────────────────────────────────────────
 
 /// Resolve the behavioral defaults for an incoming agent snapshot.
-///
-/// This is the single authoritative selection path for all import-time
-/// allowlist and behavioral decisions. It is extracted as a pure, testable
-/// function so that unit tests exercise the exact production logic rather
-/// than a reconstruction of it.
-///
-/// # UI contract
 ///
 /// The Keep/Clear toggle is shown whenever `has_source_allowlist` is true
 /// (i.e. the raw allowlist is non-empty), regardless of the source mode.
@@ -412,6 +407,7 @@ pub(crate) fn build_agent_snapshot_import_preview(
         runtime: snapshot.definition.runtime.clone(),
         system_prompt: snapshot.definition.system_prompt.clone(),
         tool_requirements: snapshot.definition.tool_requirements.clone(),
+        skills: snapshot.definition.skills.clone(),
         // Effective avatar: data URL wins; URL fallback if no data URL.
         avatar_url: snapshot
             .profile
@@ -575,6 +571,7 @@ pub async fn confirm_agent_snapshot_import(
             catalog_source: None,
             env_vars: std::collections::BTreeMap::new(),
             tool_requirements: snapshot.definition.tool_requirements.clone(),
+            skills: snapshot.definition.skills.clone(),
             respond_to: respond_to_wire.clone(),
             respond_to_allowlist: minted.respond_to_allowlist.clone(),
             parallelism: minted_parallelism,
@@ -613,6 +610,7 @@ pub async fn confirm_agent_snapshot_import(
             parallelism: minted_parallelism
                 .unwrap_or(crate::managed_agents::DEFAULT_AGENT_PARALLELISM),
             system_prompt: snapshot.definition.system_prompt.clone(),
+            system_prompt_override: None,
             model: snapshot.definition.model.clone(),
             provider: snapshot.definition.provider.clone(),
             persona_source_version: Some(crate::managed_agents::persona_snapshot_version(&persona)),
@@ -620,6 +618,8 @@ pub async fn confirm_agent_snapshot_import(
             previous_persona_snapshots: Vec::new(),
             env_vars: std::collections::BTreeMap::new(),
             pinned_tool_requirements: snapshot.definition.tool_requirements.clone(),
+            pinned_skills: snapshot.definition.skills.clone(),
+            skill_overrides: None,
             start_on_app_launch: false,
             auto_restart_on_config_change: true,
             runtime_pid: None,

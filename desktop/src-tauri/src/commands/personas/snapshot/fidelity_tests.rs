@@ -69,6 +69,9 @@ fn make_definition(slug: &str) -> ManagedAgentRecord {
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 
@@ -94,6 +97,7 @@ fn make_snapshot(
             idle_timeout_seconds: None,
             max_turn_duration_seconds: None,
             tool_requirements: Vec::new(),
+            skills: Vec::new(),
         },
         profile: AgentSnapshotProfile {
             display_name: "Test Agent".to_string(),

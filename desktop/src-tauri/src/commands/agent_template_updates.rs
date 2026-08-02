@@ -35,6 +35,7 @@ pub struct AgentTemplateUpdatePreview {
     pub persona_name: String,
     pub target_version: String,
     pub target_tool_requirements: Vec<crate::managed_agents::AgentToolRequirement>,
+    pub target_skills: Vec<crate::managed_agents::AgentSkill>,
     pub agents: Vec<AgentTemplateUpdateTarget>,
 }
 
@@ -55,6 +56,21 @@ pub struct AgentTemplateToolChanges {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AgentTemplateSkillChange {
+    pub before: crate::managed_agents::AgentSkill,
+    pub after: crate::managed_agents::AgentSkill,
+}
+
+#[derive(Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTemplateSkillChanges {
+    pub added: Vec<crate::managed_agents::AgentSkill>,
+    pub changed: Vec<AgentTemplateSkillChange>,
+    pub removed: Vec<crate::managed_agents::AgentSkill>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentTemplateUpdateTarget {
     pub pubkey: String,
     pub name: String,
@@ -66,6 +82,7 @@ pub struct AgentTemplateUpdateTarget {
     pub project_scope: Option<crate::managed_agents::AgentProjectScope>,
     pub connection_bindings: BTreeMap<String, String>,
     pub tool_changes: AgentTemplateToolChanges,
+    pub skill_changes: AgentTemplateSkillChanges,
     pub tool_binding_issues: Vec<String>,
 }
 
@@ -174,6 +191,42 @@ fn tool_changes(
         added,
         changed,
         removed,
+    }
+}
+
+fn skill_changes(
+    before: &[crate::managed_agents::AgentSkill],
+    after: &[crate::managed_agents::AgentSkill],
+) -> AgentTemplateSkillChanges {
+    let before_by_name: BTreeMap<_, _> = before
+        .iter()
+        .map(|skill| (skill.name.as_str(), skill))
+        .collect();
+    let after_by_name: BTreeMap<_, _> = after
+        .iter()
+        .map(|skill| (skill.name.as_str(), skill))
+        .collect();
+    AgentTemplateSkillChanges {
+        added: after
+            .iter()
+            .filter(|skill| !before_by_name.contains_key(skill.name.as_str()))
+            .cloned()
+            .collect(),
+        changed: after
+            .iter()
+            .filter_map(|skill| {
+                let previous = before_by_name.get(skill.name.as_str())?;
+                (*previous != skill).then(|| AgentTemplateSkillChange {
+                    before: (*previous).clone(),
+                    after: skill.clone(),
+                })
+            })
+            .collect(),
+        removed: before
+            .iter()
+            .filter(|skill| !after_by_name.contains_key(skill.name.as_str()))
+            .cloned()
+            .collect(),
     }
 }
 
@@ -314,6 +367,7 @@ pub fn preview_agent_template_update(
                     &record.pinned_tool_requirements,
                     &persona.tool_requirements,
                 ),
+                skill_changes: skill_changes(&record.pinned_skills, &persona.skills),
                 tool_binding_issues,
             }
         })
@@ -330,6 +384,7 @@ pub fn preview_agent_template_update(
         persona_name: persona.display_name.clone(),
         target_version,
         target_tool_requirements: persona.tool_requirements.clone(),
+        target_skills: persona.skills.clone(),
         agents,
     })
 }

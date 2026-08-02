@@ -308,6 +308,8 @@ import type {
   AgentProjectScope,
   AgentToolRequirement,
 } from "./agentProjectTypes";
+export type { AgentSkill, AgentSkillFile } from "./agentSkillTypes";
+import type { AgentSkill } from "./agentSkillTypes";
 export type {
   ManagedAgent,
   ManagedAgentBackend,
@@ -617,6 +619,9 @@ export type UpdateManagedAgentInput = {
   model?: string | null;
   provider?: string | null;
   systemPrompt?: string | null;
+  resetSystemPromptToTemplate?: boolean;
+  skills?: AgentSkill[];
+  resetSkillsToTemplate?: boolean;
   /** Absent = don't touch. Present = replace the env_vars map entirely. */
   envVars?: Record<string, string>;
   parallelism?: number;
@@ -671,6 +676,8 @@ export type AgentPersona = {
   envVars: Record<string, string>;
   /** Portable, provider-neutral tools this template expects. */
   toolRequirements: AgentToolRequirement[];
+  /** Portable instruction sets and supporting files bundled with this template. */
+  skills: AgentSkill[];
   /** NIP-AP behavioral defaults (wire shape). Null/empty = unset. */
   respondTo: RespondToMode | null;
   respondToAllowlist: string[];
@@ -709,6 +716,7 @@ export type CreatePersonaInput = {
   namePool?: string[];
   envVars?: Record<string, string>;
   toolRequirements?: AgentToolRequirement[];
+  skills?: AgentSkill[];
   behavior?: PersonaBehaviorInput;
   /**
    * Set when this persona is a copy of another owner's shared catalog entry,
@@ -728,6 +736,7 @@ export type UpdatePersonaInput = {
   namePool?: string[];
   envVars?: Record<string, string>;
   toolRequirements?: AgentToolRequirement[];
+  skills?: AgentSkill[];
   behavior?: PersonaBehaviorInput;
 };
 

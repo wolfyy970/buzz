@@ -153,13 +153,16 @@ with a TypeScript lookup table or an id comparison in a component.
    themselves. Never synthesize a run location a surface doesn't have. Don't
    expose `respond-to`, `allowlist`, Nostr, or harness jargon in primary UI
    copy.
-12. **Templates declare tools; Projects own connections.** A template stores
-    only portable `AgentToolRequirement` values. An agent instance binds those
-    stable requirement ids to local Project Connections. Commands, arguments,
-    endpoints, connection ids, and credential references never enter persona
-    or team events. Secret values live only in the system keyring. Product copy
-    uses Tools, Connections, Project, agent template, and agent. MCP is reserved
-    for technical details.
+12. **Templates carry portable Skills and declare Tools; Projects own
+    Connections.** A template stores bounded `AgentSkill` instruction bundles
+    and portable `AgentToolRequirement` values. Every Skill has a safe relative
+    `SKILL.md` path and may carry supporting files; validate file count, size,
+    path traversal, and duplicate names/paths before persistence. An agent
+    instance binds stable Tool requirement ids to local Project Connections.
+    Commands, arguments, endpoints, connection ids, and credential references
+    never enter persona or team events. Secret values live only in the system
+    keyring. Product copy uses Skills, Tools, Connections, Project, agent
+    template, and agent. MCP is reserved for technical details.
 13. **Tool access is a Project boundary.** Every MCP-enabled agent has one
     canonical `AgentProjectScope`: relay URL, operator pubkey, NIP-34 repository
     address, and Project discussion channel. Local desktop Project ids are not
@@ -177,9 +180,15 @@ with a TypeScript lookup table or an id comparison in a component.
 15. **Template rollout is explicit and impact-aware.** Agents retain their
     pinned template snapshot until the operator chooses Update agents. The
     preview shows each affected agent, its own added, changed, and removed tool
-    requirements, and any connection choices that must be resolved. The apply
-    request carries the complete binding map for every selected agent and the
-    backend validates it again under the update transaction.
+    requirements and Skills, plus any connection choices that must be resolved.
+    The apply request carries the complete binding map for every selected agent
+    and the backend validates it again under the update transaction.
+16. **Linked agents may privately change instructions and Skills.** The
+    instance editor labels each divergence as "Changed for this agent" and
+    provides an explicit "Reset to template" action. Reset requests use named
+    reset fields rather than copying template values and pretending the
+    override still exists. Template rollout preserves private overrides.
+    Editing or resetting these fields must not change model or provider.
 
 ## The tests that enforce this
 
@@ -212,6 +221,14 @@ with a TypeScript lookup table or an id comparison in a component.
 - `ui/agentToolRequirements.test.mjs` and
   `ui/agentProjectAccessPolicy.test.mjs` pin template requirement validation and
   launch readiness.
+- `shared/api/agentSkillTypes.test.mjs` pins portable Skill limits and safe
+  relative paths; `ui/personaDialogState.test.mjs` pins Tools and Skills through
+  edit and duplicate.
+- `ui/useAgentInstanceTemplateOverridesDraft.test.mjs` pins private override
+  and reset request semantics.
+- `desktop/tests/e2e/agent-template-update-screenshots.spec.ts` and
+  `desktop/tests/e2e/edit-agent.spec.ts` cover Skill editing, update review,
+  private-change labels, and explicit reset actions.
 
 ## Keep this file true
 

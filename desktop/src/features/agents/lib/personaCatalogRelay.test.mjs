@@ -21,6 +21,7 @@ function personaEvent({
   shared = true,
   avatarUrl = null,
   respondTo = null,
+  skills,
   sharedTag,
 }) {
   return {
@@ -47,6 +48,7 @@ function personaEvent({
       respond_to: respondTo,
       respond_to_allowlist: respondTo === "allowlist" ? [BOB] : undefined,
       parallelism: 4,
+      skills,
     }),
     sig: "sig",
   };
@@ -171,6 +173,46 @@ test("catalog avatars keep bounded http URLs and drop unsafe schemes", () => {
     BOB,
   );
   assert.equal(unsafe[0].avatarUrl, null);
+});
+
+test("catalog Skills keep safe bundles and drop an unsafe payload", () => {
+  const safeSkill = {
+    name: "review-changes",
+    description: "Review a proposed change.",
+    files: [
+      {
+        path: "SKILL.md",
+        content:
+          "---\nname: review-changes\ndescription: Review a proposed change.\n---\n\n# Review changes",
+      },
+    ],
+  };
+  const safe = catalogPersonasFromPublications(
+    catalogPublicationsFromEvents([
+      personaEvent({ createdAt: 1, id: "safe-skill", skills: [safeSkill] }),
+    ]),
+    [],
+    BOB,
+  );
+  assert.deepEqual(safe[0].skills, [safeSkill]);
+
+  const unsafe = catalogPersonasFromPublications(
+    catalogPublicationsFromEvents([
+      personaEvent({
+        createdAt: 1,
+        id: "unsafe-skill",
+        skills: [
+          {
+            ...safeSkill,
+            files: [{ path: "../SKILL.md", content: "# Escapes the bundle" }],
+          },
+        ],
+      }),
+    ]),
+    [],
+    BOB,
+  );
+  assert.deepEqual(unsafe[0].skills, []);
 });
 
 /** The avatar a catalog entry projects for `avatarUrl`, or null if dropped. */

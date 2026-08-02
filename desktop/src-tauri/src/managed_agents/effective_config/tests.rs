@@ -29,6 +29,7 @@ fn definition(
         created_at: "".to_string(),
         updated_at: "".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 
@@ -98,6 +99,9 @@ fn record(
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 
@@ -221,6 +225,26 @@ fn linked_blank_prompt_means_no_prompt() {
 
     assert_eq!(cfg.system_prompt.value, None);
     assert_eq!(cfg.system_prompt.source, ConfigSource::Definition);
+}
+
+#[test]
+fn linked_private_instructions_override_the_selected_template_pin() {
+    let mut rec = record(
+        Some("d1"),
+        None,
+        None,
+        Some("selected template instructions"),
+    );
+    rec.system_prompt_override = Some("only this agent".to_string());
+    let defs = vec![definition("d1", None, None, "mutable head")];
+
+    let cfg = match resolve_effective_config(&rec, &defs, &global(None, None)) {
+        EffectiveConfigResult::Resolved(config) => config,
+        other => panic!("expected Resolved, got {other:?}"),
+    };
+
+    assert_eq!(cfg.system_prompt.value.as_deref(), Some("only this agent"));
+    assert_eq!(cfg.system_prompt.source, ConfigSource::InstanceOverride);
 }
 
 #[test]

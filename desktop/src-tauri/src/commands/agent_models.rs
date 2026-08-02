@@ -759,33 +759,25 @@ async fn discover_databricks_models(
     }))
 }
 
-/// Apply an `UpdateManagedAgentRequest`'s model/provider/system_prompt patch
-/// to `record`, enforcing the linked-instance write guard: a definition-linked
-/// record's model/provider/prompt are definition-authoritative (see
-/// `effective_config::resolve_linked`), so writes to these three fields are
-/// silently dropped for a linked instance rather than persisting a byte the
-/// resolver will never read. Definition-less instances accept the patch
-/// as-is. Extracted so the guard is exercised by both `update_managed_agent`
-/// and its regression tests — a test that reimplements this check instead of
-/// calling it can go green after the real guard is deleted.
-fn apply_model_provider_prompt_update(
+/// Compatibility seam for focused model/provider/prompt tests. Linked
+/// model/provider writes remain rejected, while linked prompt writes now enter
+/// the explicit private override layer instead of corrupting the template pin.
+#[cfg(test)]
+pub(crate) fn apply_model_provider_prompt_update(
     record: &mut crate::managed_agents::ManagedAgentRecord,
     model: Option<Option<String>>,
     provider: Option<Option<String>>,
     system_prompt: Option<Option<String>>,
 ) {
-    if record.persona_id.is_some() {
-        return;
-    }
-    if let Some(model_update) = model {
-        record.model = model_update;
-    }
-    if let Some(provider_update) = provider {
-        record.provider = provider_update;
-    }
-    if let Some(prompt_update) = system_prompt {
-        record.system_prompt = prompt_update;
-    }
+    let _ = super::agent_private_overrides::apply_agent_configuration_update(
+        record,
+        model,
+        provider,
+        system_prompt,
+        false,
+        None,
+        false,
+    );
 }
 
 /// Update mutable fields on an existing managed agent record.
@@ -827,12 +819,15 @@ pub async fn update_managed_agent(
                 name_changed = true;
             }
         }
-        apply_model_provider_prompt_update(
+        super::agent_private_overrides::apply_agent_configuration_update(
             record,
             input.model,
             input.provider,
             input.system_prompt,
-        );
+            input.reset_system_prompt_to_template,
+            input.skills,
+            input.reset_skills_to_template,
+        )?;
         if let Some(parallelism) = input.parallelism {
             record.parallelism = parallelism;
         }

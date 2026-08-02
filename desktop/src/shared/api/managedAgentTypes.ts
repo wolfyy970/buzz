@@ -2,6 +2,7 @@ import type {
   AgentProjectScope,
   AgentToolRequirement,
 } from "./agentProjectTypes";
+import type { AgentSkill } from "./agentSkillTypes";
 
 export type ManagedAgentBackend =
   | { type: "local" }
@@ -27,6 +28,7 @@ export type ManagedAgent = {
   maxTurnDurationSeconds: number | null;
   parallelism: number;
   systemPrompt: string | null;
+  instructionsChangedForAgent: boolean;
   avatarUrl: string | null;
   model: string | null;
   modelSource: "definition" | "global" | "instance_legacy" | null;
@@ -51,6 +53,8 @@ export type ManagedAgent = {
   backendAgentId: string | null;
   projectScope: AgentProjectScope | null;
   toolRequirements: AgentToolRequirement[];
+  skills: AgentSkill[];
+  skillsChangedForAgent: boolean;
   connectionBindings: Record<string, string>;
   respondTo: RespondToMode;
   respondToAllowlist: string[];

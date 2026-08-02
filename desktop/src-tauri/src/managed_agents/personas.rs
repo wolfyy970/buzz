@@ -132,6 +132,7 @@ fn built_in_persona_records(now: &str) -> Vec<AgentDefinition> {
             created_at: now.to_string(),
             updated_at: now.to_string(),
             tool_requirements: Vec::new(),
+            skills: Vec::new(),
         })
         .collect()
 }

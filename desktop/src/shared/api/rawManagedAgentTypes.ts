@@ -17,6 +17,7 @@ export type RawManagedAgent = {
   max_turn_duration_seconds: number | null;
   parallelism: number;
   system_prompt: string | null;
+  instructions_changed_for_agent?: boolean;
   avatar_url?: string | null;
   model: string | null;
   model_source?: ManagedAgent["modelSource"];
@@ -41,6 +42,8 @@ export type RawManagedAgent = {
   backend_agent_id: string | null;
   project_scope?: ManagedAgent["projectScope"];
   tool_requirements?: ManagedAgent["toolRequirements"];
+  skills?: ManagedAgent["skills"];
+  skills_changed_for_agent?: boolean;
   connection_bindings?: Record<string, string>;
   respond_to?: ManagedAgent["respondTo"];
   respond_to_allowlist?: string[];

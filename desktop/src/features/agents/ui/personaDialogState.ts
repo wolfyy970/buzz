@@ -74,6 +74,8 @@ export function duplicatePersonaDialogState(
       // them if they want a blank template.
       namePool: persona.namePool ?? [],
       envVars: persona.envVars ?? {},
+      toolRequirements: persona.toolRequirements ?? [],
+      skills: persona.skills ?? [],
       ...behaviorEntry(persona),
     },
   };
@@ -123,6 +125,8 @@ export function editPersonaDialogState(
       // the dialog must therefore round-trip the existing values.)
       namePool: persona.namePool ?? [],
       envVars: persona.envVars ?? {},
+      toolRequirements: persona.toolRequirements ?? [],
+      skills: persona.skills ?? [],
       ...behaviorEntry(persona),
     },
   };

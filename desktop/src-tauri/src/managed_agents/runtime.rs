@@ -70,32 +70,8 @@ mod lifecycle;
 use lifecycle::kill_stale_tracked_processes_with;
 pub use lifecycle::{kill_stale_tracked_processes, sync_managed_agent_processes};
 
-/// Classify an agent's persona against the live catalog for the Agents-menu
-/// drift indicator. Returns `(out_of_date, orphaned)`.
-///
-/// Drift basis is the RECORD's `persona_source_version`, never the engram:
-/// - persona_id set + persona present: out_of_date when the snapshot revision
-///   differs from the persona's current non-secret revision token.
-/// - persona_id set + persona gone: orphaned (no current hash to respawn into,
-///   so never out_of_date — we must not tell the user to respawn into nothing).
-/// - no persona_id: neither — a hand-built agent has no persona to drift from.
-fn persona_drift_state(
-    record: &ManagedAgentRecord,
-    personas: &[crate::managed_agents::types::AgentDefinition],
-) -> (bool, bool) {
-    let Some(persona_id) = record.persona_id.as_deref() else {
-        return (false, false);
-    };
-    let Some(persona) = personas.iter().find(|p| p.id == persona_id) else {
-        return (false, true);
-    };
-    let current = crate::managed_agents::persona_events::persona_snapshot_version(persona);
-    let out_of_date = record
-        .persona_source_version
-        .as_deref()
-        .is_some_and(|pinned| pinned != current);
-    (out_of_date, false)
-}
+mod drift;
+use drift::{persona_drift_state, restart_eligible};
 
 /// Resolve the runtime-pair key this record maps to for the active
 /// workspace: always the active workspace relay (the legacy per-record relay
@@ -333,6 +309,9 @@ pub fn build_managed_agent_summary(
         needs_restart,
         env_vars: record.env_vars.clone(),
         tool_requirements: record.pinned_tool_requirements.clone(),
+        skills: crate::managed_agents::effective_agent_skills(record).to_vec(),
+        instructions_changed_for_agent: record.system_prompt_override.is_some(),
+        skills_changed_for_agent: record.skill_overrides.is_some(),
         connection_bindings: record.connection_bindings.clone(),
         backend: record.backend.clone(),
         backend_agent_id: record.backend_agent_id.clone(),
@@ -351,19 +330,6 @@ pub fn build_managed_agent_summary(
         respond_to: record.respond_to,
         respond_to_allowlist: record.respond_to_allowlist.clone(),
     })
-}
-
-/// Pure predicate: should the "Restart required" badge fire?
-///
-/// An orphaned linked instance (its persona/definition no longer exists)
-/// can never be restarted successfully — `spawn_agent_child` refuses to
-/// spawn it before any process side effect. Surfacing "Restart required"
-/// for one would offer an action guaranteed to fail, so this always
-/// returns `false` for an orphan regardless of drift. Extracted for unit
-/// testing without `AppHandle`/global state, following the
-/// `availability_drift` pattern in `discovery.rs`.
-fn restart_eligible(persona_orphaned: bool, hash_drift: bool, availability_drift: bool) -> bool {
-    !persona_orphaned && (hash_drift || availability_drift)
 }
 
 pub fn find_managed_agent_mut<'a>(
@@ -572,6 +538,11 @@ pub fn spawn_agent_child(
         .as_ref()
         .map(|connections| connections.generation_hash)
         .unwrap_or_default();
+    let isolated_runtime = crate::managed_agents::materialize_isolated_agent_runtime(
+        app,
+        &runtime_key,
+        crate::managed_agents::effective_agent_skills(record),
+    )?;
 
     // Augment PATH for DMG launches so child processes can find:
     //   - bundled CLI via ~/.local/bin symlink
@@ -591,9 +562,8 @@ pub fn spawn_agent_child(
     );
 
     let mut command = std::process::Command::new(&resolved_acp_command);
-    if let Some(home) = super::default_agent_workdir() {
-        command.current_dir(home);
-    }
+    crate::managed_agents::configure_isolated_process_environment(&mut command, &isolated_runtime);
+    command.current_dir(&isolated_runtime.workspace);
     command.stdin(std::process::Stdio::null());
     command.stdout(std::process::Stdio::from(stdout));
     command.stderr(std::process::Stdio::from(stderr));
@@ -645,8 +615,9 @@ pub fn spawn_agent_child(
     // stuck agents for auto-restart.
     let spawned_setup_mode;
     {
+        use crate::managed_agents::readiness::agent_readiness_in_home;
         use crate::managed_agents::readiness::EffectiveAgentEnv;
-        use crate::managed_agents::{agent_readiness, AgentReadiness, Requirement};
+        use crate::managed_agents::{AgentReadiness, Requirement};
 
         // Construct EffectiveAgentEnv from the descriptor computed above — no second
         // resolver call; the descriptor's env is already the fully layered result.
@@ -659,69 +630,70 @@ pub fn spawn_agent_child(
             persona_env_snapshot_initialized: true,
         };
         // Compute the optional payload before touching the command.
-        let setup_payload_json =
-            if let AgentReadiness::NotReady { requirements } = agent_readiness(&effective) {
-                let reqs: Vec<serde_json::Value> = requirements
-                    .into_iter()
-                    .map(|r| match r {
-                        Requirement::PersonaSnapshotUninitialized => serde_json::json!({
-                            "surface": "persona_snapshot_uninitialized",
-                        }),
-                        Requirement::NormalizedField { field } => serde_json::json!({
-                            "surface": "normalized_field",
-                            "field": field,
-                        }),
-                        Requirement::EnvKey { key } => serde_json::json!({
-                            "surface": "env_key",
-                            "key": key,
-                        }),
-                        Requirement::CliLogin {
-                            probe_args,
-                            setup_copy,
-                            availability,
-                        } => serde_json::json!({
-                            "surface": "cli_login",
-                            "probe_args": probe_args,
-                            "setup_copy": setup_copy,
-                            "availability": availability,
-                        }),
-                        Requirement::CliConfigInvalid {
-                            probe_args,
-                            setup_copy,
-                            diagnostic,
-                        } => serde_json::json!({
-                            "surface": "cli_config_invalid",
-                            "probe_args": probe_args,
-                            "setup_copy": setup_copy,
-                            "diagnostic": diagnostic,
-                        }),
-                        Requirement::GitBash => serde_json::json!({
-                            "surface": "git_bash",
-                        }),
-                        Requirement::MissingBinary { command } => serde_json::json!({
-                            "surface": "missing_binary",
-                            "command": command,
-                        }),
-                    })
-                    .collect();
-                let payload = serde_json::json!({
-                    "agent_name": record.name,
-                    "agent_pubkey": record.pubkey,
-                    "requirements": reqs,
-                });
-                match serde_json::to_string(&payload) {
-                    Ok(json) => Some(json),
-                    Err(e) => {
-                        eprintln!(
-                            "buzz-desktop: failed to serialize setup payload for {}: {e}",
-                            record.name
-                        );
-                        None
-                    }
+        let setup_payload_json = if let AgentReadiness::NotReady { requirements } =
+            agent_readiness_in_home(&effective, &isolated_runtime.home)
+        {
+            let reqs: Vec<serde_json::Value> = requirements
+                .into_iter()
+                .map(|r| match r {
+                    Requirement::PersonaSnapshotUninitialized => serde_json::json!({
+                        "surface": "persona_snapshot_uninitialized",
+                    }),
+                    Requirement::NormalizedField { field } => serde_json::json!({
+                        "surface": "normalized_field",
+                        "field": field,
+                    }),
+                    Requirement::EnvKey { key } => serde_json::json!({
+                        "surface": "env_key",
+                        "key": key,
+                    }),
+                    Requirement::CliLogin {
+                        probe_args,
+                        setup_copy,
+                        availability,
+                    } => serde_json::json!({
+                        "surface": "cli_login",
+                        "probe_args": probe_args,
+                        "setup_copy": setup_copy,
+                        "availability": availability,
+                    }),
+                    Requirement::CliConfigInvalid {
+                        probe_args,
+                        setup_copy,
+                        diagnostic,
+                    } => serde_json::json!({
+                        "surface": "cli_config_invalid",
+                        "probe_args": probe_args,
+                        "setup_copy": setup_copy,
+                        "diagnostic": diagnostic,
+                    }),
+                    Requirement::GitBash => serde_json::json!({
+                        "surface": "git_bash",
+                    }),
+                    Requirement::MissingBinary { command } => serde_json::json!({
+                        "surface": "missing_binary",
+                        "command": command,
+                    }),
+                })
+                .collect();
+            let payload = serde_json::json!({
+                "agent_name": record.name,
+                "agent_pubkey": record.pubkey,
+                "requirements": reqs,
+            });
+            match serde_json::to_string(&payload) {
+                Ok(json) => Some(json),
+                Err(e) => {
+                    eprintln!(
+                        "buzz-desktop: failed to serialize setup payload for {}: {e}",
+                        record.name
+                    );
+                    None
                 }
-            } else {
-                None
-            };
+            }
+        } else {
+            None
+        };
 
         spawned_setup_mode = setup_payload_json.is_some();
 
@@ -764,9 +736,10 @@ pub fn spawn_agent_child(
     command.env("BUZZ_ACP_DEDUP", "queue");
     if let Some(meta) = runtime_meta {
         for (key, value) in meta.default_env {
-            if std::env::var(key).is_err() {
-                command.env(key, value);
-            }
+            // The isolated process starts from env_clear(), so ambient parent
+            // values are intentionally unavailable. Explicit descriptor env
+            // is written later and still wins over this runtime default.
+            command.env(key, value);
         }
     }
     let team_instructions = super::spawn_hash::effective_team_instructions(record, &teams);

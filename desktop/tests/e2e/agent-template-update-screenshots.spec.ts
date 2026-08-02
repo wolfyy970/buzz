@@ -8,6 +8,17 @@ const TEMPLATE_ID = "campaign-analyst-template";
 const TEMPLATE_NAME = "Campaign Analyst";
 const PREVIOUS_TEMPLATE_VERSION =
   "7d91f42b01481f4f36d7f3eca85bc50f684b09aa5ac9df16848e67bb0d64ae21";
+const CAMPAIGN_SKILL = {
+  name: "campaign-analysis",
+  description: "Compare campaign performance with the prior period.",
+  files: [
+    {
+      path: "SKILL.md",
+      content:
+        "---\nname: campaign-analysis\ndescription: Compare campaign performance with the prior period.\n---\n\n# Campaign analysis\n\nCompare campaign performance with the prior period.",
+    },
+  ],
+};
 
 const LINKED_AGENTS = [
   {
@@ -18,6 +29,7 @@ const LINKED_AGENTS = [
     status: "running" as const,
     channelNames: ["agents"],
     backend: { type: "local" as const },
+    skills: [CAMPAIGN_SKILL],
   },
   {
     pubkey: TEST_IDENTITIES.bob.pubkey,
@@ -27,6 +39,7 @@ const LINKED_AGENTS = [
     status: "stopped" as const,
     channelNames: ["agents"],
     backend: { type: "local" as const },
+    skills: [CAMPAIGN_SKILL],
   },
   {
     pubkey: TEST_IDENTITIES.charlie.pubkey,
@@ -40,6 +53,7 @@ const LINKED_AGENTS = [
       id: "blox",
       config: {},
     },
+    skills: [CAMPAIGN_SKILL],
   },
   {
     pubkey: TEST_IDENTITIES.outsider.pubkey,
@@ -49,6 +63,7 @@ const LINKED_AGENTS = [
     status: "stopped" as const,
     channelNames: ["agents"],
     backend: { type: "local" as const },
+    skills: [CAMPAIGN_SKILL],
   },
 ];
 
@@ -92,6 +107,7 @@ test.describe("agent template update screenshots", () => {
           displayName: TEMPLATE_NAME,
           systemPrompt:
             "Analyze campaign performance and explain what changed.",
+          skills: [CAMPAIGN_SKILL],
           updatedAt: "2026-07-15T12:00:00.000Z",
         },
       ],
@@ -148,6 +164,27 @@ test.describe("agent template update screenshots", () => {
       "02-template-editor-affected-agent-preview.png",
     );
 
+    const skillsSection = templateEditor.getByTestId("agent-skills-section");
+    await skillsSection.scrollIntoViewIfNeeded();
+    await expect(templateEditor.getByTestId("agent-skill-name-0")).toHaveValue(
+      "campaign-analysis",
+    );
+    await expect(
+      templateEditor.getByTestId("agent-skill-description-0"),
+    ).toHaveValue(CAMPAIGN_SKILL.description);
+    await capture(
+      page,
+      skillsSection,
+      "02-template-editor-portable-skills.png",
+    );
+    await templateEditor
+      .getByTestId("agent-skill-description-0")
+      .fill("Compare campaign performance and recommend the next action.");
+    await templateEditor
+      .getByTestId("agent-skill-file-content-0-0")
+      .fill(
+        "---\nname: campaign-analysis\ndescription: Compare campaign performance and recommend the next action.\n---\n\n# Campaign analysis\n\nCompare performance and recommend the next action.",
+      );
     await page
       .locator("#persona-system-prompt")
       .fill(
@@ -177,6 +214,8 @@ test.describe("agent template update screenshots", () => {
       `Update agents using ${TEMPLATE_NAME}?`,
     );
     await expect(updateReview).toContainText("Choose which agents");
+    await expect(updateReview).toContainText("Skills in this update");
+    await expect(updateReview).toContainText("Changed campaign-analysis");
     await expect(updateReview).toContainText(
       "Remote agents cannot be updated safely in this version.",
     );

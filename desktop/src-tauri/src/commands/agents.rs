@@ -775,6 +775,10 @@ pub async fn create_managed_agent(
             .as_ref()
             .map(|snapshot| snapshot.tool_requirements.clone())
             .unwrap_or_default();
+        let pinned_skills = persona_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.skills.clone())
+            .unwrap_or_default();
         let snapshot_source_version = persona_snapshot.as_ref().map(|s| s.source_version.clone());
         let pinned_persona_env_vars = persona_snapshot.as_ref().map(|s| s.env_vars.clone());
         let effective_provider = snapshot_provider
@@ -839,6 +843,7 @@ pub async fn create_managed_agent(
                     .filter(|value| !value.is_empty())
                     .map(str::to_string)
             }),
+            system_prompt_override: None,
             model: effective_model.clone(),
             provider: effective_provider.clone(),
             persona_source_version: snapshot_source_version,
@@ -846,6 +851,8 @@ pub async fn create_managed_agent(
             previous_persona_snapshots: Vec::new(),
             project_scope,
             pinned_tool_requirements,
+            pinned_skills,
+            skill_overrides: None,
             connection_bindings: input.connection_bindings.clone(),
             // Provider agents are managed externally — force false.
             start_on_app_launch: if input.backend != BackendKind::Local {

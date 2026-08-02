@@ -170,6 +170,7 @@ mod tests {
                 max_turn_duration_seconds: None,
                 name_pool: vec![],
                 tool_requirements: Vec::new(),
+                skills: Vec::new(),
             },
             profile: AgentSnapshotProfile {
                 display_name: "Tree Trunks".to_string(),

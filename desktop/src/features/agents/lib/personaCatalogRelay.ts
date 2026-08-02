@@ -5,6 +5,7 @@ import type {
   RelayEvent,
   RespondToMode,
 } from "@/shared/api/types";
+import { parseAgentSkills } from "@/shared/api/agentSkillTypes";
 import { KIND_PERSONA } from "@/shared/constants/kinds";
 
 export type CatalogPersonaShareLevel = "not-shared" | "none";
@@ -17,6 +18,7 @@ type CatalogAgentProjection = {
   model: string | null;
   provider: string | null;
   namePool: string[];
+  skills: AgentPersona["skills"];
   respondTo: RespondToMode | null;
   parallelism: number | null;
 };
@@ -175,6 +177,7 @@ function parsePersonaContent(event: RelayEvent): CatalogAgentProjection | null {
     model: optionalString(parsed.model),
     provider: optionalString(parsed.provider),
     namePool,
+    skills: parseAgentSkills(parsed.skills),
     respondTo,
     parallelism,
   };
@@ -304,6 +307,7 @@ function publicationToPersona(
     sourceTeam: null,
     envVars: {},
     toolRequirements: [],
+    skills: publication.agent.skills,
     respondTo: publication.agent.respondTo,
     respondToAllowlist: [],
     parallelism: publication.agent.parallelism,

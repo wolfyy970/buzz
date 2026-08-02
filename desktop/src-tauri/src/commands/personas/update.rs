@@ -96,6 +96,10 @@ pub(super) async fn update_persona_with<R: Send + 'static>(
                 )?;
                 persona.tool_requirements = tool_requirements;
             }
+            if let Some(skills) = input.skills {
+                crate::managed_agents::validate_agent_skills(&skills)?;
+                persona.skills = skills;
+            }
             apply_persona_behavior(persona, input.behavior)?;
             persona.updated_at = now_iso();
 

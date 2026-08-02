@@ -22,6 +22,10 @@ import {
   bindingsForToolRequirements,
   commonAgentToolChanges,
 } from "./AgentTemplateToolUpdateFields";
+import {
+  AgentTemplateSkillChangesSummary,
+  commonAgentSkillChanges,
+} from "./AgentTemplateSkillUpdateFields";
 
 type AgentTemplateUpdateDialogProps = {
   error: string | null;
@@ -103,6 +107,7 @@ export function AgentTemplateUpdateDialog({
     result?.agents.some((agent) => agent.outcome === "rollback_failed") ??
     false;
   const commonToolChanges = commonAgentToolChanges(changedAgents);
+  const commonSkillChanges = commonAgentSkillChanges(changedAgents);
   const bindingsReady = changedAgents
     .filter((agent) => selected.has(agent.pubkey))
     .every(
@@ -144,6 +149,9 @@ export function AgentTemplateUpdateDialog({
 
         {!isComplete && commonToolChanges ? (
           <AgentTemplateToolChangesSummary changes={commonToolChanges} />
+        ) : null}
+        {!isComplete && commonSkillChanges ? (
+          <AgentTemplateSkillChangesSummary changes={commonSkillChanges} />
         ) : null}
 
         {isPending ? (
@@ -273,6 +281,13 @@ export function AgentTemplateUpdateDialog({
                       <div className="mt-3">
                         <AgentTemplateToolChangesSummary
                           changes={agent.toolChanges}
+                        />
+                      </div>
+                    ) : null}
+                    {!isComplete && !commonSkillChanges && !isCurrent ? (
+                      <div className="mt-3">
+                        <AgentTemplateSkillChangesSummary
+                          changes={agent.skillChanges}
                         />
                       </div>
                     ) : null}

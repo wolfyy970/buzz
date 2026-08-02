@@ -23,6 +23,7 @@ fn persona(updated_at: &str) -> crate::managed_agents::AgentDefinition {
         created_at: "2026-08-02T10:00:00.000000000Z".to_string(),
         updated_at: updated_at.to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 
@@ -40,6 +41,18 @@ fn tool(id: &str, label: &str, capability: &str) -> crate::managed_agents::Agent
         label: label.to_string(),
         capability: capability.to_string(),
         required: true,
+    }
+}
+
+fn skill(name: &str, body: &str) -> crate::managed_agents::AgentSkill {
+    let description = format!("{name} description");
+    crate::managed_agents::AgentSkill {
+        name: name.to_string(),
+        description: description.clone(),
+        files: vec![crate::managed_agents::AgentSkillFile {
+            path: "SKILL.md".to_string(),
+            content: format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+        }],
     }
 }
 
@@ -87,6 +100,49 @@ fn tool_changes_are_computed_per_agent_snapshot() {
     assert_eq!(changes.changed[0].before, before[0]);
     assert_eq!(changes.changed[0].after, after[0]);
     assert_eq!(changes.removed, vec![before[1].clone()]);
+}
+
+#[test]
+fn skill_changes_are_computed_per_agent_snapshot() {
+    let before = vec![
+        skill("analysis", "Old workflow"),
+        skill("legacy-export", "Legacy workflow"),
+    ];
+    let after = vec![
+        skill("analysis", "New workflow"),
+        skill("issue-tracker", "Create issues"),
+    ];
+
+    let changes = skill_changes(&before, &after);
+
+    assert_eq!(changes.added, vec![after[1].clone()]);
+    assert_eq!(changes.changed.len(), 1);
+    assert_eq!(changes.changed[0].before, before[0]);
+    assert_eq!(changes.changed[0].after, after[0]);
+    assert_eq!(changes.removed, vec![before[1].clone()]);
+}
+
+#[test]
+fn advancing_a_template_pin_preserves_agent_only_overrides() {
+    let mut original = record();
+    original.system_prompt_override = Some("Only this agent".to_string());
+    original.skill_overrides = Some(vec![skill("private-analysis", "Private workflow")]);
+    let mut target = persona("2026-08-02T10:00:00.000000002Z");
+    target.system_prompt = "New template instructions".to_string();
+    target.skills = vec![skill("template-analysis", "Template workflow")];
+
+    let prospective = prospective_record(&original, &target, BTreeMap::new()).unwrap();
+
+    assert_eq!(
+        prospective.system_prompt.as_deref(),
+        Some("New template instructions")
+    );
+    assert_eq!(prospective.pinned_skills, target.skills);
+    assert_eq!(
+        prospective.system_prompt_override,
+        original.system_prompt_override
+    );
+    assert_eq!(prospective.skill_overrides, original.skill_overrides);
 }
 
 #[test]

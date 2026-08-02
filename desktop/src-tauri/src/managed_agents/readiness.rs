@@ -405,13 +405,27 @@ impl AgentReadiness {
 /// but the normal path is OAuth PKCE.  We intentionally do NOT mark the
 /// token as required to avoid a false NotReady for users on OAuth.
 pub(crate) fn agent_readiness(effective: &EffectiveAgentEnv) -> AgentReadiness {
+    agent_readiness_with_cli_home(effective, None)
+}
+
+pub(crate) fn agent_readiness_in_home(
+    effective: &EffectiveAgentEnv,
+    cli_home: &std::path::Path,
+) -> AgentReadiness {
+    agent_readiness_with_cli_home(effective, Some(cli_home))
+}
+
+fn agent_readiness_with_cli_home(
+    effective: &EffectiveAgentEnv,
+    cli_home: Option<&std::path::Path>,
+) -> AgentReadiness {
     if !effective.persona_env_snapshot_initialized {
         return AgentReadiness::NotReady {
             requirements: vec![Requirement::PersonaSnapshotUninitialized],
         };
     }
     let runtime = known_acp_runtime(&effective.effective_command);
-    let missing = collect_missing_requirements(effective, runtime);
+    let missing = collect_missing_requirements_in_home(effective, runtime, cli_home);
     if missing.is_empty() {
         AgentReadiness::Ready
     } else {
@@ -422,9 +436,10 @@ pub(crate) fn agent_readiness(effective: &EffectiveAgentEnv) -> AgentReadiness {
 }
 
 /// Collect all missing requirements for the given effective env + runtime.
-fn collect_missing_requirements(
+fn collect_missing_requirements_in_home(
     effective: &EffectiveAgentEnv,
     runtime: Option<&KnownAcpRuntime>,
+    cli_home: Option<&std::path::Path>,
 ) -> Vec<Requirement> {
     let Some(rt) = runtime else {
         // Unknown/custom command — check that the binary is actually resolvable.
@@ -445,12 +460,18 @@ fn collect_missing_requirements(
             let file_cfg = read_goose_file_config();
             goose_requirements(effective, file_cfg.as_ref())
         }
-        "claude" => cli_login::requirements(
+        "claude" => cli_login::requirements_in_home(
             &["claude", "auth", "status"],
             "complete Claude Code authentication by running the Claude CLI",
             rt,
+            cli_home,
         ),
-        "codex" => cli_login::requirements(&["codex", "login", "status"], "run `codex login`", rt),
+        "codex" => cli_login::requirements_in_home(
+            &["codex", "login", "status"],
+            "run `codex login`",
+            rt,
+            cli_home,
+        ),
         _ => vec![],
     }
 }

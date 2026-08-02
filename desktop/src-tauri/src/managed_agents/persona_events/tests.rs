@@ -1,8 +1,6 @@
 use super::*;
 use crate::managed_agents::{BackendKind, ManagedAgentRecord, RespondTo};
 
-/// A linked instance record with no persona-derived fields set yet — the
-/// state right after creation, before any snapshot apply.
 fn sample_record() -> ManagedAgentRecord {
     ManagedAgentRecord {
         pubkey: "p".repeat(64),
@@ -63,6 +61,9 @@ fn sample_record() -> ManagedAgentRecord {
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 
@@ -89,6 +90,7 @@ fn sample_persona() -> AgentDefinition {
         created_at: "2025-01-01T00:00:00Z".to_string(),
         updated_at: "2025-01-01T00:00:00Z".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 
@@ -210,7 +212,6 @@ fn persona_snapshot_history_is_bounded() {
 
 #[test]
 fn monotonic_created_at_bumps_past_head() {
-    // No head: uses now (floor 0).
     let now = nostr::Timestamp::now().as_secs() as i64;
     let none = monotonic_created_at(None).as_secs() as i64;
     assert!(none >= now, "no-head write must be >= now");
@@ -370,6 +371,7 @@ fn content_matches_nip_ap_vector() {
         respond_to_allowlist: Vec::new(),
         parallelism: None,
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
     assert_eq!(
         serde_json::to_string(&content).unwrap(),
@@ -435,6 +437,7 @@ fn content_matches_nip_ap_vector() {
         created_at: "2025-01-01T00:00:00Z".to_string(),
         updated_at: "2025-01-01T00:00:00Z".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
     let event = build_persona_event(&record)
         .unwrap()
@@ -467,6 +470,7 @@ fn round_trip_minimal_persona() {
         created_at: "2025-01-01T00:00:00Z".to_string(),
         updated_at: "2025-01-01T00:00:00Z".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
 
     let builder = build_persona_event(&record).unwrap();
@@ -565,6 +569,7 @@ fn quad_absent_definition_hash_stable_across_activation() {
         created_at: "2026-01-01T00:00:00Z".to_string(),
         updated_at: "2026-01-01T00:00:00Z".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
     let live = persona_event_content(&record);
     // The reserved-era projection: identical fields, quad hardcoded off.
@@ -610,6 +615,7 @@ fn persona_from_event_content_for_test(content: PersonaEventContent) -> AgentDef
         created_at: "2026-01-01T00:00:00Z".to_string(),
         updated_at: "2026-01-01T00:00:00Z".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 
@@ -627,6 +633,7 @@ fn persona_content_hash_is_deterministic() {
         respond_to_allowlist: Vec::new(),
         parallelism: None,
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
     let hash1 = persona_content_hash(&content);
     let hash2 = persona_content_hash(&content);
@@ -648,6 +655,7 @@ fn persona_content_hash_changes_on_edit() {
         respond_to_allowlist: Vec::new(),
         parallelism: None,
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
     let mut content2 = content1.clone();
     content2.system_prompt = Some("Goodbye".to_string());

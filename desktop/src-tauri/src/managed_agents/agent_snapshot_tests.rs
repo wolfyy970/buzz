@@ -53,6 +53,7 @@ fn minimal_record() -> ManagedAgentRecord {
             respond_to_allowlist: Vec::new(),
             parallelism: 10,
             tool_requirements: Vec::new(),
+            skills: Vec::new(),
         }],
         env_vars: {
             let mut m = BTreeMap::new();
@@ -96,6 +97,21 @@ fn minimal_record() -> ManagedAgentRecord {
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
+    }
+}
+
+fn portable_skill(name: &str, body: &str) -> crate::managed_agents::AgentSkill {
+    let description = "Portable snapshot skill";
+    crate::managed_agents::AgentSkill {
+        name: name.to_string(),
+        description: description.to_string(),
+        files: vec![crate::managed_agents::AgentSkillFile {
+            path: "SKILL.md".to_string(),
+            content: format!("---\nname: {name}\ndescription: {description}\n---\n\n{body}\n"),
+        }],
     }
 }
 
@@ -108,6 +124,17 @@ fn json_round_trip_config_only() {
     let bytes = encode_snapshot_json(&snapshot).unwrap();
     let parsed = decode_snapshot_json(&bytes).unwrap();
     assert_eq!(parsed, snapshot);
+}
+
+#[test]
+fn snapshot_exports_the_agents_effective_private_skills() {
+    let mut record = minimal_record();
+    record.pinned_skills = vec![portable_skill("analysis", "Template workflow")];
+    record.skill_overrides = Some(vec![portable_skill("analysis", "Agent-only workflow")]);
+
+    let snapshot = build_snapshot(&record, MemoryLevel::None, vec![], None);
+    assert_eq!(snapshot.definition.skills, record.skill_overrides.unwrap());
+    assert!(validate_snapshot(&snapshot).is_ok());
 }
 
 #[test]

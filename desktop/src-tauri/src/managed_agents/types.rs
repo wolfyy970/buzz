@@ -81,6 +81,9 @@ pub struct AgentDefinition {
     /// at the Project and agent-binding layers, never in this definition.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_requirements: Vec<AgentToolRequirement>,
+    /// Portable UTF-8 Skills bundled with this template.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<AgentSkill>,
     /// NIP-AP behavioral defaults, stored in WIRE shape (kebab-case string,
     /// not the `RespondTo` enum) so `persona_event_content` is a verbatim
     /// copy and quad-absent records serialize byte-identically to the
@@ -120,6 +123,7 @@ impl AgentDefinition {
             max_turn_duration_seconds: None,
             parallelism: default_agent_parallelism(),
             system_prompt: (!self.system_prompt.is_empty()).then_some(self.system_prompt),
+            system_prompt_override: None,
             model: self.model,
             provider: self.provider,
             persona_source_version: None,
@@ -127,6 +131,8 @@ impl AgentDefinition {
             previous_persona_snapshots: Vec::new(),
             env_vars: self.env_vars,
             pinned_tool_requirements: self.tool_requirements,
+            pinned_skills: self.skills,
+            skill_overrides: None,
             connection_bindings: BTreeMap::new(),
             start_on_app_launch: false,
             auto_restart_on_config_change: true,
@@ -194,6 +200,7 @@ impl ManagedAgentRecord {
             catalog_source: self.catalog_source.clone(),
             env_vars: self.env_vars.clone(),
             tool_requirements: self.pinned_tool_requirements.clone(),
+            skills: self.pinned_skills.clone(),
             respond_to: self.definition_respond_to.clone(),
             respond_to_allowlist: self.definition_respond_to_allowlist.clone(),
             parallelism: self.definition_parallelism,
@@ -203,21 +210,6 @@ impl ManagedAgentRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct RelayAgentInfo {
-    pub pubkey: String,
-    pub name: String,
-    pub agent_type: String,
-    pub channels: Vec<String>,
-    #[serde(default)]
-    pub channel_ids: Vec<String>,
-    pub capabilities: Vec<String>,
-    pub status: String,
-    #[serde(default)]
-    pub respond_to: Option<RespondTo>,
-    #[serde(default)]
-    pub respond_to_allowlist: Vec<String>,
-}
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ManagedAgentRecord {
     pub pubkey: String,
@@ -284,6 +276,10 @@ pub struct ManagedAgentRecord {
     #[serde(default = "default_agent_parallelism")]
     pub parallelism: u32,
     pub system_prompt: Option<String>,
+    /// Explicit instance-only instructions. `None` inherits the pinned
+    /// template instructions; `Some`, including an empty string, overrides.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub system_prompt_override: Option<String>,
     /// Desired LLM model ID. Matches AgentModelInfo.id from discovery.
     /// The harness re-discovers the correct ACP switching metadata at session
     /// creation by matching this ID against the fresh session/new response.
@@ -329,6 +325,13 @@ pub struct ManagedAgentRecord {
     /// Tool requirements pinned with the selected template version.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub pinned_tool_requirements: Vec<AgentToolRequirement>,
+    /// Skills pinned with the selected template revision.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pinned_skills: Vec<AgentSkill>,
+    /// Explicit instance-only Skills. `None` inherits `pinned_skills`;
+    /// `Some(empty)` intentionally gives this agent no template Skills.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub skill_overrides: Option<Vec<AgentSkill>>,
     /// Requirement id to Project connection id. Secret values are never stored
     /// here; the connection resolver reads them from the OS keyring at launch.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -457,24 +460,6 @@ pub struct ManagedAgentRecord {
     pub relay_mesh: Option<RelayMeshConfig>,
 }
 
-/// Typed relay-mesh configuration carried on a [`ManagedAgentRecord`].
-///
-/// Feature-independent on purpose: the field is always present in the record
-/// schema so saved agents round-trip identically whether or not the `mesh-llm`
-/// feature is compiled in.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct RelayMeshConfig {
-    /// The served model id this agent routes to (e.g. "Qwen3").
-    ///
-    /// `alias` because this struct crosses two boundaries with different
-    /// casing conventions: the TS create request sends camelCase
-    /// (`relayMesh: { modelRef }` — `rename_all` on the request does not
-    /// recurse into nested structs), while persisted records use snake_case.
-    /// Serialization stays `model_ref` so saved records are stable.
-    #[serde(alias = "modelRef")]
-    pub model_ref: String,
-}
-
 #[derive(Debug, Clone, Serialize)]
 pub struct ManagedAgentSummary {
     pub pubkey: String,
@@ -536,6 +521,9 @@ pub struct ManagedAgentSummary {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env_vars: BTreeMap<String, String>,
     pub tool_requirements: Vec<AgentToolRequirement>,
+    pub skills: Vec<AgentSkill>,
+    pub instructions_changed_for_agent: bool,
+    pub skills_changed_for_agent: bool,
     pub connection_bindings: BTreeMap<String, String>,
     pub backend: BackendKind,
     pub backend_agent_id: Option<String>,
@@ -987,6 +975,10 @@ mod project_tools;
 pub use project_tools::{AgentProjectScope, AgentToolRequirement};
 mod requests;
 pub use requests::*;
+mod runtime_views;
+pub use runtime_views::{RelayAgentInfo, RelayMeshConfig};
+mod template_skills;
+pub use template_skills::{AgentSkill, AgentSkillFile};
 
 #[cfg(test)]
 mod tests;

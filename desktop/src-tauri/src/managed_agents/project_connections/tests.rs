@@ -42,6 +42,7 @@ fn record(required: bool) -> ManagedAgentRecord {
         created_at: now_iso(),
         updated_at: now_iso(),
         tool_requirements: vec![requirement(required)],
+        skills: Vec::new(),
     };
     let mut record = definition.into_agent_record();
     record.project_scope = Some(scope());

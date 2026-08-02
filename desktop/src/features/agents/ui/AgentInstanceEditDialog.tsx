@@ -94,6 +94,7 @@ import {
   usePendingHarnessSelection,
 } from "./addCustomHarness";
 import { useAgentConnectionBindingsDraft } from "./useAgentConnectionBindingsDraft";
+import { useAgentInstanceTemplateOverridesDraft } from "./useAgentInstanceTemplateOverridesDraft";
 
 export function AgentInstanceEditDialog({
   agent,
@@ -155,6 +156,12 @@ export function AgentInstanceEditDialog({
         : null,
     [agent.personaId, personasQuery.data],
   );
+  const templateOverrides = useAgentInstanceTemplateOverridesDraft({
+    agent,
+    disabled: updateMutation.isPending,
+    open,
+    template: linkedPersona,
+  });
   const inheritedEnvVars = linkedPersona?.envVars ?? {};
   const [respondTo, setRespondTo] = React.useState<RespondToMode>(
     agent.respondTo,
@@ -614,6 +621,7 @@ export function AgentInstanceEditDialog({
     }) &&
     providerValid &&
     connectionsDraft.valid &&
+    templateOverrides.valid &&
     !updateMutation.isPending &&
     !isAvatarUploadPending;
 
@@ -624,14 +632,8 @@ export function AgentInstanceEditDialog({
         .split(",")
         .map((v) => v.trim())
         .filter((v) => v.length > 0);
-      // Model to persist — from the shared inherited-submission snapshot so a
-      // provider-backed inherit-transition carries the persona model (readiness
-      // requires one) and a deliberate local model still wins.
       const normalizedModel = inheritedSubmission.model;
 
-      // Harness pin resolution — see resolveAgentCommandUpdate for the full
-      // sentinel/pin/no-op contract, including the inherit→pin transition where
-      // the prefilled command equals the original but must still be pinned.
       const agentCommandUpdate = resolveAgentCommandUpdate({
         inheritHarness,
         agentCommand,
@@ -639,22 +641,11 @@ export function AgentInstanceEditDialog({
         agentCommandOverride: agent.agentCommandOverride ?? null,
       });
 
-      // Classify the effective post-submit runtime's provider capability as a
-      // tri-state: "capable" persists the provider, "locked" clears it (only
-      // when we KNOW it's provider-locked, e.g. Claude), "unknown" OMITS it so a
-      // transient/custom state never becomes a destructive write. Resolved
-      // STATICALLY (by id) so a not-yet-loaded catalog can't misclassify a known
-      // runtime as "unknown" — see resolveRuntimeProviderCapability. The runtime
-      // id is the shared prospectiveRuntimeId, so submit and the block-save gate
-      // always agree on which runtime is being saved.
       const providerRuntimeCapability = resolveRuntimeProviderCapability(
         prospectiveRuntimeId,
         runtimeSupportsLlmProviderSelection(prospectiveRuntimeId),
       );
 
-      // Provider + env to persist — the shared inherited-submission snapshot
-      // (same values the credential gate validates), so gate ↔ record ↔ spawn
-      // all agree. See resolveInheritedRuntimeSubmission.
       const normalizedSubmitProvider = inheritedSubmission.provider;
       const submitEnvVars = inheritedSubmission.envVars;
       const input: UpdateManagedAgentInput = {
@@ -681,7 +672,6 @@ export function AgentInstanceEditDialog({
           parsedParallelism > 0 && parsedParallelism !== agent.parallelism
             ? parsedParallelism
             : undefined,
-        // Linked instances defer model/provider/systemPrompt to the definition.
         systemPrompt:
           linkedPersona != null
             ? undefined
@@ -727,6 +717,7 @@ export function AgentInstanceEditDialog({
           respondToAllowlist.join(",") !== agent.respondToAllowlist.join(",")
             ? respondToAllowlist
             : undefined,
+        ...(linkedPersona ? templateOverrides.update : {}),
       };
 
       const result = await updateMutation.mutateAsync(input);
@@ -799,7 +790,6 @@ export function AgentInstanceEditDialog({
     status: modelDiscoveryStatus,
   });
 
-  // Provider field derived state
   const trimmedProvider = provider.trim();
   const hideProviderIds = React.useMemo(
     () =>
@@ -849,23 +839,32 @@ export function AgentInstanceEditDialog({
         headerClassName="pb-2"
         title="Edit this agent"
         footer={
-          <div className="flex w-full items-center justify-end gap-2">
-            <Button
-              disabled={updateMutation.isPending || isAvatarUploadPending}
-              onClick={() => handleOpenChange(false)}
-              type="button"
-              variant="outline"
-            >
-              Cancel
-            </Button>
-            <Button
-              data-testid="edit-agent-dialog-submit"
-              disabled={!canSubmit}
-              onClick={() => void handleSubmit()}
-              type="button"
-            >
-              {updateMutation.isPending ? "Saving..." : "Save changes"}
-            </Button>
+          <div className="flex w-full items-center justify-between gap-3">
+            {templateOverrides.submitBlockReason ? (
+              <p className="text-2xs text-muted-foreground">
+                {templateOverrides.submitBlockReason}
+              </p>
+            ) : (
+              <span />
+            )}
+            <div className="flex items-center gap-2">
+              <Button
+                disabled={updateMutation.isPending || isAvatarUploadPending}
+                onClick={() => handleOpenChange(false)}
+                type="button"
+                variant="outline"
+              >
+                Cancel
+              </Button>
+              <Button
+                data-testid="edit-agent-dialog-submit"
+                disabled={!canSubmit}
+                onClick={() => void handleSubmit()}
+                type="button"
+              >
+                {updateMutation.isPending ? "Saving..." : "Save changes"}
+              </Button>
+            </div>
           </div>
         }
       >
@@ -878,8 +877,7 @@ export function AgentInstanceEditDialog({
             <span className="font-medium text-foreground">{agent.name}</span>{" "}
             will change.
           </p>
-          {/* Avatar is definition-level identity. hideEditControl suppresses
-              the internal pencil badge; the CTA below is the only edit path. */}
+          {/* Avatar is definition-level identity; its CTA edits the template. */}
           <div className="flex flex-col items-center gap-2">
             <AgentCreationPreview
               avatarUrl={previewAvatarUrl}
@@ -938,6 +936,8 @@ export function AgentInstanceEditDialog({
                 />
               </div>
             </div>
+
+            {templateOverrides.section}
 
             {/* Who can send instructions */}
             <CreateAgentRespondToField

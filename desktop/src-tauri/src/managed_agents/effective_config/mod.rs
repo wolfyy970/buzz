@@ -14,6 +14,7 @@ use super::types::{AgentDefinition, ManagedAgentRecord};
 pub enum ConfigSource {
     Definition,
     Global,
+    InstanceOverride,
     InstanceLegacy,
 }
 
@@ -95,8 +96,17 @@ fn resolve_linked(record: &ManagedAgentRecord, global: &GlobalAgentConfig) -> Ef
     };
 
     let system_prompt = ResolvedField {
-        value: non_blank(record.system_prompt.as_deref()).map(str::to_owned),
-        source: ConfigSource::Definition,
+        value: record
+            .system_prompt_override
+            .as_deref()
+            .or(record.system_prompt.as_deref())
+            .and_then(|value| non_blank(Some(value)))
+            .map(str::to_owned),
+        source: if record.system_prompt_override.is_some() {
+            ConfigSource::InstanceOverride
+        } else {
+            ConfigSource::Definition
+        },
     };
 
     EffectiveAgentConfig {
@@ -209,8 +219,17 @@ fn resolve_definition_less(
     };
 
     let system_prompt = ResolvedField {
-        value: non_blank(record.system_prompt.as_deref()).map(str::to_owned),
-        source: ConfigSource::InstanceLegacy,
+        value: record
+            .system_prompt_override
+            .as_deref()
+            .or(record.system_prompt.as_deref())
+            .and_then(|value| non_blank(Some(value)))
+            .map(str::to_owned),
+        source: if record.system_prompt_override.is_some() {
+            ConfigSource::InstanceOverride
+        } else {
+            ConfigSource::InstanceLegacy
+        },
     };
 
     let mut config = EffectiveAgentConfig {

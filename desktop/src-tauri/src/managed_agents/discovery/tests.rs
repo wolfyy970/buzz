@@ -207,12 +207,12 @@ fn persona_with_runtime(id: &str, runtime: Option<&str>) -> crate::managed_agent
         created_at: "2026-06-09T00:00:00Z".to_string(),
         updated_at: "2026-06-09T00:00:00Z".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 
 #[test]
 fn effective_agent_command_explicit_override_wins() {
-    // An explicit pin beats the persona's runtime.
     let personas = vec![persona_with_runtime("p1", Some("claude"))];
     assert_eq!(
         effective_agent_command(Some("p1"), &personas, Some("codex-acp")),
@@ -220,8 +220,6 @@ fn effective_agent_command_explicit_override_wins() {
     );
 }
 
-/// Minimal record for `record_agent_command` tests. Only the resolution
-/// inputs (runtime / persona_id / agent_command_override) vary.
 fn record_with(
     runtime: Option<&str>,
     persona_id: Option<&str>,
@@ -286,12 +284,14 @@ fn record_with(
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 
 #[test]
 fn record_agent_command_own_runtime_wins_over_persona() {
-    // A materialized runtime never consults the persona list.
     let personas = vec![persona_with_runtime("p1", Some("goose"))];
     let record = record_with(Some("claude"), Some("p1"), None);
     assert_eq!(record_agent_command(&record, &personas), "claude-agent-acp");

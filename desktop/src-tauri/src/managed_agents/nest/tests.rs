@@ -445,6 +445,7 @@ fn make_persona(id: &str, display_name: &str) -> AgentDefinition {
         created_at: String::new(),
         updated_at: String::new(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 
@@ -508,6 +509,9 @@ fn make_agent(name: &str, persona_id: Option<&str>) -> ManagedAgentRecord {
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 

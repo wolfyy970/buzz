@@ -659,6 +659,7 @@ export function fromRawManagedAgent(agent: RawManagedAgent): ManagedAgent {
     maxTurnDurationSeconds: agent.max_turn_duration_seconds,
     parallelism: agent.parallelism,
     systemPrompt: agent.system_prompt,
+    instructionsChangedForAgent: agent.instructions_changed_for_agent ?? false,
     avatarUrl: agent.avatar_url ?? null,
     model: agent.model,
     modelSource: agent.model_source ?? null,
@@ -684,6 +685,8 @@ export function fromRawManagedAgent(agent: RawManagedAgent): ManagedAgent {
     backendAgentId: agent.backend_agent_id,
     projectScope: agent.project_scope ?? null,
     toolRequirements: agent.tool_requirements ?? [],
+    skills: agent.skills ?? [],
+    skillsChangedForAgent: agent.skills_changed_for_agent ?? false,
     connectionBindings: agent.connection_bindings ?? {},
     // Fallbacks for pre-feature mocks/fixtures that don't carry these fields.
     // Real agent records always include them (defaulted server-side).

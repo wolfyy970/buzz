@@ -43,6 +43,10 @@ pub(crate) const AGENTS_MD: &str = include_str!("nest_agents.md");
 /// Written to ~/.buzz/.agents/skills/buzz-cli/SKILL.md on first init.
 const BUZZ_CLI_SKILL_MD: &str = include_str!("nest_skill.md");
 
+pub(crate) fn bundled_buzz_cli_skill() -> &'static str {
+    BUZZ_CLI_SKILL_MD
+}
+
 /// Template content version for AGENTS.md static content (above managed markers).
 /// Bump this when changing `nest_agents.md` to trigger refresh on existing installs.
 /// Version 1 is implicitly "before this mechanism existed" (no version file).

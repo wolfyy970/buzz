@@ -625,6 +625,7 @@ mod tests {
                 idle_timeout_seconds: None,
                 max_turn_duration_seconds: None,
                 tool_requirements: Vec::new(),
+                skills: Vec::new(),
             },
             profile: AgentSnapshotProfile {
                 display_name: "Test".to_string(),
@@ -676,6 +677,7 @@ mod tests {
                 idle_timeout_seconds: None,
                 max_turn_duration_seconds: None,
                 tool_requirements: Vec::new(),
+                skills: Vec::new(),
             },
             profile: AgentSnapshotProfile {
                 display_name: "Test".to_string(),
@@ -723,6 +725,7 @@ mod tests {
                 idle_timeout_seconds: None,
                 max_turn_duration_seconds: None,
                 tool_requirements: Vec::new(),
+                skills: Vec::new(),
             },
             profile: AgentSnapshotProfile {
                 display_name: "Test".to_string(),

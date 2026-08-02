@@ -15,6 +15,7 @@ import { activateRateLimit } from "@/shared/api/relayRateLimitGate";
 import type { ConnectionState } from "@/shared/api/relayClientShared";
 import type {
   AgentProjectScope,
+  AgentSkill,
   AgentToolRequirement,
   ChannelTemplate,
   RelayEvent,
@@ -99,6 +100,10 @@ type MockManagedAgentSeed = {
   respondToAllowlist?: string[];
   projectScope?: RawManagedAgent["project_scope"];
   toolRequirements?: RawManagedAgent["tool_requirements"];
+  skills?: RawManagedAgent["skills"];
+  systemPrompt?: string | null;
+  instructionsChangedForAgent?: boolean;
+  skillsChangedForAgent?: boolean;
   connectionBindings?: RawManagedAgent["connection_bindings"];
 };
 
@@ -137,6 +142,7 @@ type MockPersonaSeed = {
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
   toolRequirements?: NonNullable<RawPersona["tool_requirements"]>;
+  skills?: NonNullable<RawPersona["skills"]>;
 };
 
 type MockTeamSeed = {
@@ -809,6 +815,7 @@ type RawManagedAgent = {
   max_turn_duration_seconds: number | null;
   parallelism: number;
   system_prompt: string | null;
+  instructions_changed_for_agent?: boolean;
   avatar_url: string | null;
   model: string | null;
   provider?: string | null;
@@ -832,6 +839,8 @@ type RawManagedAgent = {
   backend_agent_id: string | null;
   project_scope: AgentProjectScope | null;
   tool_requirements: AgentToolRequirement[];
+  skills?: AgentSkill[];
+  skills_changed_for_agent?: boolean;
   connection_bindings: Record<string, string>;
   respond_to: "owner-only" | "allowlist" | "anyone";
   respond_to_allowlist: string[];
@@ -891,6 +900,7 @@ type RawPersona = {
   catalog_source?: { owner_pubkey: string; persona_id: string } | null;
   env_vars?: Record<string, string>;
   tool_requirements?: AgentToolRequirement[];
+  skills?: AgentSkill[];
   respond_to?: string | null;
   respond_to_allowlist?: string[];
   parallelism?: number | null;
@@ -1585,6 +1595,8 @@ function cloneManagedAgent(agent: MockManagedAgent): RawManagedAgent {
     max_turn_duration_seconds: agent.max_turn_duration_seconds ?? null,
     parallelism: agent.parallelism,
     system_prompt: agent.system_prompt,
+    instructions_changed_for_agent:
+      agent.instructions_changed_for_agent ?? false,
     avatar_url: agent.avatar_url ?? null,
     model: agent.model,
     provider: agent.provider ?? null,
@@ -1608,6 +1620,11 @@ function cloneManagedAgent(agent: MockManagedAgent): RawManagedAgent {
     tool_requirements: (agent.tool_requirements ?? []).map((requirement) => ({
       ...requirement,
     })),
+    skills: (agent.skills ?? []).map((skill) => ({
+      ...skill,
+      files: skill.files.map((file) => ({ ...file })),
+    })),
+    skills_changed_for_agent: agent.skills_changed_for_agent ?? false,
     connection_bindings: { ...(agent.connection_bindings ?? {}) },
     respond_to: agent.respond_to ?? "owner-only",
     respond_to_allowlist: agent.respond_to_allowlist
@@ -2125,7 +2142,8 @@ function buildSeededManagedAgent(seed: MockManagedAgentSeed): MockManagedAgent {
     idle_timeout_seconds: null,
     max_turn_duration_seconds: null,
     parallelism: 1,
-    system_prompt: null,
+    system_prompt: seed.systemPrompt ?? null,
+    instructions_changed_for_agent: seed.instructionsChangedForAgent ?? false,
     avatar_url: seed.avatarUrl ?? null,
     model: null,
     env_vars: {},
@@ -2146,6 +2164,8 @@ function buildSeededManagedAgent(seed: MockManagedAgentSeed): MockManagedAgent {
     backend_agent_id: null,
     project_scope: seed.projectScope ?? null,
     tool_requirements: seed.toolRequirements ?? [],
+    skills: seed.skills ?? [],
+    skills_changed_for_agent: seed.skillsChangedForAgent ?? false,
     connection_bindings: seed.connectionBindings ?? {},
     respond_to: seed.respondTo ?? "owner-only",
     respond_to_allowlist: seed.respondToAllowlist ?? [],
@@ -2303,6 +2323,7 @@ function resetMockPersonas(config?: E2eConfig) {
       source_team: persona.sourceTeam ?? null,
       env_vars: { ...(persona.envVars ?? {}) },
       tool_requirements: persona.toolRequirements ?? [],
+      skills: persona.skills ?? [],
       created_at: now,
       updated_at: persona.updatedAt ?? now,
     });
@@ -7659,6 +7680,7 @@ async function handleCreatePersona(args: {
     provider?: string;
     envVars?: Record<string, string>;
     toolRequirements?: NonNullable<RawPersona["tool_requirements"]>;
+    skills?: NonNullable<RawPersona["skills"]>;
     behavior?: PersonaBehaviorInput;
     catalogSource?: { ownerPubkey: string; personaId: string };
   };
@@ -7688,6 +7710,10 @@ async function handleCreatePersona(args: {
       : null,
     env_vars: { ...(args.input.envVars ?? {}) },
     tool_requirements: [...(args.input.toolRequirements ?? [])],
+    skills: (args.input.skills ?? []).map((skill) => ({
+      ...skill,
+      files: skill.files.map((file) => ({ ...file })),
+    })),
     created_at: now,
     updated_at: now,
   };
@@ -7707,6 +7733,7 @@ type MockUpdatePersonaInput = {
   provider?: string;
   envVars?: Record<string, string>;
   toolRequirements?: NonNullable<RawPersona["tool_requirements"]>;
+  skills?: NonNullable<RawPersona["skills"]>;
   behavior?: PersonaBehaviorInput;
 };
 
@@ -7746,6 +7773,12 @@ async function applyMockPersonaUpdate(
   if (input.toolRequirements !== undefined) {
     persona.tool_requirements = input.toolRequirements.map((requirement) => ({
       ...requirement,
+    }));
+  }
+  if (input.skills !== undefined) {
+    persona.skills = input.skills.map((skill) => ({
+      ...skill,
+      files: skill.files.map((file) => ({ ...file })),
     }));
   }
   applyMockPersonaBehavior(persona, input.behavior);
@@ -7848,6 +7881,7 @@ function upsertMockPersonaEvent(persona: RawPersona): void {
       model: persona.model ?? null,
       provider: persona.provider ?? null,
       name_pool: persona.name_pool ?? [],
+      skills: persona.skills ?? [],
       respond_to: persona.respond_to ?? null,
       respond_to_allowlist: persona.respond_to_allowlist ?? [],
       parallelism: persona.parallelism ?? null,
@@ -7958,6 +7992,24 @@ function mockToolChanges(
   };
 }
 
+function mockSkillChanges(
+  current: NonNullable<RawPersona["skills"]>,
+  target: NonNullable<RawPersona["skills"]>,
+) {
+  const currentByName = new Map(current.map((skill) => [skill.name, skill]));
+  const targetByName = new Map(target.map((skill) => [skill.name, skill]));
+  return {
+    added: target.filter((skill) => !currentByName.has(skill.name)),
+    changed: target.flatMap((skill) => {
+      const before = currentByName.get(skill.name);
+      return before && JSON.stringify(before) !== JSON.stringify(skill)
+        ? [{ before, after: skill }]
+        : [];
+    }),
+    removed: current.filter((skill) => !targetByName.has(skill.name)),
+  };
+}
+
 function handlePreviewAgentTemplateUpdate(args: { personaId: string }) {
   const persona = mockPersonas.find(
     (candidate) => candidate.id === args.personaId,
@@ -7971,6 +8023,7 @@ function handlePreviewAgentTemplateUpdate(args: { personaId: string }) {
     personaName: persona.display_name,
     targetVersion,
     targetToolRequirements: persona.tool_requirements ?? [],
+    targetSkills: persona.skills ?? [],
     agents: mockManagedAgents
       .filter((agent) => agent.persona_id === persona.id)
       .map((agent) => ({
@@ -7989,6 +8042,10 @@ function handlePreviewAgentTemplateUpdate(args: { personaId: string }) {
         toolChanges: mockToolChanges(
           agent.tool_requirements ?? [],
           persona.tool_requirements ?? [],
+        ),
+        skillChanges: mockSkillChanges(
+          agent.skills ?? [],
+          persona.skills ?? [],
         ),
         toolBindingIssues: [],
       }))
@@ -8159,6 +8216,12 @@ async function handleApplyAgentTemplateUpdate(args: {
       if (stored) {
         stored.persona_source_version = preview.targetVersion;
         stored.tool_requirements = preview.targetToolRequirements;
+        if (!stored.skills_changed_for_agent) {
+          stored.skills = preview.targetSkills.map((skill) => ({
+            ...skill,
+            files: skill.files.map((file) => ({ ...file })),
+          }));
+        }
         stored.connection_bindings = {
           ...(args.input.connectionBindingsByPubkey?.[stored.pubkey] ??
             stored.connection_bindings ??
@@ -8434,6 +8497,7 @@ async function handleCreateManagedAgent(
     max_turn_duration_seconds: args.input.maxTurnDurationSeconds ?? null,
     parallelism: mintParallelism,
     system_prompt: args.input.systemPrompt?.trim() || null,
+    instructions_changed_for_agent: false,
     avatar_url: avatarUrl,
     model: args.input.model?.trim() || linkedPersona?.model || null,
     provider: args.input.provider?.trim() || linkedPersona?.provider || null,
@@ -8457,6 +8521,12 @@ async function handleCreateManagedAgent(
       linkedPersona?.tool_requirements?.map((requirement) => ({
         ...requirement,
       })) ?? [],
+    skills:
+      linkedPersona?.skills?.map((skill) => ({
+        ...skill,
+        files: skill.files.map((file) => ({ ...file })),
+      })) ?? [],
+    skills_changed_for_agent: false,
     connection_bindings: { ...(args.input.connectionBindings ?? {}) },
     respond_to: mintRespondTo,
     respond_to_allowlist: [...mintRespondToAllowlist],
@@ -8706,6 +8776,9 @@ async function handleUpdateManagedAgent(args: {
     name?: string;
     model?: string | null;
     systemPrompt?: string | null;
+    resetSystemPromptToTemplate?: boolean;
+    skills?: RawManagedAgent["skills"];
+    resetSkillsToTemplate?: boolean;
     envVars?: Record<string, string>;
     projectScope?: RawManagedAgent["project_scope"];
     connectionBindings?: RawManagedAgent["connection_bindings"];
@@ -8720,8 +8793,29 @@ async function handleUpdateManagedAgent(args: {
   if (args.input.model !== undefined) {
     agent.model = args.input.model;
   }
-  if (args.input.systemPrompt !== undefined) {
+  if (args.input.resetSystemPromptToTemplate) {
+    agent.system_prompt = null;
+    agent.instructions_changed_for_agent = false;
+  } else if (args.input.systemPrompt !== undefined) {
     agent.system_prompt = args.input.systemPrompt;
+    agent.instructions_changed_for_agent = agent.persona_id !== null;
+  }
+  if (args.input.resetSkillsToTemplate) {
+    const persona = mockPersonas.find(
+      (candidate) => candidate.id === agent.persona_id,
+    );
+    agent.skills =
+      persona?.skills?.map((skill) => ({
+        ...skill,
+        files: skill.files.map((file) => ({ ...file })),
+      })) ?? [];
+    agent.skills_changed_for_agent = false;
+  } else if (args.input.skills !== undefined) {
+    agent.skills = args.input.skills.map((skill) => ({
+      ...skill,
+      files: skill.files.map((file) => ({ ...file })),
+    }));
+    agent.skills_changed_for_agent = agent.persona_id !== null;
   }
   if (args.input.envVars !== undefined) {
     agent.env_vars = { ...args.input.envVars };

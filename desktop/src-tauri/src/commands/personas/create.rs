@@ -54,6 +54,7 @@ pub async fn create_persona(
         crate::managed_agents::project_connections::validate_tool_requirements(
             &input.tool_requirements,
         )?;
+        crate::managed_agents::validate_agent_skills(&input.skills)?;
         let mut persona = AgentDefinition {
             id: Uuid::new_v4().to_string(),
             display_name,
@@ -71,6 +72,7 @@ pub async fn create_persona(
             catalog_source,
             env_vars: input.env_vars,
             tool_requirements: input.tool_requirements,
+            skills: input.skills,
             respond_to: None,
             respond_to_allowlist: Vec::new(),
             parallelism: None,

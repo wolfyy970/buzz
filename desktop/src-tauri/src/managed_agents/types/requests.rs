@@ -7,7 +7,7 @@ use serde::Deserialize;
 
 use super::{
     default_start_on_app_launch, validate_respond_to_allowlist, AgentDefinition, AgentProjectScope,
-    AgentToolRequirement, BackendKind, CatalogSource, RelayMeshConfig, RespondTo,
+    AgentSkill, AgentToolRequirement, BackendKind, CatalogSource, RelayMeshConfig, RespondTo,
 };
 
 /// The NIP-AP behavioral group as one grouped request field.
@@ -92,6 +92,9 @@ pub struct CreatePersonaRequest {
     /// only when an instance is launched.
     #[serde(default)]
     pub tool_requirements: Vec<AgentToolRequirement>,
+    /// Portable Skills bundled with this template.
+    #[serde(default)]
+    pub skills: Vec<AgentSkill>,
     /// NIP-AP behavioral group. Absent = behavior group stays unset.
     #[serde(default)]
     pub behavior: Option<PersonaBehaviorRequest>,
@@ -128,6 +131,10 @@ pub struct UpdatePersonaRequest {
     /// requirement set, including an empty list to clear it.
     #[serde(default)]
     pub tool_requirements: Option<Vec<AgentToolRequirement>>,
+    /// Absent means Skills were not edited. Present replaces the complete
+    /// portable Skills section, including an empty list to clear it.
+    #[serde(default)]
+    pub skills: Option<Vec<AgentSkill>>,
     /// NIP-AP behavioral group. Same absent-vs-present contract as `env_vars`:
     /// absent = don't touch the stored behavior group (legacy callers don't send it),
     /// present = validate and replace the fields as a unit.
@@ -222,6 +229,15 @@ pub struct UpdateManagedAgentRequest {
     pub model: Option<Option<String>>,
     #[serde(default)]
     pub system_prompt: Option<Option<String>>,
+    /// Reset agent-only instructions and inherit the pinned template again.
+    #[serde(default)]
+    pub reset_system_prompt_to_template: bool,
+    /// Absent = don't touch. Present = replace this agent's private Skills.
+    #[serde(default)]
+    pub skills: Option<Vec<AgentSkill>>,
+    /// Reset agent-only Skills and inherit the pinned template again.
+    #[serde(default)]
+    pub reset_skills_to_template: bool,
     /// Absent = don't touch. Present = replace the env_vars map entirely.
     #[serde(default)]
     pub env_vars: Option<BTreeMap<String, String>>,
@@ -311,6 +327,7 @@ mod tests {
             created_at: "2026-01-01T00:00:00Z".to_string(),
             updated_at: "2026-01-01T00:00:00Z".to_string(),
             tool_requirements: Vec::new(),
+            skills: Vec::new(),
         }
     }
 

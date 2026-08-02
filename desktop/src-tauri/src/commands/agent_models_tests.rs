@@ -407,6 +407,7 @@ fn model_discovery_uses_selected_revision_for_linked_agent() {
         created_at: "".to_string(),
         updated_at: "".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     };
 
     // agent_model_discovery_config is the single helper get_agent_models
@@ -472,11 +473,11 @@ fn update_request_turn_timeout_parses_for_wire_compat() {
 }
 
 // ---------------------------------------------------------------------------
-// Linked-instance write guard (model/provider/prompt)
+// Linked-instance private instructions
 // ---------------------------------------------------------------------------
 
 #[test]
-fn linked_instance_ignores_model_provider_prompt_writes() {
+fn linked_instance_keeps_model_provider_pins_and_writes_private_prompt() {
     let mut record: crate::managed_agents::ManagedAgentRecord = serde_json::from_str(
         r#"{
             "pubkey": "linked1",
@@ -524,6 +525,10 @@ fn linked_instance_ignores_model_provider_prompt_writes() {
     assert!(
         record.system_prompt.is_none(),
         "linked record system_prompt must not be updated"
+    );
+    assert_eq!(
+        record.system_prompt_override.as_deref(),
+        Some("explicit-prompt")
     );
 }
 

@@ -11,10 +11,20 @@ use crate::managed_agents::{
 use super::{cli_probe, Requirement};
 
 /// Requirements for CLI-login runtimes (claude, codex).
+#[cfg(test)]
 pub(super) fn requirements(
     probe_args: &[&str],
     setup_copy: &str,
     runtime: &KnownAcpRuntime,
+) -> Vec<Requirement> {
+    requirements_in_home(probe_args, setup_copy, runtime, None)
+}
+
+pub(super) fn requirements_in_home(
+    probe_args: &[&str],
+    setup_copy: &str,
+    runtime: &KnownAcpRuntime,
+    cli_home: Option<&Path>,
 ) -> Vec<Requirement> {
     let adapter_result = runtime
         .commands
@@ -47,7 +57,12 @@ pub(super) fn requirements(
                 )];
             };
             let augmented_path = cli_probe::augmented_path();
-            match cli_probe::login_probe(&binary_path, probe_args, augmented_path.as_deref()) {
+            match cli_probe::login_probe_in_home(
+                &binary_path,
+                probe_args,
+                augmented_path.as_deref(),
+                cli_home,
+            ) {
                 cli_probe::ProbeOutcome::LoggedIn => vec![],
                 cli_probe::ProbeOutcome::LoggedOut => vec![missing_requirement(
                     probe_args,

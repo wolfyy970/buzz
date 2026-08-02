@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use super::{AgentToolRequirement, RespondTo};
+use super::{AgentSkill, AgentToolRequirement, RespondTo};
 
 /// One prior, locally pinned persona revision for a managed-agent instance.
 ///
@@ -35,4 +35,6 @@ pub struct PersonaSnapshotHistoryEntry {
     /// bindings remain instance-owned and are not rollback material here.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_requirements: Vec<AgentToolRequirement>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<AgentSkill>,
 }

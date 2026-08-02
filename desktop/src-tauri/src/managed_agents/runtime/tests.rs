@@ -186,6 +186,9 @@ fn fixture(
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     }
 }
 
@@ -310,6 +313,7 @@ fn persona_with_provider(
         created_at: "2026-06-09T00:00:00Z".to_string(),
         updated_at: "2026-06-09T00:00:00Z".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }
 }
 

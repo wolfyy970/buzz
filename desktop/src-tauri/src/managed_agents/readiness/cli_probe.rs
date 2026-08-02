@@ -53,13 +53,44 @@ const CONFIG_PARSE_SIGNALS: &[&str] = &["error loading configuration", "unknown 
 /// bypassed. Injects the same augmented PATH used for launched agents so
 /// script shims with `/usr/bin/env <interpreter>` shebangs can find runtimes
 /// such as node/python when the app was launched with a bare GUI PATH.
+#[cfg(test)]
 pub(crate) fn login_probe(
     binary_path: &Path,
     probe_args: &[&str],
     augmented_path: Option<&str>,
 ) -> ProbeOutcome {
+    login_probe_in_home(binary_path, probe_args, augmented_path, None)
+}
+
+pub(crate) fn login_probe_in_home(
+    binary_path: &Path,
+    probe_args: &[&str],
+    augmented_path: Option<&str>,
+    cli_home: Option<&Path>,
+) -> ProbeOutcome {
     let mut command = std::process::Command::new(binary_path);
     command.args(&probe_args[1..]);
+    if let Some(home) = cli_home {
+        command.env_clear();
+        for key in [
+            "LANG",
+            "LC_ALL",
+            "TZ",
+            "TMPDIR",
+            "TEMP",
+            "TMP",
+            "SystemRoot",
+        ] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        command.env("HOME", home);
+        command.env("USERPROFILE", home);
+        command.env("XDG_CONFIG_HOME", home.join(".config"));
+        command.env("XDG_DATA_HOME", home.join(".local/share"));
+        command.env("XDG_CACHE_HOME", home.join(".cache"));
+    }
     if let Some(path) = augmented_path {
         command.env("PATH", path);
     }
@@ -161,6 +192,31 @@ mod tests {
         assert!(
             marker_path.exists(),
             "the fake node from the injected PATH should have run"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn login_probe_can_target_an_isolated_agent_home() {
+        use std::fs;
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().expect("temp dir");
+        let isolated_home = temp.path().join("agent-home");
+        fs::create_dir_all(&isolated_home).expect("isolated home");
+        fs::write(isolated_home.join("logged-in"), "yes").expect("login marker");
+        let script = temp.path().join("auth-status");
+        fs::write(&script, "#!/bin/sh\ntest -f \"$HOME/logged-in\"\n").expect("probe script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+
+        assert_eq!(
+            super::login_probe_in_home(
+                &script,
+                &["auth-status"],
+                Some("/usr/bin:/bin"),
+                Some(&isolated_home),
+            ),
+            ProbeOutcome::LoggedIn
         );
     }
 

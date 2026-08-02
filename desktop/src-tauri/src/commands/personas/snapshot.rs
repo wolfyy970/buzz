@@ -491,6 +491,7 @@ mod png_body_tests {
                 idle_timeout_seconds: None,
                 max_turn_duration_seconds: None,
                 tool_requirements: Vec::new(),
+                skills: Vec::new(),
             },
             profile: crate::managed_agents::agent_snapshot::AgentSnapshotProfile {
                 display_name: "Agent".to_string(),

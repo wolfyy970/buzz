@@ -25,6 +25,7 @@ fn member(name: &str) -> AgentSnapshot {
             idle_timeout_seconds: None,
             max_turn_duration_seconds: None,
             tool_requirements: Vec::new(),
+            skills: Vec::new(),
         },
         profile: AgentSnapshotProfile {
             display_name: name.to_string(),
@@ -77,6 +78,7 @@ fn team_export_round_trip_preserves_team_and_excludes_member_memory() {
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             tool_requirements: Vec::new(),
+            skills: Vec::new(),
         },
         AgentDefinition {
             id: "bob".to_string(),
@@ -100,6 +102,7 @@ fn team_export_round_trip_preserves_team_and_excludes_member_memory() {
             created_at: "now".to_string(),
             updated_at: "now".to_string(),
             tool_requirements: Vec::new(),
+            skills: Vec::new(),
         },
     ];
     let team = TeamRecord {
@@ -164,6 +167,7 @@ fn team_export_with_instance_and_memory_level_uses_supplied_entries() {
         created_at: "now".to_string(),
         updated_at: "now".to_string(),
         tool_requirements: Vec::new(),
+        skills: Vec::new(),
     }];
     let team = TeamRecord {
         id: "t1".to_string(),
@@ -240,6 +244,9 @@ fn team_export_with_instance_and_memory_level_uses_supplied_entries() {
         connection_bindings: std::collections::BTreeMap::new(),
         pinned_tool_requirements: Vec::new(),
         project_scope: None,
+        system_prompt_override: None,
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
     };
 
     let mut memory_map = std::collections::HashMap::new();

@@ -27,6 +27,7 @@ export type RawPersona = {
   catalog_source?: { owner_pubkey: string; persona_id: string } | null;
   env_vars?: Record<string, string>;
   tool_requirements?: AgentPersona["toolRequirements"];
+  skills?: AgentPersona["skills"];
   respond_to?: string | null;
   respond_to_allowlist?: string[];
   parallelism?: number | null;
@@ -58,6 +59,7 @@ export function fromRawPersona(persona: RawPersona): AgentPersona {
       : null,
     envVars: persona.env_vars ?? {},
     toolRequirements: persona.tool_requirements ?? [],
+    skills: persona.skills ?? [],
     respondTo: (persona.respond_to as RespondToMode | undefined) ?? null,
     respondToAllowlist: persona.respond_to_allowlist ?? [],
     parallelism: persona.parallelism ?? null,
@@ -85,6 +87,7 @@ export async function createPersona(
         namePool: input.namePool ?? [],
         envVars: input.envVars ?? {},
         toolRequirements: input.toolRequirements ?? [],
+        skills: input.skills ?? [],
         behavior: input.behavior,
         catalogSource: input.catalogSource,
       },
@@ -108,6 +111,7 @@ function updatePersonaPayload(input: UpdatePersonaInput) {
     // unrelated fields can't silently wipe saved credentials.
     envVars: input.envVars,
     toolRequirements: input.toolRequirements,
+    skills: input.skills,
     // Same absent-vs-present contract as envVars for the behavioral quad.
     behavior: input.behavior,
   };

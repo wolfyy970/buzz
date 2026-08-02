@@ -514,3 +514,51 @@ pub(crate) fn current_connection_generation_hash(
     }
     Ok(hasher.finish())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+    use uuid::Uuid;
+
+    #[test]
+    fn synthetic_analytics_server_proves_initialize_and_tool_discovery() {
+        let Some(node) = resolve_command("node") else {
+            eprintln!("node is unavailable; skipping synthetic MCP probe");
+            return;
+        };
+        let script = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../tests/fixtures/synthetic-analytics-mcp.mjs");
+        assert!(script.is_file(), "missing fixture {}", script.display());
+
+        let scope = AgentProjectScope {
+            relay_url: "ws://127.0.0.1:3000".to_string(),
+            operator_pubkey: "a".repeat(64),
+            repo_address: format!("30617:{}:portable-agents", "a".repeat(64)),
+            channel_id: Uuid::nil().to_string(),
+        };
+        let connection = ProjectConnection {
+            id: "e007-synthetic-analytics".to_string(),
+            project_scope: scope,
+            name: "Synthetic analytics".to_string(),
+            provider: "Buzz test fixture".to_string(),
+            capability_ids: Vec::new(),
+            command: node.to_string_lossy().to_string(),
+            args: vec![script.to_string_lossy().to_string()],
+            env_keys: vec!["E007_ANALYTICS_CANARY".to_string()],
+            discovered_tools: Vec::new(),
+            health: ProjectConnectionHealth::default(),
+            generation: 1,
+            credential_generation: 1,
+            created_at: now_iso(),
+            updated_at: now_iso(),
+        };
+        let secrets =
+            BTreeMap::from([("E007_ANALYTICS_CANARY".to_string(), "test-only".to_string())]);
+
+        assert_eq!(
+            probe_mcp_connection(&connection, &secrets).unwrap(),
+            ["analytics.weekly_summary"]
+        );
+    }
+}

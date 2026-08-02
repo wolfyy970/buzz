@@ -10,8 +10,9 @@ use nostr::{EventBuilder, Kind, Tag};
 use serde::{Deserialize, Serialize};
 
 use super::{
-    resolve_mint_behavioral_defaults, AgentDefinition, AgentToolRequirement, ManagedAgentRecord,
-    PersonaSnapshotHistoryEntry, RespondTo, DEFAULT_AGENT_PARALLELISM,
+    resolve_mint_behavioral_defaults, validate_agent_skills, AgentDefinition, AgentSkill,
+    AgentToolRequirement, ManagedAgentRecord, PersonaSnapshotHistoryEntry, RespondTo,
+    DEFAULT_AGENT_PARALLELISM,
 };
 use crate::app_state::AppState;
 
@@ -55,6 +56,10 @@ pub struct PersonaEventContent {
     /// connections and credentials are local Project configuration.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_requirements: Vec<AgentToolRequirement>,
+    /// Portable, public skill content. Secret-like payloads are rejected
+    /// before publication and again when an event is imported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skills: Vec<AgentSkill>,
 }
 
 /// Derive the d-tag (persona slug) from a `AgentDefinition`.
@@ -188,6 +193,7 @@ pub fn persona_from_event(event: &nostr::Event) -> Result<AgentDefinition, Strin
 
     let created_at = event.created_at.to_human_datetime();
 
+    validate_agent_skills(&content.skills)?;
     Ok(AgentDefinition {
         id: d_tag.clone(),
         display_name: content.display_name,
@@ -205,6 +211,7 @@ pub fn persona_from_event(event: &nostr::Event) -> Result<AgentDefinition, Strin
         catalog_source: None,
         env_vars: BTreeMap::new(),
         tool_requirements: content.tool_requirements,
+        skills: content.skills,
         respond_to: content.respond_to,
         respond_to_allowlist: content.respond_to_allowlist,
         parallelism: content.parallelism,
@@ -424,6 +431,7 @@ pub fn persona_event_content(record: &AgentDefinition) -> PersonaEventContent {
         respond_to_allowlist: record.respond_to_allowlist.clone(),
         parallelism: record.parallelism,
         tool_requirements: record.tool_requirements.clone(),
+        skills: record.skills.clone(),
     }
 }
 
@@ -454,6 +462,7 @@ pub struct PersonaSnapshot {
     pub respond_to_allowlist: Vec<String>,
     pub parallelism: u32,
     pub tool_requirements: Vec<AgentToolRequirement>,
+    pub skills: Vec<AgentSkill>,
 }
 
 /// Build the pinned snapshot for an agent created from `persona`.
@@ -461,6 +470,7 @@ pub struct PersonaSnapshot {
 /// The persona's `system_prompt` is always present, so it is wrapped in
 /// `Some`. `record.env_vars` remains a separate instance-override layer.
 pub fn persona_snapshot(persona: &AgentDefinition) -> Result<PersonaSnapshot, String> {
+    validate_agent_skills(&persona.skills)?;
     let behavior = resolve_mint_behavioral_defaults(None, Vec::new(), None, Some(persona))?;
     Ok(PersonaSnapshot {
         system_prompt: Some(persona.system_prompt.clone()),
@@ -473,6 +483,7 @@ pub fn persona_snapshot(persona: &AgentDefinition) -> Result<PersonaSnapshot, St
         respond_to_allowlist: behavior.respond_to_allowlist,
         parallelism: behavior.parallelism.unwrap_or(DEFAULT_AGENT_PARALLELISM),
         tool_requirements: persona.tool_requirements.clone(),
+        skills: persona.skills.clone(),
     })
 }
 
@@ -487,6 +498,7 @@ fn install_persona_snapshot(record: &mut ManagedAgentRecord, snapshot: PersonaSn
     record.respond_to_allowlist = snapshot.respond_to_allowlist;
     record.parallelism = snapshot.parallelism;
     record.pinned_tool_requirements = snapshot.tool_requirements;
+    record.pinned_skills = snapshot.skills;
 }
 
 fn current_persona_snapshot(record: &ManagedAgentRecord) -> PersonaSnapshotHistoryEntry {
@@ -501,6 +513,7 @@ fn current_persona_snapshot(record: &ManagedAgentRecord) -> PersonaSnapshotHisto
         respond_to_allowlist: record.respond_to_allowlist.clone(),
         parallelism: record.parallelism,
         tool_requirements: record.pinned_tool_requirements.clone(),
+        skills: record.pinned_skills.clone(),
     }
 }
 
@@ -587,7 +600,8 @@ pub fn backfill_persona_snapshot(
         && record.respond_to == snapshot.respond_to
         && record.respond_to_allowlist == snapshot.respond_to_allowlist
         && record.parallelism == snapshot.parallelism
-        && record.pinned_tool_requirements == snapshot.tool_requirements;
+        && record.pinned_tool_requirements == snapshot.tool_requirements
+        && record.pinned_skills == snapshot.skills;
     if pinned_matches_head {
         record.persona_source_version = Some(snapshot.source_version);
         changed = true;
@@ -631,5 +645,7 @@ pub fn advance_persona_snapshot(
     Ok(())
 }
 
+#[cfg(test)]
+mod skill_projection_tests;
 #[cfg(test)]
 mod tests;

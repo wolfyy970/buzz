@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 
+import { waitForAnimations } from "../helpers/animations";
 import { installMockBridge, TEST_IDENTITIES } from "../helpers/bridge";
 
 const BAKED_DEFAULTS = [
@@ -41,7 +42,10 @@ const PERSONA_ID = "persona-edit-e2e";
  * panel (agents view → agent card → Edit quick action) — EditAgentDialog's
  * only mount path.
  */
-async function openEditDialog(page: import("@playwright/test").Page) {
+async function openEditDialog(
+  page: import("@playwright/test").Page,
+  linked = false,
+) {
   await page.goto("/");
   await page.getByTestId("open-agents-view").click();
 
@@ -55,6 +59,12 @@ async function openEditDialog(page: import("@playwright/test").Page) {
     timeout: 10_000,
   });
   await page.getByTestId("user-profile-edit-agent").click();
+  if (linked) {
+    await expect(page.getByTestId("agent-edit-scope-dialog")).toBeVisible({
+      timeout: 10_000,
+    });
+    await page.getByTestId("agent-edit-scope-instance").click();
+  }
 
   await expect(page.getByTestId("edit-agent-dialog")).toBeVisible({
     timeout: 10_000,
@@ -79,6 +89,88 @@ async function pickDropdownOption(
 }
 
 test.describe("edit agent dialog", () => {
+  test("resets private instructions and Skills to the template", async ({
+    page,
+  }) => {
+    const templateSkill = {
+      name: "campaign-analysis",
+      description: "Analyze campaigns from the template.",
+      files: [
+        {
+          path: "SKILL.md",
+          content:
+            "---\nname: campaign-analysis\ndescription: Analyze campaigns from the template.\n---\n\n# Campaign analysis",
+        },
+      ],
+    };
+    await installMockBridge(page, {
+      managedAgents: [
+        {
+          pubkey: AGENT_PUBKEY,
+          name: AGENT_NAME,
+          personaId: PERSONA_ID,
+          status: "stopped",
+          channelNames: ["agents"],
+          instructionsChangedForAgent: true,
+          systemPrompt:
+            "Focus on lifecycle campaigns and call out weak evidence.",
+          skillsChangedForAgent: true,
+          skills: [
+            {
+              ...templateSkill,
+              description: "Private campaign analysis.",
+              files: [
+                {
+                  path: "SKILL.md",
+                  content:
+                    "---\nname: campaign-analysis\ndescription: Private campaign analysis.\n---\n\n# Campaign analysis",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      personas: [
+        {
+          id: PERSONA_ID,
+          displayName: AGENT_NAME,
+          systemPrompt: "Use the template instructions.",
+          skills: [templateSkill],
+        },
+      ],
+    });
+
+    await openEditDialog(page, true);
+    const overrides = page.getByTestId("agent-template-overrides");
+    await expect(overrides).toBeVisible();
+    await expect(overrides.getByText("Changed for this agent")).toHaveCount(2);
+    await waitForAnimations(page);
+    await overrides.screenshot({
+      path: "test-results/agent-template-update-screenshots/06-private-agent-overrides.png",
+    });
+    await overrides.getByTestId("reset-agent-instructions-to-template").click();
+    await overrides.getByTestId("reset-agent-skills-to-template").click();
+    await expect(
+      overrides.getByTestId("edit-agent-private-instructions"),
+    ).toHaveValue("Use the template instructions.");
+    await expect(
+      overrides.getByTestId("agent-skill-description-0"),
+    ).toHaveValue("Analyze campaigns from the template.");
+
+    await page.getByTestId("edit-agent-dialog-submit").click();
+    await expect(page.getByTestId("edit-agent-dialog")).not.toBeVisible();
+    const updateInput = await page.evaluate(() => {
+      const command = [...(window.__BUZZ_E2E_COMMAND_LOG__ ?? [])]
+        .reverse()
+        .find((entry) => entry.command === "update_managed_agent");
+      return command?.payload?.input;
+    });
+    expect(updateInput).toMatchObject({
+      resetSystemPromptToTemplate: true,
+      resetSkillsToTemplate: true,
+    });
+  });
+
   test("edits the agent name and persists it across a dialog reopen", async ({
     page,
   }) => {

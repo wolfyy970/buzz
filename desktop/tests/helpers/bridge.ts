@@ -1,5 +1,9 @@
 import type { Page } from "@playwright/test";
-import type { ChannelTemplate, RelayEvent } from "../../src/shared/api/types";
+import type {
+  AgentSkill,
+  ChannelTemplate,
+  RelayEvent,
+} from "../../src/shared/api/types";
 import type { ProjectConnection } from "../../src/shared/api/tauriProjectConnections";
 import { FEATURE_OVERRIDES_STORAGE_KEY, PREVIEW_FEATURE_IDS } from "./features";
 
@@ -63,6 +67,10 @@ type MockManagedAgentSeed = {
   respondToAllowlist?: string[];
   projectScope?: ProjectConnection["projectScope"];
   toolRequirements?: NonNullable<MockPersonaSeed["toolRequirements"]>;
+  skills?: AgentSkill[];
+  systemPrompt?: string | null;
+  instructionsChangedForAgent?: boolean;
+  skillsChangedForAgent?: boolean;
   connectionBindings?: Record<string, string>;
 };
 
@@ -129,6 +137,13 @@ type MockPersonaSeed = {
   namePool?: string[];
   respondTo?: "owner-only" | "allowlist" | "anyone";
   respondToAllowlist?: string[];
+  toolRequirements?: Array<{
+    id: string;
+    label: string;
+    capability: string;
+    required: boolean;
+  }>;
+  skills?: AgentSkill[];
 };
 
 type MockTeamSeed = {
