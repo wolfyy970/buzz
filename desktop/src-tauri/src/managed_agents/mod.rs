@@ -95,7 +95,7 @@ pub use runtime_types::*;
 pub use storage::*;
 pub use teams::*;
 pub use template_skills::{
-    configure_isolated_process_environment, effective_agent_skills,
+    configure_isolated_process_environment, effective_agent_skills, materialize_existing_cli_auth,
     materialize_isolated_agent_runtime, validate_agent_skills,
 };
 pub use types::*;

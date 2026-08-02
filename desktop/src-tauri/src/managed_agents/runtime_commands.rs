@@ -396,13 +396,13 @@ fn start_pair(
         spawn_agent_child_with_start_nonce(
             &app,
             record,
-            &key.relay_url,
+            &relay_url,
             lazy,
             owner.as_deref(),
             planned_start_nonce,
         )?
     } else {
-        spawn_agent_child(&app, record, &key.relay_url, lazy, owner.as_deref())?
+        spawn_agent_child(&app, record, &relay_url, lazy, owner.as_deref())?
     };
     let now = crate::util::now_iso();
     let receipt = ManagedAgentRuntimeReceipt {
@@ -550,7 +550,7 @@ async fn probe_agent_relay_access(
     let key = ManagedAgentRuntimeKey::new(record.pubkey.clone(), &requested_relay_url)?;
     let keys = nostr::Keys::parse(record.private_key_nsec.trim())
         .map_err(|error| format!("invalid managed-agent key: {error}"))?;
-    let api_base = crate::relay::relay_http_base_url(&key.relay_url);
+    let api_base = crate::relay::relay_http_base_url(&requested_relay_url);
     tokio::time::timeout(
         std::time::Duration::from_secs(10),
         crate::relay::query_relay_at_with_keys(
@@ -651,7 +651,7 @@ pub async fn reconcile_managed_agent_runtimes(
                 Ok((record, key, requested)) => {
                     match start_pair(
                         record.pubkey.clone(),
-                        key.relay_url.clone(),
+                        requested.clone(),
                         true,
                         Some(&record.updated_at),
                         None,

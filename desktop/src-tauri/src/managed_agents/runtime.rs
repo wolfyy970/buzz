@@ -415,6 +415,10 @@ pub fn spawn_agent_child(
     spawn_agent_child_with_start_nonce(app, record, relay_url, lazy, owner_hex, None)
 }
 
+fn connection_relay_url(configured_relay_url: &str) -> String {
+    configured_relay_url.trim().to_string()
+}
+
 /// Spawn one exact preplanned process generation for a durable update.
 ///
 /// Ordinary callers use [`spawn_agent_child`], which generates a fresh nonce
@@ -510,12 +514,15 @@ pub(crate) fn spawn_agent_child_with_start_nonce(
         .map(|p| p.display().to_string())
         .unwrap_or_else(|| effective_command.clone());
 
-    // The caller supplies the explicit canonical pair relay. This is the only
-    // relay this child may connect to, regardless of the record/workspace default.
-    let effective_relay_url = runtime_key.relay_url.clone();
+    // Keep the canonical relay only for pair identity, receipts, paths, and
+    // deduplication. The configured spelling remains the connection URL:
+    // Buzz communities are host-scoped, so rewriting `localhost` to
+    // `127.0.0.1` here would connect the child to a different community even
+    // though both spellings intentionally share one local process identity.
+    let effective_relay_url = connection_relay_url(relay_url);
     if let Some(scope) = &record.project_scope {
         crate::managed_agents::project_connections::validate_project_scope_for_app(app, scope)?;
-        if scope.relay_url != effective_relay_url {
+        if scope.relay_url != runtime_key.relay_url {
             return Err(
                 "This agent's Project belongs to another Buzz community. Edit this agent before starting it."
                     .to_string(),
@@ -535,6 +542,7 @@ pub(crate) fn spawn_agent_child_with_start_nonce(
         &runtime_key,
         crate::managed_agents::effective_agent_skills(record),
     )?;
+    crate::managed_agents::materialize_existing_cli_auth(effective_command, &isolated_runtime)?;
     let handoff_paths = crate::managed_agents::prepare_managed_agent_handoff(app, &runtime_key)?;
 
     // Augment PATH for DMG launches so child processes can find:

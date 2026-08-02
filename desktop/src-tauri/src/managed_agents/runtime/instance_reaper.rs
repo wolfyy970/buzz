@@ -41,6 +41,55 @@ pub(super) fn buffer_contains_identifier(buf: &[u8], id: &[u8]) -> bool {
     })
 }
 
+/// Read the bundle identifier for a normally bundled macOS desktop process.
+///
+/// Release and `tauri build` apps do not carry the Tauri identifier in argv or
+/// their environment. Their executable path does point into
+/// `<App>.app/Contents/MacOS`, so `Info.plist` is the authoritative fallback.
+#[cfg(target_os = "macos")]
+fn bundle_identifier_from_executable_path(executable: &std::path::Path) -> Option<String> {
+    let macos_dir = executable.parent()?;
+    if macos_dir.file_name()? != "MacOS" {
+        return None;
+    }
+    let contents_dir = macos_dir.parent()?;
+    if contents_dir.file_name()? != "Contents" {
+        return None;
+    }
+    let info = plist::from_file::<_, plist::Dictionary>(contents_dir.join("Info.plist")).ok()?;
+    info.get("CFBundleIdentifier")?
+        .as_string()
+        .map(str::to_string)
+}
+
+#[cfg(target_os = "macos")]
+fn process_bundle_identifier(pid: u32) -> Option<String> {
+    use std::os::unix::ffi::OsStrExt as _;
+
+    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
+    extern "C" {
+        fn proc_pidpath(
+            pid: libc::c_int,
+            buffer: *mut libc::c_void,
+            buffersize: u32,
+        ) -> libc::c_int;
+    }
+
+    let mut buffer = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
+    let length = unsafe {
+        proc_pidpath(
+            pid as libc::c_int,
+            buffer.as_mut_ptr() as *mut libc::c_void,
+            buffer.len() as u32,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+    let path = std::path::Path::new(std::ffi::OsStr::from_bytes(&buffer[..length as usize]));
+    bundle_identifier_from_executable_path(path)
+}
+
 /// Extract the `BUZZ_MANAGED_AGENT` value from a process's environment.
 /// Returns `None` if the process doesn't have the marker or can't be read.
 #[cfg(target_os = "macos")]
@@ -162,15 +211,12 @@ fn desktop_is_alive_for_instance(instance_id: &str) -> bool {
         if info.pbi_uid != my_uid {
             continue;
         }
-        // Check if this desktop process's args/env contain the identifier.
-        // The KERN_PROCARGS2 buffer holds argv + environ as null-delimited strings.
-        let Some(args_buf) = sweep::procargs2_buffer(pid as u32) else {
-            continue;
-        };
-        // Boundary-anchored search: the identifier in the config JSON is
-        // followed by a non-identifier char (typically `"`). A raw substring
-        // match would let `...app` match inside `...app.dev`.
-        if buffer_contains_identifier(&args_buf, identifier_bytes) {
+        // Dev-mode processes carry the identifier in argv/env. Normally
+        // bundled apps do not, so fall back to their Info.plist.
+        let args_match = sweep::procargs2_buffer(pid as u32)
+            .is_some_and(|args| buffer_contains_identifier(&args, identifier_bytes));
+        let bundle_match = process_bundle_identifier(pid as u32).as_deref() == Some(instance_id);
+        if args_match || bundle_match {
             return true;
         }
     }
@@ -220,6 +266,29 @@ fn desktop_is_alive_for_instance(instance_id: &str) -> bool {
 #[cfg(not(unix))]
 fn desktop_is_alive_for_instance(_instance_id: &str) -> bool {
     false
+}
+
+#[cfg(all(test, target_os = "macos"))]
+mod tests {
+    use super::bundle_identifier_from_executable_path;
+
+    #[test]
+    fn reads_identifier_from_bundled_desktop_executable() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let contents = temp.path().join("Buzz Proof.app/Contents");
+        let executable = contents.join("MacOS/buzz-desktop");
+        std::fs::create_dir_all(executable.parent().expect("macos dir")).expect("create bundle");
+        let info = plist::Dictionary::from_iter([(
+            "CFBundleIdentifier".to_string(),
+            plist::Value::String("xyz.block.buzz.app.dev.capsule-proof".to_string()),
+        )]);
+        plist::to_file_xml(contents.join("Info.plist"), &info).expect("write plist");
+
+        assert_eq!(
+            bundle_identifier_from_executable_path(&executable).as_deref(),
+            Some("xyz.block.buzz.app.dev.capsule-proof")
+        );
+    }
 }
 
 /// Reap agent processes belonging to dead Buzz desktop instances.

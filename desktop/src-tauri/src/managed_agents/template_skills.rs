@@ -72,6 +72,76 @@ pub fn configure_isolated_process_environment(
     command.env("XDG_STATE_HOME", runtime.home.join(".local/state"));
 }
 
+/// Make the device's existing CLI sign-in available inside a local agent's
+/// isolated home without sharing its config or Skills directories.
+///
+/// Codex stores the device login in `~/.codex/auth.json`. A link keeps token
+/// refreshes current while the rest of `.codex` remains private to the agent.
+/// An agent-specific credential already present in the isolated home always
+/// wins and is never replaced.
+pub fn materialize_existing_cli_auth(
+    effective_command: &str,
+    runtime: &IsolatedAgentRuntime,
+) -> Result<(), String> {
+    let Some(metadata) = super::known_acp_runtime(effective_command) else {
+        return Ok(());
+    };
+    if metadata.id != "codex" {
+        return Ok(());
+    }
+    let Some(host_home) = dirs::home_dir() else {
+        return Ok(());
+    };
+    materialize_cli_auth_from_source(
+        metadata.id,
+        &host_home.join(".codex").join("auth.json"),
+        runtime,
+    )
+}
+
+fn materialize_cli_auth_from_source(
+    runtime_id: &str,
+    source: &Path,
+    runtime: &IsolatedAgentRuntime,
+) -> Result<(), String> {
+    if runtime_id != "codex" || !source.is_file() {
+        return Ok(());
+    }
+
+    let auth_dir = runtime.home.join(".codex");
+    create_owner_dir(&auth_dir)?;
+    let destination = auth_dir.join("auth.json");
+    if let Ok(metadata) = fs::symlink_metadata(&destination) {
+        if metadata.is_file() && !metadata.file_type().is_symlink() {
+            return Ok(());
+        }
+        #[cfg(unix)]
+        if metadata.file_type().is_symlink()
+            && fs::read_link(&destination).is_ok_and(|target| target == source)
+        {
+            return Ok(());
+        }
+        return Err(format!(
+            "{} is not a safe local agent credential file.",
+            destination.display()
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(source, &destination).map_err(|error| {
+            format!("Could not make the existing Codex sign-in available to this agent: {error}")
+        })?;
+    }
+    #[cfg(not(unix))]
+    {
+        let bytes = fs::read(source)
+            .map_err(|error| format!("Could not read the existing Codex sign-in: {error}"))?;
+        write_owner_file(&destination, &bytes)?;
+    }
+    Ok(())
+}
+
 #[derive(Deserialize)]
 struct SkillFrontmatter {
     name: String,

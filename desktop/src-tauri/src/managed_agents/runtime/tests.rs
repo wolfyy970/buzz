@@ -104,6 +104,16 @@ fn codex_has_mcp_command() {
 }
 
 #[test]
+fn canonical_pair_identity_does_not_rewrite_the_connection_host() {
+    let configured = "ws://localhost:3000";
+    let key = crate::managed_agents::ManagedAgentRuntimeKey::new("aa".repeat(32), configured)
+        .expect("runtime key");
+
+    assert_eq!(key.relay_url, "ws://127.0.0.1:3000");
+    assert_eq!(super::connection_relay_url(configured), configured);
+}
+
+#[test]
 fn goose_has_no_mcp_hooks() {
     let p = known_acp_runtime("goose").expect("should resolve");
     assert!(!p.mcp_hooks);

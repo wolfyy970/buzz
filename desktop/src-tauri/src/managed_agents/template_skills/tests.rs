@@ -21,6 +21,47 @@ fn accepts_a_small_portable_skill() {
     .is_ok());
 }
 
+#[cfg(unix)]
+#[test]
+fn codex_auth_is_linked_without_sharing_the_rest_of_codex_home() {
+    let host = tempfile::tempdir().unwrap();
+    let runtime_root = tempfile::tempdir().unwrap();
+    let source = host.path().join("auth.json");
+    fs::write(&source, br#"{"tokens":"test-only"}"#).unwrap();
+    let runtime = IsolatedAgentRuntime {
+        home: runtime_root.path().join("home"),
+        workspace: runtime_root.path().join("workspace"),
+    };
+    create_owner_dir(&runtime.home).unwrap();
+
+    materialize_cli_auth_from_source("codex", &source, &runtime).unwrap();
+
+    let destination = runtime.home.join(".codex/auth.json");
+    assert_eq!(fs::read_link(destination).unwrap(), source);
+    assert!(!runtime.home.join(".codex/config.toml").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn codex_auth_bridge_preserves_an_agent_specific_login() {
+    let host = tempfile::tempdir().unwrap();
+    let runtime_root = tempfile::tempdir().unwrap();
+    let source = host.path().join("auth.json");
+    fs::write(&source, br#"{"tokens":"host"}"#).unwrap();
+    let runtime = IsolatedAgentRuntime {
+        home: runtime_root.path().join("home"),
+        workspace: runtime_root.path().join("workspace"),
+    };
+    let auth_dir = runtime.home.join(".codex");
+    create_owner_dir(&auth_dir).unwrap();
+    let destination = auth_dir.join("auth.json");
+    write_owner_file(&destination, br#"{"tokens":"agent"}"#).unwrap();
+
+    materialize_cli_auth_from_source("codex", &source, &runtime).unwrap();
+
+    assert_eq!(fs::read(destination).unwrap(), br#"{"tokens":"agent"}"#);
+}
+
 #[test]
 fn rejects_traversal_absolute_backslash_and_duplicate_paths() {
     for path in ["../secret", "/tmp/secret", "refs\\secret", "refs//secret"] {
