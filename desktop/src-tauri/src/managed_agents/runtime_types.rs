@@ -217,15 +217,6 @@ pub(crate) fn take_exited_claimed_managed_agent_runtime(
     Ok(Some((runtime, status)))
 }
 
-/// Clear one operation's claim without disturbing a different operation.
-pub(crate) fn clear_managed_agent_runtime_pair_claim(
-    runtimes: &mut HashMap<ManagedAgentRuntimeKey, ManagedAgentPairRuntime>,
-    key: &ManagedAgentRuntimeKey,
-    operation_id: &str,
-) -> Result<(), String> {
-    clear_managed_agent_runtime_pair_claims(runtimes, std::slice::from_ref(key), operation_id)
-}
-
 /// Atomically clear an operation's claims from a set of exact runtime keys.
 pub(crate) fn clear_managed_agent_runtime_pair_claims(
     runtimes: &mut HashMap<ManagedAgentRuntimeKey, ManagedAgentPairRuntime>,
@@ -612,9 +603,9 @@ mod update_claim_tests {
         )
         .expect("claim");
 
-        assert!(clear_managed_agent_runtime_pair_claim(
+        assert!(clear_managed_agent_runtime_pair_claims(
             &mut runtimes,
-            &runtime_key,
+            std::slice::from_ref(&runtime_key),
             "operation-two"
         )
         .is_err());

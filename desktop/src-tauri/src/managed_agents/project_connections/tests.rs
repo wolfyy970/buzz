@@ -89,7 +89,7 @@ fn project_scope_requires_canonical_coordinate_and_channel() {
 #[test]
 fn tool_requirements_reject_duplicate_ids_and_non_tool_capabilities() {
     let requirement = requirement(true);
-    assert!(validate_tool_requirements(&[requirement.clone()]).is_ok());
+    assert!(validate_tool_requirements(std::slice::from_ref(&requirement)).is_ok());
     assert!(validate_tool_requirements(&[requirement.clone(), requirement]).is_err());
     assert!(validate_tool_requirements(&[AgentToolRequirement {
         id: "analytics".to_string(),
@@ -105,13 +105,13 @@ fn required_tools_block_until_a_ready_matching_connection_is_bound() {
     let mut record = record(true);
     let matching = connection();
 
-    assert!(validate_agent_bindings_against(&record, &[matching.clone()]).is_err());
+    assert!(validate_agent_bindings_against(&record, std::slice::from_ref(&matching)).is_err());
 
     record
         .connection_bindings
         .insert("analytics".to_string(), matching.id.clone());
     assert_eq!(
-        validate_agent_bindings_against(&record, &[matching.clone()])
+        validate_agent_bindings_against(&record, std::slice::from_ref(&matching))
             .unwrap()
             .len(),
         1

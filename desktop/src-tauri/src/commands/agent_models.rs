@@ -769,14 +769,16 @@ pub(crate) fn apply_model_provider_prompt_update(
 ) {
     let _ = super::agent_private_overrides::apply_agent_configuration_update(
         record,
-        model,
-        false,
-        provider,
-        false,
-        system_prompt,
-        false,
-        None,
-        false,
+        super::agent_private_overrides::AgentConfigurationUpdate {
+            model,
+            reset_model_to_template: false,
+            provider,
+            reset_provider_to_template: false,
+            system_prompt,
+            reset_system_prompt_to_template: false,
+            skills: None,
+            reset_skills_to_template: false,
+        },
     );
 }
 
@@ -821,14 +823,16 @@ pub async fn update_managed_agent(
         }
         super::agent_private_overrides::apply_agent_configuration_update(
             record,
-            input.model,
-            input.reset_model_to_template,
-            input.provider,
-            input.reset_provider_to_template,
-            input.system_prompt,
-            input.reset_system_prompt_to_template,
-            input.skills,
-            input.reset_skills_to_template,
+            super::agent_private_overrides::AgentConfigurationUpdate {
+                model: input.model,
+                reset_model_to_template: input.reset_model_to_template,
+                provider: input.provider,
+                reset_provider_to_template: input.reset_provider_to_template,
+                system_prompt: input.system_prompt,
+                reset_system_prompt_to_template: input.reset_system_prompt_to_template,
+                skills: input.skills,
+                reset_skills_to_template: input.reset_skills_to_template,
+            },
         )?;
         if let Some(parallelism) = input.parallelism {
             record.parallelism = parallelism;
