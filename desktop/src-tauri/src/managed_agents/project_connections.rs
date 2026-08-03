@@ -20,7 +20,7 @@ use super::{
     atomic_write_json_restricted, managed_agents_base_dir, resolve_command, AgentProjectScope,
     AgentToolRequirement,
 };
-use crate::{app_state::keyring_service, secret_store::SecretStore, util::now_iso};
+use crate::util::now_iso;
 
 const CONNECTION_STORE_VERSION: u32 = 1;
 const MAX_CONNECTIONS: usize = 128;
@@ -34,6 +34,9 @@ const MAX_SECRET_BYTES: usize = 64 * 1024;
 const HEALTH_STALE_AFTER_SECONDS: i64 = 24 * 60 * 60;
 
 static PROJECT_CONNECTIONS_LOCK: Mutex<()> = Mutex::new(());
+
+mod secrets;
+use secrets::{delete_secrets, load_secrets, store_secrets};
 
 /// Serialize connection and agent-binding mutations through one process-local
 /// critical section. Agent create/update and connection delete use the same
@@ -277,14 +280,6 @@ fn reject_unsafe_connection_store(path: &std::path::Path) -> Result<(), String> 
     Ok(())
 }
 
-fn connection_secret_key(id: &str, credential_generation: u64) -> String {
-    format!("project-connection:{id}:{credential_generation}")
-}
-
-fn secret_store() -> &'static SecretStore {
-    SecretStore::shared(keyring_service())
-}
-
 fn load_store_unlocked(app: &AppHandle) -> Result<ProjectConnectionStore, String> {
     let path = connection_store_path(app)?;
     reject_unsafe_connection_store(&path)?;
@@ -497,66 +492,6 @@ fn validate_connection_input(
     Ok(())
 }
 
-fn serialize_secrets(env: &BTreeMap<String, String>) -> Result<String, String> {
-    serde_json::to_string(env)
-        .map_err(|error| format!("failed to prepare connection credentials: {error}"))
-}
-
-fn load_secrets(connection: &ProjectConnection) -> Result<BTreeMap<String, String>, String> {
-    let raw = secret_store()
-        .load(&connection_secret_key(
-            &connection.id,
-            connection.credential_generation,
-        ))
-        .map_err(|_| {
-            format!(
-                "Sign in again to '{}'. Buzz could not read its saved credentials.",
-                connection.name
-            )
-        })?
-        .ok_or_else(|| {
-            format!(
-                "Sign in again to '{}'. Its saved credentials are missing.",
-                connection.name
-            )
-        })?;
-    let env: BTreeMap<String, String> = serde_json::from_str(&raw).map_err(|_| {
-        format!(
-            "Sign in again to '{}'. Its credentials are invalid.",
-            connection.name
-        )
-    })?;
-    let actual: BTreeSet<&str> = env.keys().map(String::as_str).collect();
-    let expected: BTreeSet<&str> = connection.env_keys.iter().map(String::as_str).collect();
-    if actual != expected {
-        return Err(format!(
-            "Sign in again to '{}'. Its saved credentials are incomplete.",
-            connection.name
-        ));
-    }
-    Ok(env)
-}
-
-fn store_secrets(
-    id: &str,
-    credential_generation: u64,
-    env: &BTreeMap<String, String>,
-) -> Result<(), String> {
-    let serialized = serialize_secrets(env)?;
-    let key = connection_secret_key(id, credential_generation);
-    let store = secret_store();
-    store
-        .store(&key, &serialized)
-        .map_err(|_| "Buzz could not save these credentials in the system keyring.".to_string())?;
-    if !store
-        .verify_stored_raw(&key, &serialized)
-        .map_err(|_| "Buzz could not verify the saved credentials.".to_string())?
-    {
-        return Err("Buzz could not verify the saved credentials.".to_string());
-    }
-    Ok(())
-}
-
 fn canonical_connection_command(command: &str) -> Result<String, String> {
     let trimmed = command.trim();
     let resolved =
@@ -662,10 +597,10 @@ pub fn create_project_connection(
         updated_at: now,
     };
 
-    store_secrets(&id, credential_generation, &input.env)?;
+    store_secrets(app, &id, credential_generation, &input.env)?;
     store.connections.push(connection.clone());
     if let Err(error) = save_store_unlocked(app, &store) {
-        let _ = secret_store().delete(&connection_secret_key(&id, credential_generation));
+        let _ = delete_secrets(app, &id, credential_generation);
         return Err(error);
     }
     Ok(connection)
@@ -706,7 +641,7 @@ pub fn update_project_connection(
                     .to_string(),
             );
         }
-        let previous_secrets = load_secrets(&previous_connection)?;
+        let previous_secrets = load_secrets(app, &previous_connection)?;
         (previous_connection, previous_secrets)
     };
     let mut next_secrets = previous_secrets.clone();
@@ -745,7 +680,7 @@ pub fn update_project_connection(
         last_verified_at: Some(now_iso()),
         detail: None,
     };
-    store_secrets(&updated.id, credential_generation, &next_secrets)?;
+    store_secrets(app, &updated.id, credential_generation, &next_secrets)?;
     let _guard = lock_project_connections();
     let mut store = load_store_unlocked(app)?;
     let Some(index) = store
@@ -753,11 +688,11 @@ pub fn update_project_connection(
         .iter()
         .position(|connection| connection.id == input.id)
     else {
-        let _ = secret_store().delete(&connection_secret_key(&updated.id, credential_generation));
+        let _ = delete_secrets(app, &updated.id, credential_generation);
         return Err("This connection was removed while Buzz checked it.".to_string());
     };
     if store.connections[index].generation != previous_connection.generation {
-        let _ = secret_store().delete(&connection_secret_key(&updated.id, credential_generation));
+        let _ = delete_secrets(app, &updated.id, credential_generation);
         return Err(
             "This connection changed while Buzz checked it. Review the latest version and try again."
                 .to_string(),
@@ -765,7 +700,7 @@ pub fn update_project_connection(
     }
     store.connections[index] = updated.clone();
     if let Err(error) = save_store_unlocked(app, &store) {
-        let _ = secret_store().delete(&connection_secret_key(&updated.id, credential_generation));
+        let _ = delete_secrets(app, &updated.id, credential_generation);
         return Err(error);
     }
     Ok(updated)
@@ -781,7 +716,7 @@ pub(crate) fn snapshot_project_connection(
         .into_iter()
         .find(|connection| connection.id == connection_id)
         .ok_or_else(|| "This connection no longer exists.".to_string())?;
-    let secrets = load_secrets(&connection)?;
+    let secrets = load_secrets(app, &connection)?;
     Ok(ProjectConnectionRollback {
         connection,
         secrets,
@@ -794,6 +729,7 @@ pub(crate) fn restore_project_connection(
     expected_generation: u64,
 ) -> Result<(), String> {
     store_secrets(
+        app,
         &rollback.connection.id,
         rollback.connection.credential_generation,
         &rollback.secrets,
@@ -814,18 +750,19 @@ pub(crate) fn restore_project_connection(
     let failed_generation = connection.credential_generation;
     *connection = rollback.connection.clone();
     save_store_unlocked(app, &store)?;
-    let _ = secret_store().delete(&connection_secret_key(
-        &rollback.connection.id,
-        failed_generation,
-    ));
+    let _ = delete_secrets(app, &rollback.connection.id, failed_generation);
     Ok(())
 }
 
-pub(crate) fn finalize_project_connection_update(rollback: &ProjectConnectionRollback) {
-    let _ = secret_store().delete(&connection_secret_key(
+pub(crate) fn finalize_project_connection_update(
+    app: &AppHandle,
+    rollback: &ProjectConnectionRollback,
+) {
+    let _ = delete_secrets(
+        app,
         &rollback.connection.id,
         rollback.connection.credential_generation,
-    ));
+    );
 }
 
 pub fn project_connection_impact(
@@ -885,15 +822,13 @@ pub fn delete_project_connection(app: &AppHandle, connection_id: &str) -> Result
         .position(|connection| connection.id == connection_id)
         .ok_or_else(|| "This connection no longer exists.".to_string())?;
     let removed = store.connections.remove(index);
-    let secrets = load_secrets(&removed)?;
+    let secrets = load_secrets(app, &removed)?;
     save_store_unlocked(app, &store)?;
     let credential_generation = removed.credential_generation;
-    if let Err(error) =
-        secret_store().delete(&connection_secret_key(connection_id, credential_generation))
-    {
+    if let Err(error) = delete_secrets(app, connection_id, credential_generation) {
         store.connections.push(removed);
         let _ = save_store_unlocked(app, &store);
-        let _ = store_secrets(connection_id, credential_generation, &secrets);
+        let _ = store_secrets(app, connection_id, credential_generation, &secrets);
         return Err(format!(
             "Buzz could not remove the saved credentials. The connection was not removed: {error}"
         ));

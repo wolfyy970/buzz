@@ -123,7 +123,7 @@ pub async fn update_project_connection(
     let restart_errors =
         restart_original_pairs_for_operation(&app, &original_relays, operation_id).await;
     if restart_errors.is_empty() {
-        project_connections::finalize_project_connection_update(&rollback);
+        project_connections::finalize_project_connection_update(&app, &rollback);
         return Ok(updated);
     }
 

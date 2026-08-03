@@ -184,7 +184,7 @@ pub fn test_project_connection(
             .ok_or_else(|| "This connection no longer exists.".to_string())?
     };
     validate_project_scope_for_app(app, &connection.project_scope)?;
-    let secrets = match load_secrets(&connection) {
+    let secrets = match load_secrets(app, &connection) {
         Ok(secrets) => secrets,
         Err(error) => {
             let _guard = lock_project_connections();
@@ -475,7 +475,7 @@ pub(crate) fn materialize_agent_project_connections(
     for connection in selected {
         connection.id.hash(&mut hasher);
         connection.generation.hash(&mut hasher);
-        let env = load_secrets(&connection)?;
+        let env = load_secrets(app, &connection)?;
         servers.push(MaterializedMcpServer {
             name: format!("project_{}", connection.id),
             command: connection.command,
