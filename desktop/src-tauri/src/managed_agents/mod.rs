@@ -79,8 +79,6 @@ pub(crate) use planned_update::{
 };
 #[cfg(windows)]
 pub use process_lifecycle::*;
-#[cfg(test)]
-pub(crate) use readiness::ensure_persona_env_snapshot_initialized;
 pub(crate) use readiness::{
     agent_readiness, resolve_effective_agent_env, resolve_effective_harness_descriptor,
     AgentReadiness, Requirement,

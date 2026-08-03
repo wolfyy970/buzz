@@ -1966,8 +1966,7 @@ async fn tokio_main() -> Result<()> {
                     &ctx,
                     &mut last_activity,
                     &mut handoff_tracker,
-                )
-                {
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -2009,8 +2008,7 @@ async fn tokio_main() -> Result<()> {
                 &ctx,
                 &mut last_activity,
                 &mut handoff_tracker,
-            )
-            {
+            ) {
                 typing_channels.insert(channel_id, thread_tags);
             }
         }
@@ -2762,8 +2760,7 @@ async fn tokio_main() -> Result<()> {
                     &ctx,
                     &mut last_activity,
                     &mut handoff_tracker,
-                )
-                {
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -2792,8 +2789,7 @@ async fn tokio_main() -> Result<()> {
                     &ctx,
                     &mut last_activity,
                     &mut handoff_tracker,
-                )
-                {
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -2942,8 +2938,7 @@ async fn tokio_main() -> Result<()> {
                     &ctx,
                     &mut last_activity,
                     &mut handoff_tracker,
-                )
-                {
+                ) {
                     typing_channels.insert(channel_id, thread_tags);
                 }
             }
@@ -2975,8 +2970,7 @@ async fn tokio_main() -> Result<()> {
                             &ctx,
                             &mut last_activity,
                             &mut handoff_tracker,
-                        )
-                        {
+                        ) {
                             typing_channels.insert(channel_id, thread_tags);
                         }
                     }
