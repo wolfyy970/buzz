@@ -152,6 +152,8 @@ export function usePersonaActions() {
     React.useState(false);
   const [templateUpdateProgressStage, setTemplateUpdateProgressStage] =
     React.useState<AgentTemplateUpdateProgressStage | null>(null);
+  const [templateUpdateProgressByPubkey, setTemplateUpdateProgressByPubkey] =
+    React.useState<Record<string, AgentTemplateUpdateProgressStage>>({});
 
   const personas = personasQuery.data ?? [];
   const publications = catalogQuery.data ?? [];
@@ -268,6 +270,7 @@ export function usePersonaActions() {
                 setTemplateUpdateResult(null);
                 setTemplateUpdateError(null);
                 setTemplateUpdateProgressStage(null);
+                setTemplateUpdateProgressByPubkey({});
                 setTemplateUpdatePreview(preview);
                 isTemplateUpdateDialogOpenRef.current = true;
                 setIsTemplateUpdateDialogOpen(true);
@@ -380,6 +383,7 @@ export function usePersonaActions() {
     setTemplateUpdateError(null);
     setTemplateUpdateResult(null);
     setTemplateUpdateProgressStage("preparing_update");
+    setTemplateUpdateProgressByPubkey({});
     setIsTemplateUpdatePending(true);
     try {
       const result = await applyAgentTemplateUpdate(
@@ -390,7 +394,15 @@ export function usePersonaActions() {
           connectionBindingsByPubkey,
         },
         {
-          onProgress: ({ stage }) => setTemplateUpdateProgressStage(stage),
+          onProgress: ({ stage, pubkey }) => {
+            setTemplateUpdateProgressStage(stage);
+            if (pubkey) {
+              setTemplateUpdateProgressByPubkey((current) => ({
+                ...current,
+                [pubkey]: stage,
+              }));
+            }
+          },
         },
       );
       setTemplateUpdateResult(result);
@@ -464,6 +476,7 @@ export function usePersonaActions() {
       setTemplateUpdateResult(null);
       setTemplateUpdateError(null);
       setTemplateUpdateProgressStage(null);
+      setTemplateUpdateProgressByPubkey({});
       setTemplateUpdatePreview(preview);
       isTemplateUpdateDialogOpenRef.current = true;
       setIsTemplateUpdateDialogOpen(true);
@@ -484,6 +497,7 @@ export function usePersonaActions() {
     setTemplateUpdateResult(null);
     setTemplateUpdateError(null);
     setTemplateUpdateProgressStage(null);
+    setTemplateUpdateProgressByPubkey({});
   }
 
   function reopenTemplateUpdateDialog() {
@@ -824,6 +838,7 @@ export function usePersonaActions() {
     templateUpdateResult,
     templateUpdateError,
     templateUpdateProgressStage,
+    templateUpdateProgressByPubkey,
     isTemplateUpdatePending,
     handleApplyTemplateUpdate,
     openPublishedTemplateUpdate,

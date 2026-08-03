@@ -81,8 +81,20 @@ fn agent_record() -> ManagedAgentRecord {
         max_turn_duration_seconds: None,
         parallelism: 1,
         system_prompt: None,
+        system_prompt_override: None,
         model: None,
+        model_override: None,
+        provider: None,
+        provider_override: None,
+        persona_source_version: Some("selected-v1".to_string()),
+        pinned_persona_env_vars: Some(Default::default()),
+        previous_persona_snapshots: Vec::new(),
         env_vars: Default::default(),
+        project_scope: None,
+        pinned_tool_requirements: Vec::new(),
+        pinned_skills: Vec::new(),
+        skill_overrides: None,
+        connection_bindings: Default::default(),
         start_on_app_launch: false,
         auto_restart_on_config_change: true,
         runtime_pid: None,
@@ -116,8 +128,6 @@ fn agent_record() -> ManagedAgentRecord {
         definition_parallelism: None,
         relay_mesh: None,
         agent_command_override: None,
-        persona_source_version: None,
-        provider: None,
     }
 }
 
@@ -138,6 +148,10 @@ fn persona_with_model(model: &str) -> AgentDefinition {
         source_team_persona_slug: None,
         catalog_source: None,
         env_vars: Default::default(),
+        tool_requirements: Vec::new(),
+        skills: Vec::new(),
+        published_version: None,
+        published_version_env_vars: None,
         respond_to: None,
         respond_to_allowlist: Vec::new(),
         parallelism: None,
@@ -161,18 +175,13 @@ fn session_cache(current_model: &str, model_overridden: bool) -> SessionConfigCa
     }
 }
 
-/// Definition-authoritative: a stale materialized `record.model` on a
-/// linked instance must never outrank (or even be consulted against) the
-/// linked persona's model. `update_managed_agent` already blocks writing
-/// model/provider/prompt for linked instances, so a non-`None` value here
-/// can only be leftover snapshot bytes from before a persona edit — the
-/// panel must report the persona's current model, tagged `PersonaDefault`,
-/// not the stale byte as `BuzzExplicit`.
+/// A linked instance displays the model pinned with its selected template
+/// version, even when the mutable template head has moved on.
 #[test]
-fn linked_stale_record_model_never_outranks_persona_model() {
+fn linked_pinned_model_does_not_follow_mutable_template_head() {
     let mut record = agent_record();
-    record.model = Some("stale-explicit-model".to_string());
-    let personas = vec![persona_with_model("persona-model")];
+    record.model = Some("selected-model".to_string());
+    let personas = vec![persona_with_model("new-template-head-model")];
 
     let surface = resolve_config_surface(
         record,
@@ -183,22 +192,17 @@ fn linked_stale_record_model_never_outranks_persona_model() {
     );
 
     let model = surface.normalized.model.as_ref().expect("model resolved");
-    assert_eq!(model.value.as_deref(), Some("persona-model"));
+    assert_eq!(model.value.as_deref(), Some("selected-model"));
     assert_eq!(model.origin, ConfigOrigin::PersonaDefault);
 }
 
-/// Definition-authoritative, blank-definition case: a linked instance
-/// whose persona has no model of its own must fall through to the global
-/// default, tagged `GlobalDefault` — mirroring
-/// `effective_config::resolve_linked`'s `None => global` arm. A stale
-/// materialized record model must not shadow this fallthrough either.
+/// A selected template revision with no model falls through to the global
+/// default rather than adopting a model later added to the template head.
 #[test]
-fn linked_blank_definition_model_falls_through_to_global_default() {
+fn linked_blank_pinned_model_falls_through_to_global_default() {
     let mut record = agent_record();
-    record.model = Some("stale-explicit-model".to_string());
-    let mut persona = persona_with_model("unused");
-    persona.model = None;
-    let personas = vec![persona];
+    record.model = None;
+    let personas = vec![persona_with_model("new-template-head-model")];
     let global = crate::managed_agents::GlobalAgentConfig {
         model: Some("global-model".to_string()),
         ..Default::default()
@@ -209,6 +213,81 @@ fn linked_blank_definition_model_falls_through_to_global_default() {
     let model = surface.normalized.model.as_ref().expect("model resolved");
     assert_eq!(model.value.as_deref(), Some("global-model"));
     assert_eq!(model.origin, ConfigOrigin::GlobalDefault);
+}
+
+/// An explicit instance model remains the winner while the selected template
+/// model stays visible as the overridden baseline.
+#[test]
+fn linked_model_override_is_explicit_over_selected_template_model() {
+    let mut record = agent_record();
+    record.model = Some("selected-model".to_string());
+    record.model_override = Some("private-model".to_string());
+    let personas = vec![persona_with_model("new-template-head-model")];
+
+    let surface = resolve_config_surface(
+        record,
+        &personas,
+        Some(goose_runtime()),
+        None,
+        &Default::default(),
+    );
+
+    let model = surface.normalized.model.as_ref().expect("model resolved");
+    assert_eq!(model.value.as_deref(), Some("private-model"));
+    assert_eq!(model.origin, ConfigOrigin::BuzzExplicit);
+    assert_eq!(model.overridden_value.as_deref(), Some("selected-model"));
+    assert_eq!(model.overridden_origin, Some(ConfigOrigin::PersonaDefault));
+}
+
+/// Provider and instructions follow the same selected-version contract as
+/// model, including an explicit instance value and its inherited baseline.
+#[test]
+fn linked_provider_and_prompt_overrides_show_selected_template_baselines() {
+    let mut record = agent_record();
+    record.provider = Some("selected-provider".to_string());
+    record.provider_override = Some("private-provider".to_string());
+    record.system_prompt = Some("Selected instructions".to_string());
+    record.system_prompt_override = Some("Private instructions".to_string());
+    let mut persona = persona_with_model("model");
+    persona.provider = Some("new-template-head-provider".to_string());
+    persona.system_prompt = "New template head instructions".to_string();
+
+    let surface = resolve_config_surface(
+        record,
+        &[persona],
+        Some(goose_runtime()),
+        None,
+        &Default::default(),
+    );
+
+    let provider = surface
+        .normalized
+        .provider
+        .as_ref()
+        .expect("provider resolved");
+    assert_eq!(provider.value.as_deref(), Some("private-provider"));
+    assert_eq!(provider.origin, ConfigOrigin::BuzzExplicit);
+    assert_eq!(
+        provider.overridden_value.as_deref(),
+        Some("selected-provider")
+    );
+    assert_eq!(
+        provider.overridden_origin,
+        Some(ConfigOrigin::PersonaDefault)
+    );
+
+    let prompt = surface
+        .normalized
+        .system_prompt
+        .as_ref()
+        .expect("system prompt resolved");
+    assert_eq!(prompt.value.as_deref(), Some("Private instructions"));
+    assert_eq!(prompt.origin, ConfigOrigin::BuzzExplicit);
+    assert_eq!(
+        prompt.overridden_value.as_deref(),
+        Some("Selected instructions")
+    );
+    assert_eq!(prompt.overridden_origin, Some(ConfigOrigin::PersonaDefault));
 }
 
 /// A definition-less (no `persona_id`) instance's own explicit model IS
@@ -329,14 +408,13 @@ fn genuine_explicit_live_switch_to_same_model_yields_clean_field() {
     assert_eq!(model.overridden_origin, None);
 }
 
-/// Persona parity (regression): a persona-linked agent with no explicit
-/// record model that live-switches still renders the persona model as the
-/// secondary tagged `PersonaDefault` — the typed-baseline change must NOT
-/// regress the persona arm to a different origin.
+/// A linked agent that live-switches still renders its selected template
+/// model as the secondary tagged `PersonaDefault`.
 #[test]
 fn persona_linked_live_switch_keeps_persona_default_secondary() {
-    let record = agent_record();
-    let personas = vec![persona_with_model("persona-model")];
+    let mut record = agent_record();
+    record.model = Some("selected-model".to_string());
+    let personas = vec![persona_with_model("new-template-head-model")];
     let cache = session_cache("model-y", true);
 
     let surface = resolve_config_surface(
@@ -350,7 +428,7 @@ fn persona_linked_live_switch_keeps_persona_default_secondary() {
 
     assert_eq!(model.value.as_deref(), Some("model-y"));
     assert_eq!(model.origin, ConfigOrigin::RuntimeOverride);
-    assert_eq!(model.overridden_value.as_deref(), Some("persona-model"));
+    assert_eq!(model.overridden_value.as_deref(), Some("selected-model"));
     assert_eq!(model.overridden_origin, Some(ConfigOrigin::PersonaDefault));
 }
 
@@ -404,13 +482,18 @@ fn global_default_live_switch_renders_global_model_as_secondary_global_default()
 // These test the sanitized snapshot constructor — the command-boundary
 // function that builds InheritedConfigTiers from raw persona/global data.
 
-/// Orphaned persona link: a record whose persona_id references a non-existent
-/// persona should produce empty persona tiers (not a panic), and the panel
-/// still renders from the record and global tiers.
+/// An orphaned link still presents the selected template revision stored on
+/// the record. Spawn refuses the orphan independently.
 #[test]
-fn orphaned_persona_link_yields_empty_persona_tiers() {
+fn orphaned_persona_link_keeps_selected_template_tiers() {
     let mut record = agent_record();
     record.persona_id = Some("missing-persona".to_string());
+    record.model = Some("selected-model".to_string());
+    record.system_prompt = Some("Selected instructions".to_string());
+    record.pinned_persona_env_vars = Some(std::collections::BTreeMap::from([(
+        "GOOSE_MODEL".to_string(),
+        "selected-env-model".to_string(),
+    )]));
     // No personas in the list — dangling link.
     let personas: Vec<AgentDefinition> = vec![];
     let global = crate::managed_agents::GlobalAgentConfig {
@@ -418,34 +501,34 @@ fn orphaned_persona_link_yields_empty_persona_tiers() {
         ..Default::default()
     };
 
-    let tiers = build_inherited_tiers(record.persona_id.as_deref(), None, &personas, &global);
+    let tiers = build_inherited_tiers(&record, &personas, &global);
 
-    // Persona tier is empty — the orphan yields no persona inheritance.
-    assert!(tiers.persona_env.is_empty());
-    assert!(tiers.persona_model.is_none());
+    assert_eq!(
+        tiers.persona_env.get("GOOSE_MODEL").map(String::as_str),
+        Some("selected-env-model")
+    );
+    assert_eq!(tiers.persona_model.as_deref(), Some("selected-model"));
     assert!(tiers.persona_provider.is_none());
-    assert!(tiers.persona_prompt.is_none());
-    // Global tiers are unaffected.
+    assert_eq!(
+        tiers.persona_prompt.as_deref(),
+        Some("Selected instructions")
+    );
     assert_eq!(tiers.global_model.as_deref(), Some("global-model"));
 }
 
-/// Reserved key in persona env is stripped by sanitization — it must never
-/// reach the reader or the display surface.
+/// Reserved keys in the selected template env are stripped by sanitization.
 #[test]
-fn reserved_key_in_inherited_persona_env_is_stripped() {
-    let mut persona = persona_with_model("model");
-    // BUZZ_PRIVATE_KEY is a reserved key — must be stripped.
-    persona
-        .env_vars
-        .insert("BUZZ_PRIVATE_KEY".to_string(), "nsec-secret".to_string());
-    // A safe key — must survive.
-    persona
-        .env_vars
-        .insert("GOOSE_MODEL".to_string(), "persona-model".to_string());
-    let personas = vec![persona];
+fn reserved_key_in_selected_template_env_is_stripped() {
+    let mut record = agent_record();
+    let pinned = record
+        .pinned_persona_env_vars
+        .as_mut()
+        .expect("initialized template env");
+    pinned.insert("BUZZ_PRIVATE_KEY".to_string(), "nsec-secret".to_string());
+    pinned.insert("GOOSE_MODEL".to_string(), "persona-model".to_string());
     let global = crate::managed_agents::GlobalAgentConfig::default();
 
-    let tiers = build_inherited_tiers(Some("persona-1"), None, &personas, &global);
+    let tiers = build_inherited_tiers(&record, &[], &global);
 
     assert!(
         !tiers.persona_env.contains_key("BUZZ_PRIVATE_KEY"),
@@ -494,7 +577,9 @@ fn malformed_key_in_inherited_global_env_is_stripped() {
         .env_vars
         .insert("GOOSE_PROVIDER".to_string(), "anthropic".to_string());
 
-    let tiers = build_inherited_tiers(None, None, &[], &global);
+    let mut record = agent_record();
+    record.persona_id = None;
+    let tiers = build_inherited_tiers(&record, &[], &global);
 
     assert!(
         !tiers.global_env.contains_key("BAD=KEY"),

@@ -29,6 +29,7 @@ import {
   personaBehaviorDraftValid,
 } from "./personaBehaviorDraft";
 import {
+  ADVANCED_FIELDS_MOTION_TRANSITION,
   AUTO_MODEL_DROPDOWN_VALUE,
   AUTO_PROVIDER_DROPDOWN_VALUE,
   BLOCK_BUILD_HIDDEN_PROVIDER_IDS,
@@ -36,6 +37,7 @@ import {
   CUSTOM_PROVIDER_DROPDOWN_VALUE,
   computeLocalModeGate,
   formatRuntimeOptionLabel,
+  getProviderApiKeyLabel,
   getDefaultPersonaRuntime,
   getPersonaModelOptions,
   getPersonaProviderOptions,
@@ -92,11 +94,6 @@ import { useAgentTemplateResourcesDraft } from "./useAgentTemplateResourcesDraft
 import { useAgentDefinitionSubmission } from "./useAgentDefinitionSubmission";
 import type { AgentDefinitionDialogProps } from "./AgentDefinitionDialogTypes";
 export type { AgentDefinitionSubmitOptions } from "./AgentDefinitionDialogTypes";
-
-const ADVANCED_FIELDS_MOTION_TRANSITION = {
-  duration: 0.18,
-  ease: [0.23, 1, 0.32, 1],
-} as const;
 
 export function AgentDefinitionDialog({
   open,
@@ -929,13 +926,12 @@ export function AgentDefinitionDialog({
                 topLevelSecretEnvVar ? (
                   <PersonaProviderApiKeyField
                     disabled={isPending}
+                    envVarName={topLevelSecretEnvVar}
                     isInherited={apiKeyIsInherited}
                     inheritedLabel={apiKeyInheritedLabel}
                     isRequired={apiKeyIsRequired}
                     label={
-                      effectiveProvider === "anthropic"
-                        ? "Anthropic API key"
-                        : "OpenAI API key"
+                      getProviderApiKeyLabel(effectiveProvider) ?? "API key"
                     }
                     onValueChange={(next) => {
                       setEnvVars((prev) => ({

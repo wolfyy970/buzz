@@ -497,6 +497,7 @@ export function AgentsView() {
         onOpenAgent={(pubkey) => openProfilePanel?.(pubkey, { tab: "runtime" })}
         open={personas.isTemplateUpdateDialogOpen}
         preview={personas.templateUpdatePreview}
+        progressByPubkey={personas.templateUpdateProgressByPubkey}
         progressStage={personas.templateUpdateProgressStage}
         result={personas.templateUpdateResult}
       />

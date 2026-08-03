@@ -9,14 +9,12 @@ use serde::{Deserialize, Serialize};
 /// are stripped (matching `merged_user_env`). Structured fields are
 /// normalized: blank/whitespace-only values collapse to `None`.
 ///
-/// Orphaned persona links (persona_id references a missing persona) produce
-/// an empty persona env tier and `None` for all structured persona fields —
-/// the panel still renders from record/global. This diverges deliberately from
-/// spawn's `OrphanedInstance` refusal, which is a spawn-safety property the
-/// display surface does not need to enforce.
+/// Linked instances use the selected template revision pinned on their record,
+/// including when the mutable template head has moved or the link is orphaned.
+/// Spawn still refuses an orphaned link independently.
 #[derive(Debug, Clone, Default)]
 pub struct InheritedConfigTiers {
-    /// Sanitized env vars from the linked persona definition.
+    /// Sanitized env vars from the selected template revision.
     pub persona_env: BTreeMap<String, String>,
     /// Sanitized env vars from the global agent config.
     pub global_env: BTreeMap<String, String>,
@@ -25,11 +23,11 @@ pub struct InheritedConfigTiers {
     /// Empty for preset harnesses (all shipped presets have `env: {}`); only
     /// user-authored custom harness JSONs with a non-empty `env` block contribute here.
     pub definition_env: BTreeMap<String, String>,
-    /// Structured model from the linked persona (non-blank only).
+    /// Structured model from the selected template revision (non-blank only).
     pub persona_model: Option<String>,
-    /// Structured provider from the linked persona (non-blank only).
+    /// Structured provider from the selected template revision (non-blank only).
     pub persona_provider: Option<String>,
-    /// Structured system_prompt from the linked persona (non-blank only).
+    /// Structured system prompt from the selected template revision (non-blank only).
     pub persona_prompt: Option<String>,
     /// Structured model from global config (non-blank only).
     pub global_model: Option<String>,

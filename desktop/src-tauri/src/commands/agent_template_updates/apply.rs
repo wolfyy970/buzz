@@ -205,6 +205,14 @@ pub(super) async fn apply_agent_template_update(
             &input.request_id,
             AgentTemplateUpdateProgressStage::FinishingCurrentTask,
         );
+        for key in &original_keys {
+            emit_agent_update_progress(
+                &app,
+                &input.request_id,
+                &key.pubkey,
+                AgentTemplateUpdateProgressStage::FinishingCurrentTask,
+            );
+        }
     }
     let original_drains =
         drain_claimed_runtime_keys(&app, &original_generations, &operation_id).await;
@@ -546,9 +554,10 @@ pub(super) async fn apply_agent_template_update(
     let mut update_error = None;
     for generation in &candidate_generations {
         let key = &generation.key;
-        emit_update_progress(
+        emit_agent_update_progress(
             &app,
             &input.request_id,
+            &key.pubkey,
             AgentTemplateUpdateProgressStage::StartingUpdatedAgent,
         );
         match start_managed_agent_runtime_pair_authorized_with_nonce(
@@ -560,9 +569,10 @@ pub(super) async fn apply_agent_template_update(
             app.clone(),
         ) {
             Ok(_) => {
-                emit_update_progress(
+                emit_agent_update_progress(
                     &app,
                     &input.request_id,
+                    &key.pubkey,
                     AgentTemplateUpdateProgressStage::CheckingUpdate,
                 );
                 if let Err(error) = wait_for_ready(&app, &key.pubkey, &key.relay_url).await {
@@ -572,6 +582,12 @@ pub(super) async fn apply_agent_template_update(
                     ));
                     break;
                 }
+                emit_agent_update_progress(
+                    &app,
+                    &input.request_id,
+                    &key.pubkey,
+                    AgentTemplateUpdateProgressStage::Updated,
+                );
             }
             Err(error) => {
                 update_error = Some(format!(
@@ -861,6 +877,18 @@ pub(super) async fn apply_agent_template_update(
             }
         })
         .collect();
+    for pubkey in selected.iter().filter(|pubkey| {
+        !original_keys
+            .iter()
+            .any(|key| key.pubkey.as_str() == pubkey.as_str())
+    }) {
+        emit_agent_update_progress(
+            &app,
+            &input.request_id,
+            pubkey,
+            AgentTemplateUpdateProgressStage::Updated,
+        );
+    }
     emit_update_progress(
         &app,
         &input.request_id,

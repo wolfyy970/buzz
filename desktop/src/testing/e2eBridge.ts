@@ -8422,10 +8422,12 @@ async function handleApplyAgentTemplateUpdate(args: {
       | "starting_updated_agent"
       | "checking_update"
       | "updated",
+    pubkey?: string,
   ) => {
     await emit("agent-template-update-progress", {
       requestId: args.input.requestId,
       stage,
+      ...(pubkey ? { pubkey } : {}),
     });
     const delayMs =
       window.__BUZZ_E2E__?.mock?.agentTemplateUpdateStageDelayMs ?? 0;
@@ -8445,15 +8447,24 @@ async function handleApplyAgentTemplateUpdate(args: {
     );
   }
   const selected = new Set(args.input.selectedPubkeys);
-  const hasRunningAgent = preview.agents.some(
-    (agent) => selected.has(agent.pubkey) && agent.runningRelays.length > 0,
+  const selectedAgents = preview.agents.filter((agent) =>
+    selected.has(agent.pubkey),
   );
-  if (hasRunningAgent) {
-    await emitProgress("finishing_current_task");
+  const runningAgents = selectedAgents.filter(
+    (agent) => agent.runningRelays.length > 0,
+  );
+  for (const agent of runningAgents) {
+    await emitProgress("finishing_current_task", agent.pubkey);
   }
-  if (hasRunningAgent) {
-    await emitProgress("starting_updated_agent");
-    await emitProgress("checking_update");
+  for (const agent of runningAgents) {
+    await emitProgress("starting_updated_agent", agent.pubkey);
+    await emitProgress("checking_update", agent.pubkey);
+    await emitProgress("updated", agent.pubkey);
+  }
+  for (const agent of selectedAgents) {
+    if (agent.runningRelays.length === 0) {
+      await emitProgress("updated", agent.pubkey);
+    }
   }
   const agents = preview.agents
     .filter((agent) => selected.has(agent.pubkey))

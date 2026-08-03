@@ -281,21 +281,6 @@ function ConnectionDialog({
                 supported.
               </p>
             </div>
-            <label
-              className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-foreground"
-              htmlFor="connection-trusted-command"
-            >
-              <Checkbox
-                checked={trusted}
-                disabled={pending}
-                id="connection-trusted-command"
-                onCheckedChange={(checked) => setTrusted(checked === true)}
-              />
-              <span>
-                I trust this program to run on my computer. It can use the
-                secrets entered here and anything those credentials can access.
-              </span>
-            </label>
             <button
               aria-expanded={showTechnicalDetails}
               className="inline-flex h-8 items-center gap-1.5 text-sm font-medium text-foreground"
@@ -418,6 +403,22 @@ function ConnectionDialog({
                 </div>
               </div>
             ) : null}
+            <label
+              className="flex items-start gap-2 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-foreground"
+              htmlFor="connection-trusted-command"
+            >
+              <Checkbox
+                checked={trusted}
+                disabled={pending}
+                id="connection-trusted-command"
+                onCheckedChange={(checked) => setTrusted(checked === true)}
+              />
+              <span>
+                I trust this program and the configuration above to run on my
+                computer. It can use these secrets and anything those
+                credentials can access.
+              </span>
+            </label>
             {error ? (
               <p className="text-sm text-destructive" role="alert">
                 {error}

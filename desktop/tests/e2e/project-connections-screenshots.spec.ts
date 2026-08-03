@@ -114,9 +114,7 @@ test.describe("Project Connections screenshots", () => {
     await setup.getByLabel("Arguments").fill("--workspace\nacme");
     await setup.getByLabel("Secret 1 name").fill("LINEAR_API_TOKEN");
     await setup
-      .getByLabel(
-        "I trust this program to run on my computer. It can use the secrets entered here and anything those credentials can access.",
-      )
+      .getByLabel(/I trust this program and the configuration above/)
       .check();
     await capture(page, setup, "02-add-connection.png");
     await setup.getByRole("button", { name: "Cancel" }).click();

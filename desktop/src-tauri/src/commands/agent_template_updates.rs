@@ -58,6 +58,8 @@ pub enum AgentTemplateUpdateProgressStage {
 pub struct AgentTemplateUpdateProgress {
     pub request_id: String,
     pub stage: AgentTemplateUpdateProgressStage,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pubkey: Option<String>,
 }
 
 fn validate_update_request_id(request_id: &str) -> Result<(), String> {
@@ -76,9 +78,28 @@ fn emit_update_progress(
         AgentTemplateUpdateProgress {
             request_id: request_id.to_string(),
             stage,
+            pubkey: None,
         },
     ) {
         eprintln!("buzz-desktop: failed to emit agent template update progress: {error}");
+    }
+}
+
+fn emit_agent_update_progress(
+    app: &AppHandle,
+    request_id: &str,
+    pubkey: &str,
+    stage: AgentTemplateUpdateProgressStage,
+) {
+    if let Err(error) = app.emit(
+        AGENT_TEMPLATE_UPDATE_PROGRESS_EVENT,
+        AgentTemplateUpdateProgress {
+            request_id: request_id.to_string(),
+            stage,
+            pubkey: Some(pubkey.to_string()),
+        },
+    ) {
+        eprintln!("buzz-desktop: failed to emit per-agent template update progress: {error}");
     }
 }
 

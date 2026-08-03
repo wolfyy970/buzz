@@ -156,6 +156,7 @@ export type AgentTemplateUpdateProgressStage =
 export type AgentTemplateUpdateProgress = {
   requestId: string;
   stage: AgentTemplateUpdateProgressStage;
+  pubkey?: string;
 };
 
 export type AgentTemplateUpdateRecoveryStage =

@@ -357,6 +357,7 @@ test.describe("agent template update screenshots", () => {
     const instructionChanges = updateReview.getByTestId(
       "template-instruction-changes",
     );
+    const affectedAgents = updateReview.getByTestId("template-update-agents");
     await expect(instructionChanges).toContainText(
       "Agent instructions in this update",
     );
@@ -376,6 +377,16 @@ test.describe("agent template update screenshots", () => {
         `template-update-agent-${TEST_IDENTITIES.alice.pubkey}`,
       ),
     ).toContainText("Atlas");
+    const [affectedAgentsBox, instructionChangesBox] = await Promise.all([
+      affectedAgents.boundingBox(),
+      instructionChanges.boundingBox(),
+    ]);
+    if (!affectedAgentsBox || !instructionChangesBox) {
+      throw new Error("Template update review hierarchy did not render.");
+    }
+    expect(affectedAgentsBox.y + affectedAgentsBox.height).toBeLessThanOrEqual(
+      instructionChangesBox.y,
+    );
     const updateButton = updateReview.getByTestId(
       "template-publish-and-update",
     );
@@ -401,23 +412,37 @@ test.describe("agent template update screenshots", () => {
     await expect(updateReview).toContainText(
       "This update will continue in the background if you close this window.",
     );
+    await expect(affectedAgents).toContainText("Atlas");
+    await expect(affectedAgents).toContainText("Beacon");
+    await expect(affectedAgents).toContainText("Drift");
+    await expect(affectedAgents).not.toContainText("Comet");
+    await expect(
+      updateReview.getByTestId(
+        `template-update-agent-${TEST_IDENTITIES.alice.pubkey}`,
+      ),
+    ).toContainText("Queued");
     await expect(
       updateReview.getByRole("button", { name: "Continue working" }),
     ).toBeEnabled();
-    const [progressBox, instructionBox] = await Promise.all([
+    const [progressBox, affectedAgentsProgressBox] = await Promise.all([
       updateReview.getByTestId("template-rollout-progress").boundingBox(),
-      instructionChanges.boundingBox(),
+      affectedAgents.boundingBox(),
     ]);
-    if (!progressBox || !instructionBox) {
+    if (!progressBox || !affectedAgentsProgressBox) {
       throw new Error("Template rollout hierarchy did not render.");
     }
     expect(progressBox.y + progressBox.height).toBeLessThanOrEqual(
-      instructionBox.y,
+      affectedAgentsProgressBox.y,
     );
     await capture(page, updateReview, "04-preparing-update.png", 75);
 
     await expect(
       updateReview.getByTestId("template-rollout-progress"),
+    ).toContainText("Finishing current task");
+    await expect(
+      updateReview.getByTestId(
+        `template-update-agent-${TEST_IDENTITIES.alice.pubkey}`,
+      ),
     ).toContainText("Finishing current task");
     await capture(page, updateReview, "05-finishing-current-task.png", 75);
 

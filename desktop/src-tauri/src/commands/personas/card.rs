@@ -467,7 +467,6 @@ pub fn card_mint_save_openai_key(
     if key.is_empty() {
         return Err("API key cannot be empty.".to_string());
     }
-
     let _mutation_lease = state
         .managed_agent_update_leases
         .try_acquire_global_mutation("global-config-card-key")?;
@@ -475,13 +474,11 @@ pub fn card_mint_save_openai_key(
         .managed_agents_store_lock
         .lock()
         .map_err(|e| e.to_string())?;
-
     let mut config = load_global_agent_config(&app)?;
     config.env_vars.insert("OPENAI_API_KEY".to_string(), key);
     validate_global_config(&config)?;
     save_global_agent_config(&app, &config)
 }
-
 /// Report which env layer resolves the OpenAI key for a card mint of agent
 /// `id` — same layering as `mint_agent_card`. Delegates to `resolve_key_layer`
 /// for the classification; see that helper for the return-value contract.

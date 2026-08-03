@@ -698,11 +698,8 @@ mod tests {
             value
         };
         let write = |value: serde_json::Value| {
-            fs::write(
-                &paths.checkpoint,
-                serde_json::to_vec(&value).expect("json"),
-            )
-            .expect("checkpoint");
+            fs::write(&paths.checkpoint, serde_json::to_vec(&value).expect("json"))
+                .expect("checkpoint");
             fs::set_permissions(&paths.checkpoint, fs::Permissions::from_mode(0o600))
                 .expect("permissions");
         };

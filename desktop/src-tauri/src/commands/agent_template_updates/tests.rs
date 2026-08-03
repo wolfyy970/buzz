@@ -610,9 +610,11 @@ fn update_progress_payload_uses_product_stage_names() {
     let payload = AgentTemplateUpdateProgress {
         request_id: "4f62dd32-2f13-42ca-8c1d-c455149a0eef".to_string(),
         stage: AgentTemplateUpdateProgressStage::FinishingCurrentTask,
+        pubkey: Some("agent-pubkey".to_string()),
     };
     let json = serde_json::to_value(payload).expect("serialize progress");
 
     assert_eq!(json["requestId"], "4f62dd32-2f13-42ca-8c1d-c455149a0eef");
     assert_eq!(json["stage"], "finishing_current_task");
+    assert_eq!(json["pubkey"], "agent-pubkey");
 }

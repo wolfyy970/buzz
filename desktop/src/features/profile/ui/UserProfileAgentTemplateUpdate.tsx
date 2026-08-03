@@ -26,6 +26,7 @@ export type ProfileAgentTemplateUpdateController = {
   isPending: boolean;
   onOpenChange: (open: boolean) => void;
   preview: AgentTemplateUpdatePreview | null;
+  progressByPubkey: Record<string, AgentTemplateUpdateProgressStage>;
   progressStage: AgentTemplateUpdateProgressStage | null;
   publishError: string | null;
   result: ApplyAgentTemplateUpdateResponse | null;
@@ -47,6 +48,9 @@ export function useProfileAgentTemplateUpdate({
   const [isPending, setIsPending] = React.useState(false);
   const [progressStage, setProgressStage] =
     React.useState<AgentTemplateUpdateProgressStage | null>(null);
+  const [progressByPubkey, setProgressByPubkey] = React.useState<
+    Record<string, AgentTemplateUpdateProgressStage>
+  >({});
   const [publishError, setPublishError] = React.useState<string | null>(null);
   const clearPublishError = React.useCallback(() => setPublishError(null), []);
 
@@ -74,6 +78,7 @@ export function useProfileAgentTemplateUpdate({
           setResult(null);
           setError(null);
           setProgressStage(null);
+          setProgressByPubkey({});
           setPreview(nextPreview);
           dialogOpenRef.current = true;
           setDialogOpen(true);
@@ -99,6 +104,7 @@ export function useProfileAgentTemplateUpdate({
       setError(null);
       setResult(null);
       setProgressStage("preparing_update");
+      setProgressByPubkey({});
       setIsPending(true);
       try {
         const nextResult = await applyAgentTemplateUpdate(
@@ -109,7 +115,15 @@ export function useProfileAgentTemplateUpdate({
             connectionBindingsByPubkey,
           },
           {
-            onProgress: ({ stage }) => setProgressStage(stage),
+            onProgress: ({ stage, pubkey }) => {
+              setProgressStage(stage);
+              if (pubkey) {
+                setProgressByPubkey((current) => ({
+                  ...current,
+                  [pubkey]: stage,
+                }));
+              }
+            },
           },
         );
         setResult(nextResult);
@@ -179,6 +193,7 @@ export function useProfileAgentTemplateUpdate({
       setResult(null);
       setError(null);
       setProgressStage(null);
+      setProgressByPubkey({});
     },
     [isPending],
   );
@@ -191,6 +206,7 @@ export function useProfileAgentTemplateUpdate({
     isPending,
     onOpenChange,
     preview,
+    progressByPubkey,
     progressStage,
     publishError,
     result,
@@ -215,6 +231,7 @@ export function UserProfileAgentTemplateUpdateDialog({
       onOpenAgent={(pubkey) => openProfilePanel?.(pubkey, { tab: "runtime" })}
       open={controller.dialogOpen}
       preview={controller.preview}
+      progressByPubkey={controller.progressByPubkey}
       progressStage={controller.progressStage}
       result={controller.result}
     />

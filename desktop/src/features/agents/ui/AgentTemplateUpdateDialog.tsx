@@ -51,6 +51,7 @@ type AgentTemplateUpdateDialogProps = {
   onOpenChange: (open: boolean) => void;
   open: boolean;
   preview: AgentTemplateUpdatePreview | null;
+  progressByPubkey: Record<string, AgentTemplateUpdateProgressStage>;
   progressStage: AgentTemplateUpdateProgressStage | null;
   result: ApplyAgentTemplateUpdateResponse | null;
 };
@@ -67,6 +68,7 @@ export function AgentTemplateUpdateDialog({
   onOpenChange,
   open,
   preview,
+  progressByPubkey,
   progressStage,
   result,
 }: AgentTemplateUpdateDialogProps) {
@@ -137,6 +139,9 @@ export function AgentTemplateUpdateDialog({
     );
   const activeProgressStage = progressStage ?? "preparing_update";
   const progressComplete = activeProgressStage === "updated";
+  const displayedAgents = isPending
+    ? preview.agents.filter((agent) => selected.has(agent.pubkey))
+    : preview.agents;
   const hasFailed = !isPending && !isComplete && error !== null;
   const dialogTitle = isComplete
     ? rollbackFailed
@@ -232,128 +237,157 @@ export function AgentTemplateUpdateDialog({
             </div>
           ) : null}
 
-          {!isComplete && commonInstructionChange ? (
-            <AgentTemplateInstructionChangesSummary
-              change={commonInstructionChange}
-            />
-          ) : null}
-          {!isComplete && commonVersionChanges ? (
-            <AgentTemplateVersionChangesSummary
-              changes={commonVersionChanges}
-            />
-          ) : null}
-          {!isComplete && commonToolChanges ? (
-            <AgentTemplateToolChangesSummary changes={commonToolChanges} />
-          ) : null}
-          {!isComplete && commonSkillChanges ? (
-            <AgentTemplateSkillChangesSummary changes={commonSkillChanges} />
-          ) : null}
-
-          {!isPending ? (
-            <div className="overflow-hidden rounded-xl border border-border">
-              {preview.agents.map((agent) => {
-                const agentResult = result?.agents.find(
-                  (candidate) => candidate.pubkey === agent.pubkey,
-                );
-                const checked = selected.has(agent.pubkey);
-                const isCurrent =
-                  agent.currentVersion === preview.targetVersionToken;
-                const checkboxId = `template-update-checkbox-${agent.pubkey}`;
-                const Row = "div";
-                const headerContent = (
-                  <>
-                    <span
-                      className="truncate text-sm font-medium"
-                      title={agent.name}
-                    >
-                      {agent.name}
-                    </span>
-                    {!isComplete ? (
-                      <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
-                        <span
-                          aria-hidden="true"
-                          className={cn(
-                            "size-1.5 rounded-full",
-                            agent.runningRelays.length > 0
-                              ? "bg-status-added"
-                              : "bg-muted-foreground/50",
-                          )}
-                        />
-                        {agent.runningRelays.length > 0 ? "Running" : "Stopped"}
-                      </span>
-                    ) : null}
-                  </>
-                );
-                return (
-                  <Row
-                    className={cn(
-                      "flex items-start gap-3 border-b border-border px-4 py-3 last:border-b-0",
-                      (!agent.eligible || isCurrent) && "bg-muted/10",
-                    )}
-                    data-testid={`template-update-agent-${agent.pubkey}`}
-                    key={agent.pubkey}
+          <div
+            className="overflow-hidden rounded-xl border border-border"
+            data-testid="template-update-agents"
+          >
+            <div className="border-b border-border bg-muted/20 px-4 py-3">
+              <p className="text-sm font-medium">
+                {isComplete
+                  ? "Agent results"
+                  : isPending
+                    ? `Updating ${selectedCount} ${
+                        selectedCount === 1 ? "agent" : "agents"
+                      }`
+                    : "Affected agents"}
+              </p>
+              {!isComplete && !isPending ? (
+                <p className="mt-0.5 text-xs text-muted-foreground">
+                  {selectedCount} of {changedAgents.length} selected
+                </p>
+              ) : null}
+            </div>
+            {displayedAgents.map((agent) => {
+              const agentResult = result?.agents.find(
+                (candidate) => candidate.pubkey === agent.pubkey,
+              );
+              const checked = selected.has(agent.pubkey);
+              const agentProgressStage = progressByPubkey[agent.pubkey];
+              const isCurrent =
+                agent.currentVersion === preview.targetVersionToken;
+              const checkboxId = `template-update-checkbox-${agent.pubkey}`;
+              const Row = "div";
+              const headerContent = (
+                <>
+                  <span
+                    className="truncate text-sm font-medium"
+                    title={agent.name}
                   >
-                    {isComplete ? (
-                      !agentResult ? (
-                        <Minus
-                          aria-label="Not updated"
-                          className="size-4 text-muted-foreground"
-                        />
-                      ) : agentResult.outcome === "updated" ||
-                        agentResult.outcome === "updated_stopped" ? (
-                        <Check
-                          aria-label="Updated"
-                          className="size-4 text-status-added"
-                        />
-                      ) : agentResult.outcome === "rolled_back" ? (
-                        <RotateCcw
-                          aria-label="Rolled back"
-                          className="size-4 text-status-modified"
-                        />
-                      ) : (
-                        <XCircle
-                          aria-label="Needs attention"
-                          className="size-4 text-destructive"
-                        />
-                      )
-                    ) : (
-                      <Checkbox
-                        aria-label={`Update ${agent.name}`}
-                        checked={checked}
-                        disabled={!agent.eligible || isCurrent}
-                        id={checkboxId}
-                        onCheckedChange={(nextChecked) =>
-                          setAgentSelected(agent.pubkey, nextChecked === true)
-                        }
+                    {agent.name}
+                  </span>
+                  {!isComplete ? (
+                    <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                      <span
+                        aria-hidden="true"
+                        className={cn(
+                          "size-1.5 rounded-full",
+                          agent.runningRelays.length > 0
+                            ? "bg-status-added"
+                            : "bg-muted-foreground/50",
+                        )}
                       />
+                      {agent.runningRelays.length > 0 ? "Running" : "Stopped"}
+                    </span>
+                  ) : null}
+                </>
+              );
+              return (
+                <Row
+                  className={cn(
+                    "flex items-start gap-3 border-b border-border px-4 py-3 last:border-b-0",
+                    (!agent.eligible || isCurrent) && "bg-muted/10",
+                  )}
+                  data-testid={`template-update-agent-${agent.pubkey}`}
+                  key={agent.pubkey}
+                >
+                  {isComplete ? (
+                    !agentResult ? (
+                      <Minus
+                        aria-label="Not updated"
+                        className="size-4 text-muted-foreground"
+                      />
+                    ) : agentResult.outcome === "updated" ||
+                      agentResult.outcome === "updated_stopped" ? (
+                      <Check
+                        aria-label="Updated"
+                        className="size-4 text-status-added"
+                      />
+                    ) : agentResult.outcome === "rolled_back" ? (
+                      <RotateCcw
+                        aria-label="Rolled back"
+                        className="size-4 text-status-modified"
+                      />
+                    ) : (
+                      <XCircle
+                        aria-label="Needs attention"
+                        className="size-4 text-destructive"
+                      />
+                    )
+                  ) : isPending ? (
+                    agentProgressStage === "updated" ? (
+                      <Check
+                        aria-label="Updated"
+                        className="size-4 text-status-added"
+                      />
+                    ) : agentProgressStage ? (
+                      <RefreshCw
+                        aria-label={agentTemplateUpdateProgressLabel(
+                          agentProgressStage,
+                        )}
+                        className="size-4 text-primary motion-safe:animate-spin"
+                      />
+                    ) : (
+                      <span
+                        aria-label="Queued"
+                        className="mt-1 size-2 rounded-full bg-muted-foreground/40"
+                        role="img"
+                      />
+                    )
+                  ) : (
+                    <Checkbox
+                      aria-label={`Update ${agent.name}`}
+                      checked={checked}
+                      disabled={isPending || !agent.eligible || isCurrent}
+                      id={checkboxId}
+                      onCheckedChange={(nextChecked) =>
+                        setAgentSelected(agent.pubkey, nextChecked === true)
+                      }
+                    />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    {isComplete ? (
+                      <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
+                        {headerContent}
+                      </div>
+                    ) : (
+                      <label
+                        className={cn(
+                          "flex flex-wrap items-center gap-x-3 gap-y-1",
+                          agent.eligible &&
+                            !isCurrent &&
+                            !isPending &&
+                            "cursor-pointer rounded-sm hover:text-foreground/80",
+                        )}
+                        htmlFor={checkboxId}
+                      >
+                        {headerContent}
+                      </label>
                     )}
-                    <div className="min-w-0 flex-1">
-                      {isComplete ? (
-                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
-                          {headerContent}
-                        </div>
-                      ) : (
-                        <label
-                          className={cn(
-                            "flex flex-wrap items-center gap-x-3 gap-y-1",
-                            agent.eligible &&
-                              !isCurrent &&
-                              "cursor-pointer rounded-sm hover:text-foreground/80",
-                          )}
-                          htmlFor={checkboxId}
-                        >
-                          {headerContent}
-                        </label>
-                      )}
-                      <p className="mt-1 text-xs text-muted-foreground">
-                        {agentResult
-                          ? agentResult.outcome === "updated"
-                            ? "Updated and ready"
-                            : agentResult.outcome === "updated_stopped"
-                              ? "Updated · starts on this version next time"
-                              : agentResult.outcome === "rolled_back"
-                                ? "Previous version restored"
-                                : "Previous version was not restored"
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {agentResult
+                        ? agentResult.outcome === "updated"
+                          ? "Updated and ready"
+                          : agentResult.outcome === "updated_stopped"
+                            ? "Updated · starts on this version next time"
+                            : agentResult.outcome === "rolled_back"
+                              ? "Previous version restored"
+                              : "Previous version was not restored"
+                        : isPending
+                          ? agentProgressStage
+                            ? agentTemplateUpdateProgressLabel(
+                                agentProgressStage,
+                              )
+                            : "Queued"
                           : isComplete
                             ? "Not updated"
                             : isCurrent
@@ -361,121 +395,146 @@ export function AgentTemplateUpdateDialog({
                               : `Version ${shortAgentTemplateVersionToken(agent.currentVersion)} → ${shortPublishedVersion(
                                   preview.targetVersion,
                                 )}`}
+                    </p>
+                    {agent.blockedReason ? (
+                      <p
+                        className={cn("mt-1 text-xs", "text-muted-foreground")}
+                      >
+                        {agent.blockedReason}
                       </p>
-                      {agent.blockedReason ? (
-                        <p
-                          className={cn(
-                            "mt-1 text-xs",
-                            "text-muted-foreground",
-                          )}
-                        >
-                          {agent.blockedReason}
+                    ) : null}
+                    {agentResult?.outcome === "rollback_failed" ? (
+                      <div className="mt-3 space-y-2">
+                        <p className="text-xs text-destructive">
+                          Buzz could not restore the previous version.
                         </p>
-                      ) : null}
-                      {agentResult?.outcome === "rollback_failed" ? (
-                        <div className="mt-3 space-y-2">
-                          <p className="text-xs text-destructive">
-                            Buzz could not restore the previous version.
-                          </p>
-                          <div className="flex flex-wrap items-center gap-2">
-                            {onOpenAgent ? (
-                              <Button
-                                onClick={() => onOpenAgent(agent.pubkey)}
-                                size="xs"
-                                type="button"
-                                variant="outline"
-                              >
-                                Open agent
-                              </Button>
-                            ) : null}
-                            {agentResult.error ? (
-                              <details className="text-xs text-muted-foreground">
-                                <summary className="cursor-pointer">
-                                  Technical details
-                                </summary>
-                                <p className="mt-1 break-words">
-                                  {agentResult.error}
-                                </p>
-                              </details>
-                            ) : null}
-                          </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {onOpenAgent ? (
+                            <Button
+                              onClick={() => onOpenAgent(agent.pubkey)}
+                              size="xs"
+                              type="button"
+                              variant="outline"
+                            >
+                              Open agent
+                            </Button>
+                          ) : null}
+                          {agentResult.error ? (
+                            <details className="text-xs text-muted-foreground">
+                              <summary className="cursor-pointer">
+                                Technical details
+                              </summary>
+                              <p className="mt-1 break-words">
+                                {agentResult.error}
+                              </p>
+                            </details>
+                          ) : null}
                         </div>
-                      ) : null}
-                      {!isComplete &&
-                      !commonInstructionChange &&
-                      !isCurrent &&
-                      agent.instructionChange ? (
-                        <div className="mt-3">
-                          <AgentTemplateInstructionChangesSummary
-                            change={agent.instructionChange}
-                          />
-                        </div>
-                      ) : null}
-                      {!isComplete && !commonVersionChanges && !isCurrent ? (
-                        <div className="mt-3">
-                          <AgentTemplateVersionChangesSummary
-                            changes={agent.versionChanges}
-                          />
-                        </div>
-                      ) : null}
-                      {!isComplete && !commonToolChanges && !isCurrent ? (
-                        <div className="mt-3">
-                          <AgentTemplateToolChangesSummary
-                            changes={agent.toolChanges}
-                          />
-                        </div>
-                      ) : null}
-                      {!isComplete && !commonSkillChanges && !isCurrent ? (
-                        <div className="mt-3">
-                          <AgentTemplateSkillChangesSummary
-                            changes={agent.skillChanges}
-                          />
-                        </div>
-                      ) : null}
-                      {!isComplete && !isCurrent ? (
-                        <AgentTemplateOverridesPreservedSummary
-                          overrides={agent.overridesPreserved}
+                      </div>
+                    ) : null}
+                    {!isComplete &&
+                    !isPending &&
+                    !commonInstructionChange &&
+                    !isCurrent &&
+                    agent.instructionChange ? (
+                      <div className="mt-3">
+                        <AgentTemplateInstructionChangesSummary
+                          change={agent.instructionChange}
                         />
-                      ) : null}
-                      {!isComplete &&
-                      checked &&
-                      agent.eligible &&
-                      !isCurrent ? (
-                        <AgentTemplateToolBindings
-                          agent={agent}
-                          bindings={bindingsByPubkey[agent.pubkey] ?? {}}
-                          disabled={isPending}
-                          onBindingsChange={(bindings) =>
-                            setBindingsByPubkey((current) => ({
-                              ...current,
-                              [agent.pubkey]: bindings,
-                            }))
-                          }
-                          onValidityChange={(valid) =>
-                            handleBindingsValidityChange(agent.pubkey, valid)
-                          }
-                          requirements={preview.targetToolRequirements}
+                      </div>
+                    ) : null}
+                    {!isComplete &&
+                    !isPending &&
+                    !commonVersionChanges &&
+                    !isCurrent ? (
+                      <div className="mt-3">
+                        <AgentTemplateVersionChangesSummary
+                          changes={agent.versionChanges}
                         />
-                      ) : null}
-                      {!isComplete &&
-                      bindingsValidByPubkey[agent.pubkey] !== true &&
-                      agent.toolBindingIssues.length > 0 ? (
-                        <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-destructive">
-                          {agent.toolBindingIssues.map((issue) => (
-                            <li key={issue}>{issue}</li>
-                          ))}
-                        </ul>
-                      ) : null}
-                    </div>
-                  </Row>
-                );
-              })}
-            </div>
-          ) : null}
+                      </div>
+                    ) : null}
+                    {!isComplete &&
+                    !isPending &&
+                    !commonToolChanges &&
+                    !isCurrent ? (
+                      <div className="mt-3">
+                        <AgentTemplateToolChangesSummary
+                          changes={agent.toolChanges}
+                        />
+                      </div>
+                    ) : null}
+                    {!isComplete &&
+                    !isPending &&
+                    !commonSkillChanges &&
+                    !isCurrent ? (
+                      <div className="mt-3">
+                        <AgentTemplateSkillChangesSummary
+                          changes={agent.skillChanges}
+                        />
+                      </div>
+                    ) : null}
+                    {!isComplete && !isPending && !isCurrent ? (
+                      <AgentTemplateOverridesPreservedSummary
+                        overrides={agent.overridesPreserved}
+                      />
+                    ) : null}
+                    {!isComplete &&
+                    !isPending &&
+                    checked &&
+                    agent.eligible &&
+                    !isCurrent ? (
+                      <AgentTemplateToolBindings
+                        agent={agent}
+                        bindings={bindingsByPubkey[agent.pubkey] ?? {}}
+                        disabled={isPending}
+                        onBindingsChange={(bindings) =>
+                          setBindingsByPubkey((current) => ({
+                            ...current,
+                            [agent.pubkey]: bindings,
+                          }))
+                        }
+                        onValidityChange={(valid) =>
+                          handleBindingsValidityChange(agent.pubkey, valid)
+                        }
+                        requirements={preview.targetToolRequirements}
+                      />
+                    ) : null}
+                    {!isComplete &&
+                    !isPending &&
+                    bindingsValidByPubkey[agent.pubkey] !== true &&
+                    agent.toolBindingIssues.length > 0 ? (
+                      <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-destructive">
+                        {agent.toolBindingIssues.map((issue) => (
+                          <li key={issue}>{issue}</li>
+                        ))}
+                      </ul>
+                    ) : null}
+                  </div>
+                </Row>
+              );
+            })}
+          </div>
           {!isComplete && selectedCount > 0 && !bindingsReady ? (
             <p className="text-sm text-destructive" role="alert">
               Choose a ready connection for each required tool before updating.
             </p>
+          ) : null}
+
+          {!isComplete && !isPending && commonInstructionChange ? (
+            <AgentTemplateInstructionChangesSummary
+              change={commonInstructionChange}
+            />
+          ) : null}
+          {!isComplete && !isPending && commonVersionChanges ? (
+            <AgentTemplateVersionChangesSummary
+              changes={commonVersionChanges}
+            />
+          ) : null}
+          {!isComplete && !isPending && commonToolChanges ? (
+            <AgentTemplateToolChangesSummary changes={commonToolChanges} />
+          ) : null}
+          {!isComplete && !isPending && commonSkillChanges ? (
+            <AgentTemplateSkillChangesSummary changes={commonSkillChanges} />
           ) : null}
 
           {!isComplete &&
