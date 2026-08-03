@@ -117,12 +117,43 @@ fn rejects_windows_reserved_names_and_trailing_dots() {
 }
 
 #[test]
-fn rejects_unknown_or_mismatched_frontmatter() {
+fn accepts_standard_optional_agent_skills_frontmatter() {
+    let mut candidate = skill("safe-skill", "Safe Skill", "Body");
+    candidate.files[0].content = r#"---
+name: safe-skill
+description: Safe Skill
+license: Apache-2.0
+compatibility: Requires git and network access
+metadata:
+  author: example-org
+  version: "1.0"
+allowed-tools: Bash(git:*) Read
+---
+Body"#
+        .to_string();
+    assert!(bundle(vec![candidate]).validate().is_ok());
+}
+
+#[test]
+fn rejects_unknown_malformed_or_mismatched_frontmatter() {
     let mut unknown = skill("safe-skill", "Safe Skill", "Body");
     unknown.files[0].content =
-        "---\nname: safe-skill\ndescription: Safe Skill\nallowed-tools: shell\n---\nBody"
+        "---\nname: safe-skill\ndescription: Safe Skill\nruntime-policy: unrestricted\n---\nBody"
             .to_string();
     assert!(bundle(vec![unknown]).validate().is_err());
+
+    let mut non_string_metadata = skill("safe-skill", "Safe Skill", "Body");
+    non_string_metadata.files[0].content =
+        "---\nname: safe-skill\ndescription: Safe Skill\nmetadata:\n  version: 1\n---\nBody"
+            .to_string();
+    assert!(bundle(vec![non_string_metadata]).validate().is_err());
+
+    let mut long_compatibility = skill("safe-skill", "Safe Skill", "Body");
+    long_compatibility.files[0].content = format!(
+        "---\nname: safe-skill\ndescription: Safe Skill\ncompatibility: {}\n---\nBody",
+        "x".repeat(MAX_SKILL_COMPATIBILITY_CHARS + 1)
+    );
+    assert!(bundle(vec![long_compatibility]).validate().is_err());
 
     let mut mismatch = skill("safe-skill", "Safe Skill", "Body");
     mismatch.files[0].content = "---\nname: other\ndescription: Safe Skill\n---\nBody".to_string();
@@ -137,6 +168,14 @@ fn rejects_multiline_or_padded_descriptions() {
             bundle(vec![candidate]).validate().is_err(),
             "{description:?}"
         );
+    }
+}
+
+#[test]
+fn rejects_nonportable_skill_names() {
+    for name in ["safe--skill", "con", "aux", "com1", "lpt9"] {
+        let candidate = skill(name, "Safe Skill", "Body");
+        assert!(bundle(vec![candidate]).validate().is_err(), "{name}");
     }
 }
 

@@ -5,7 +5,7 @@
 //! exact-file review flow, immutable template versions, and an established
 //! workspace boundary.
 
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
@@ -14,11 +14,13 @@ use crate::reviewable_text::validate_reviewable_text;
 
 pub(crate) const MAX_SKILLS_PER_BUNDLE: usize = 16;
 pub(crate) const MAX_FILES_PER_SKILL: usize = 32;
+// Buzz Agent currently reads at most 32 KiB from an activated Skill file.
 pub(crate) const MAX_SKILL_FILE_BYTES: usize = 32 * 1024;
 pub(crate) const MAX_SKILL_BUNDLE_BYTES: usize = 128 * 1024;
 pub(crate) const MAX_SKILL_BUNDLE_SERIALIZED_BYTES: usize = 192 * 1024;
 const MAX_SKILL_NAME_BYTES: usize = 64;
-const MAX_SKILL_DESCRIPTION_BYTES: usize = 512;
+const MAX_SKILL_DESCRIPTION_CHARS: usize = 1024;
+const MAX_SKILL_COMPATIBILITY_CHARS: usize = 500;
 const MAX_SKILL_PATH_BYTES: usize = 240;
 const SKILL_BUNDLE_SCHEMA_VERSION: u16 = 1;
 
@@ -66,10 +68,18 @@ pub struct SkillBundleWarning {
 }
 
 #[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+#[serde(deny_unknown_fields, rename_all = "kebab-case")]
 struct CommonSkillFrontmatter {
     name: String,
     description: String,
+    #[serde(default)]
+    license: Option<String>,
+    #[serde(default)]
+    compatibility: Option<String>,
+    #[serde(default)]
+    metadata: BTreeMap<String, String>,
+    #[serde(default)]
+    allowed_tools: Option<String>,
 }
 
 impl SkillBundle {
@@ -159,7 +169,9 @@ fn validate_skill_name(name: &str) -> Result<(), String> {
         && name
             .bytes()
             .last()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
+            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+        && !name.contains("--")
+        && !windows_reserved_segment(name);
     if valid {
         Ok(())
     } else {
@@ -173,10 +185,10 @@ fn validate_skill_description(skill: &PortableSkill) -> Result<(), String> {
     let description = skill.description.trim();
     if description.is_empty()
         || description != skill.description
-        || skill.description.len() > MAX_SKILL_DESCRIPTION_BYTES
+        || skill.description.chars().count() > MAX_SKILL_DESCRIPTION_CHARS
     {
         return Err(format!(
-            "Skill {:?} needs a single-line description without surrounding whitespace, no longer than {MAX_SKILL_DESCRIPTION_BYTES} bytes.",
+            "Skill {:?} needs a single-line description without surrounding whitespace, no longer than {MAX_SKILL_DESCRIPTION_CHARS} characters.",
             skill.name
         ));
     }
@@ -296,7 +308,10 @@ fn validate_common_frontmatter(skill: &PortableSkill, content: &str) -> Result<(
     let closing = remainder
         .find("\n---\n")
         .ok_or_else(|| format!("{} SKILL.md has incomplete YAML frontmatter.", skill.name))?;
-    let metadata: CommonSkillFrontmatter = serde_yaml::from_str(&remainder[..closing])
+    let raw_metadata: serde_yaml::Value = serde_yaml::from_str(&remainder[..closing])
+        .map_err(|error| format!("{} SKILL.md frontmatter is invalid: {error}", skill.name))?;
+    validate_frontmatter_value_types(skill, &raw_metadata)?;
+    let metadata: CommonSkillFrontmatter = serde_yaml::from_value(raw_metadata)
         .map_err(|error| format!("{} SKILL.md frontmatter is invalid: {error}", skill.name))?;
     if metadata.name != skill.name {
         return Err(format!(
@@ -310,7 +325,97 @@ fn validate_common_frontmatter(skill: &PortableSkill, content: &str) -> Result<(
             skill.name
         ));
     }
+    validate_optional_frontmatter(skill, &metadata)?;
     Ok(())
+}
+
+fn validate_frontmatter_value_types(
+    skill: &PortableSkill,
+    metadata: &serde_yaml::Value,
+) -> Result<(), String> {
+    let mapping = metadata.as_mapping().ok_or_else(|| {
+        format!(
+            "{} SKILL.md frontmatter must be a key-value mapping.",
+            skill.name
+        )
+    })?;
+    for field in [
+        "name",
+        "description",
+        "license",
+        "compatibility",
+        "allowed-tools",
+    ] {
+        if mapping
+            .get(serde_yaml::Value::String(field.to_string()))
+            .is_some_and(|value| !value.is_string())
+        {
+            return Err(format!("{} SKILL.md {field} must be a string.", skill.name));
+        }
+    }
+    if let Some(value) = mapping.get(serde_yaml::Value::String("metadata".to_string())) {
+        let entries = value
+            .as_mapping()
+            .ok_or_else(|| format!("{} SKILL.md metadata must be a mapping.", skill.name))?;
+        if entries
+            .iter()
+            .any(|(key, value)| !key.is_string() || !value.is_string())
+        {
+            return Err(format!(
+                "{} SKILL.md metadata keys and values must be strings.",
+                skill.name
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_optional_frontmatter(
+    skill: &PortableSkill,
+    metadata: &CommonSkillFrontmatter,
+) -> Result<(), String> {
+    if let Some(license) = metadata.license.as_deref() {
+        validate_frontmatter_text(skill, "license", license, None)?;
+    }
+    if let Some(compatibility) = metadata.compatibility.as_deref() {
+        validate_frontmatter_text(
+            skill,
+            "compatibility",
+            compatibility,
+            Some(MAX_SKILL_COMPATIBILITY_CHARS),
+        )?;
+    }
+    if let Some(allowed_tools) = metadata.allowed_tools.as_deref() {
+        validate_frontmatter_text(skill, "allowed-tools", allowed_tools, None)?;
+    }
+    for (key, value) in &metadata.metadata {
+        validate_frontmatter_text(skill, "metadata key", key, None)?;
+        validate_frontmatter_text(skill, "metadata value", value, None)?;
+    }
+    Ok(())
+}
+
+fn validate_frontmatter_text(
+    skill: &PortableSkill,
+    field: &str,
+    value: &str,
+    max_chars: Option<usize>,
+) -> Result<(), String> {
+    if value.is_empty()
+        || value.trim() != value
+        || max_chars.is_some_and(|maximum| value.chars().count() > maximum)
+    {
+        return Err(format!(
+            "{} SKILL.md {field} is not valid Agent Skills metadata.",
+            skill.name
+        ));
+    }
+    validate_reviewable_text(value, "Skill frontmatter", false).map_err(|error| {
+        format!(
+            "{} SKILL.md {field} contains unsafe text: {error}",
+            skill.name
+        )
+    })
 }
 
 fn file_looks_like_it_contains_a_secret(content: &str) -> bool {
