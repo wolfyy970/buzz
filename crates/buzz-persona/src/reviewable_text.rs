@@ -8,7 +8,11 @@ pub fn validate_reviewable_text(
 ) -> Result<(), String> {
     for character in value.chars() {
         let allowed_layout_control = allow_layout_controls && matches!(character, '\n' | '\t');
-        if (!allowed_layout_control && character.is_control()) || is_default_ignorable(character) {
+        if (!allowed_layout_control && character.is_control())
+            || is_unicode_line_or_paragraph_separator(character)
+            || is_unicode_format(character)
+            || is_default_ignorable(character)
+        {
             return Err(format!(
                 "{label} contains prohibited invisible or formatting character U+{:04X}",
                 character as u32
@@ -16,6 +20,39 @@ pub fn validate_reviewable_text(
         }
     }
     Ok(())
+}
+
+/// Unicode line and paragraph separators (`Zl` and `Zp`).
+fn is_unicode_line_or_paragraph_separator(character: char) -> bool {
+    matches!(character, '\u{2028}' | '\u{2029}')
+}
+
+/// Unicode general category `Cf` ranges from DerivedGeneralCategory 17.0.0.
+fn is_unicode_format(character: char) -> bool {
+    matches!(
+        character,
+        '\u{00AD}'
+            | '\u{0600}'..='\u{0605}'
+            | '\u{061C}'
+            | '\u{06DD}'
+            | '\u{070F}'
+            | '\u{0890}'..='\u{0891}'
+            | '\u{08E2}'
+            | '\u{180E}'
+            | '\u{200B}'..='\u{200F}'
+            | '\u{202A}'..='\u{202E}'
+            | '\u{2060}'..='\u{2064}'
+            | '\u{2066}'..='\u{206F}'
+            | '\u{FEFF}'
+            | '\u{FFF9}'..='\u{FFFB}'
+            | '\u{110BD}'
+            | '\u{110CD}'
+            | '\u{13430}'..='\u{1343F}'
+            | '\u{1BCA0}'..='\u{1BCA3}'
+            | '\u{1D173}'..='\u{1D17A}'
+            | '\u{E0001}'
+            | '\u{E0020}'..='\u{E007F}'
+    )
 }
 
 /// Unicode `Default_Ignorable_Code_Point` ranges from DerivedCoreProperties.
@@ -68,6 +105,10 @@ mod tests {
             '\u{2066}',
             '\u{3164}',
             '\u{FE0F}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{0600}',
+            '\u{13430}',
             '\u{E007F}',
             '\0',
             '\r',

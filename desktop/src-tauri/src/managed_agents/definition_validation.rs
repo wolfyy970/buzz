@@ -70,6 +70,10 @@ mod tests {
             '\u{2066}',
             '\u{3164}',
             '\u{FE0F}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{0600}',
+            '\u{13430}',
             '\u{E007F}',
         ] {
             let name = format!("Review{character}er");

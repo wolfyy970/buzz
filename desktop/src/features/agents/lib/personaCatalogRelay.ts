@@ -59,9 +59,16 @@ function isProhibitedAgentTextCharacter(
   if (isControl && !isAllowedLayoutControl) return true;
 
   return (
+    codePoint === 0x2028 ||
+    codePoint === 0x2029 ||
     codePoint === 0x00ad ||
+    (codePoint >= 0x0600 && codePoint <= 0x0605) ||
     codePoint === 0x034f ||
     codePoint === 0x061c ||
+    codePoint === 0x06dd ||
+    codePoint === 0x070f ||
+    (codePoint >= 0x0890 && codePoint <= 0x0891) ||
+    codePoint === 0x08e2 ||
     (codePoint >= 0x115f && codePoint <= 0x1160) ||
     (codePoint >= 0x17b4 && codePoint <= 0x17b5) ||
     (codePoint >= 0x180b && codePoint <= 0x180f) ||
@@ -72,7 +79,10 @@ function isProhibitedAgentTextCharacter(
     (codePoint >= 0xfe00 && codePoint <= 0xfe0f) ||
     codePoint === 0xfeff ||
     codePoint === 0xffa0 ||
-    (codePoint >= 0xfff0 && codePoint <= 0xfff8) ||
+    (codePoint >= 0xfff0 && codePoint <= 0xfffb) ||
+    codePoint === 0x110bd ||
+    codePoint === 0x110cd ||
+    (codePoint >= 0x13430 && codePoint <= 0x1343f) ||
     (codePoint >= 0x1bca0 && codePoint <= 0x1bca3) ||
     (codePoint >= 0x1d173 && codePoint <= 0x1d17a) ||
     (codePoint >= 0xe0000 && codePoint <= 0xe0fff)

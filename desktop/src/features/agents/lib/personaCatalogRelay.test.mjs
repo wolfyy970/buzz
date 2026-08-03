@@ -228,6 +228,10 @@ test("catalog rejects invisible or bidirectional formatting characters", () => {
     "\u2066",
     "\u3164",
     "\ufe0f",
+    "\u2028",
+    "\u2029",
+    "\u0600",
+    "\u{13430}",
     "\u{e007f}",
   ].entries()) {
     assert.deepEqual(
