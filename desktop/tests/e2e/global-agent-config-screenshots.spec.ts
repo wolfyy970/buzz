@@ -862,7 +862,7 @@ test.describe("global agent config screenshots", () => {
     });
     await page.getByTestId("agent-edit-scope-template").click();
 
-    // The definition dialog opens in EDIT mode ("Save changes"), seeded from
+    // The definition dialog opens in EDIT mode, seeded from
     // the persona — confirm it's the edit path, not create.
     await expect(page.getByTestId("persona-dialog")).toBeVisible({
       timeout: 10_000,
@@ -871,7 +871,7 @@ test.describe("global agent config screenshots", () => {
       "Codex Editor",
     );
     await expect(page.getByTestId("persona-dialog-submit")).toHaveText(
-      /Save changes/,
+      /Publish new version/,
     );
 
     // The core assertions: Codex hides the provider picker, so the hidden
@@ -965,7 +965,7 @@ test.describe("global agent config screenshots", () => {
       "Legacy Editor",
     );
     await expect(page.getByTestId("persona-dialog-submit")).toHaveText(
-      /Save changes/,
+      /Publish new version/,
     );
 
     // The provider picker IS visible (runtime-less editable definition) …

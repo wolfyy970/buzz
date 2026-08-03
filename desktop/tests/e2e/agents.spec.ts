@@ -299,7 +299,7 @@ test("built-in persona edits persist", async ({ page }) => {
   const dialog = page.getByTestId("persona-dialog");
   await dialog.getByLabel("Agent name").fill("My Fizz");
   await dialog.getByLabel("Agent instruction").fill("User-edited instructions");
-  await dialog.getByRole("button", { name: "Save changes" }).click();
+  await dialog.getByRole("button", { name: "Save draft" }).click();
 
   await expect(dialog).toHaveCount(0);
   await expect(page.getByTestId("agents-library-personas")).toContainText(

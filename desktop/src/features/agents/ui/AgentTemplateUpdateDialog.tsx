@@ -121,6 +121,11 @@ export function AgentTemplateUpdateDialog({
   const changedAgents = preview.agents.filter(
     (agent) => agent.currentVersion !== preview.targetVersionToken,
   );
+  const eligibleChangedAgents = changedAgents.filter((agent) => agent.eligible);
+  const blockedCount = changedAgents.length - eligibleChangedAgents.length;
+  const runningCount = changedAgents.filter(
+    (agent) => agent.runningRelays.length > 0,
+  ).length;
   const hasEligibleChanges = changedAgents.some((agent) => agent.eligible);
   const isComplete = result !== null;
   const rollbackFailed =
@@ -139,6 +144,9 @@ export function AgentTemplateUpdateDialog({
     );
   const activeProgressStage = progressStage ?? "preparing_update";
   const progressComplete = activeProgressStage === "updated";
+  const readyCount = [...selected].filter(
+    (pubkey) => progressByPubkey[pubkey] === "updated",
+  ).length;
   const displayedAgents = isPending
     ? preview.agents.filter((agent) => selected.has(agent.pubkey))
     : preview.agents;
@@ -147,13 +155,13 @@ export function AgentTemplateUpdateDialog({
     ? rollbackFailed
       ? `${preview.personaName} needs attention`
       : result.rolledBack
-        ? `${preview.personaName} update rolled back`
-        : `${preview.personaName} updated`
+        ? `${preview.personaName} version restored`
+        : `${preview.personaName} version applied`
     : isPending
-      ? `Updating ${preview.personaName}`
+      ? `Applying ${preview.personaName} version`
       : hasFailed
-        ? `${preview.personaName} update failed`
-        : `Update ${preview.personaName}`;
+        ? `Couldn’t apply ${preview.personaName} version`
+        : `Apply ${preview.personaName} version`;
 
   function setAgentSelected(pubkey: string, checked: boolean) {
     setSelected((current) => {
@@ -177,21 +185,23 @@ export function AgentTemplateUpdateDialog({
               ? rollbackFailed
                 ? "Buzz could not restore every agent automatically. Review the agents below."
                 : result.rolledBack
-                  ? "The previous version was restored. The template edit is still saved."
+                  ? "The agents still use their previous version. The new version remains available."
                   : `${result.agents.length} ${
-                      result.agents.length === 1 ? "agent was" : "agents were"
-                    } updated.`
+                      result.agents.length === 1
+                        ? "agent now uses"
+                        : "agents now use"
+                    } version ${shortPublishedVersion(preview.targetVersion)}.`
               : isPending
                 ? `${selectedCount} ${
                     selectedCount === 1 ? "agent" : "agents"
-                  } using ${preview.personaName} ${
+                  } ${
                     selectedCount === 1 ? "is" : "are"
-                  } being updated.`
+                  } moving to version ${shortPublishedVersion(preview.targetVersion)}.`
                 : hasFailed
-                  ? `Buzz could not update the selected agents using ${preview.personaName}.`
-                  : `${preview.personaName} is used by ${preview.agents.length} ${
+                  ? "The published version is still available. Review the error and try again."
+                  : `Version ${shortPublishedVersion(preview.targetVersion)} is ready for ${preview.agents.length} linked ${
                       preview.agents.length === 1 ? "agent" : "agents"
-                    }. Choose who should get this version now.`}
+                    }. Choose which agents should use it.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -202,7 +212,7 @@ export function AgentTemplateUpdateDialog({
               role="alert"
             >
               <p className="text-sm font-medium text-destructive">
-                The agents were not updated.
+                The version wasn’t applied.
               </p>
               <p className="mt-1 text-xs text-destructive">{error}</p>
             </div>
@@ -231,8 +241,7 @@ export function AgentTemplateUpdateDialog({
                 </p>
               </div>
               <p className="mt-3 text-xs text-muted-foreground">
-                This update will continue in the background if you close this
-                window.
+                This continues in the background if you close this window.
               </p>
             </div>
           ) : null}
@@ -241,20 +250,46 @@ export function AgentTemplateUpdateDialog({
             className="overflow-hidden rounded-xl border border-border"
             data-testid="template-update-agents"
           >
-            <div className="border-b border-border bg-muted/20 px-4 py-3">
-              <p className="text-sm font-medium">
-                {isComplete
-                  ? "Agent results"
-                  : isPending
-                    ? `Updating ${selectedCount} ${
-                        selectedCount === 1 ? "agent" : "agents"
-                      }`
-                    : "Affected agents"}
-              </p>
-              {!isComplete && !isPending ? (
-                <p className="mt-0.5 text-xs text-muted-foreground">
-                  {selectedCount} of {changedAgents.length} selected
+            <div className="flex min-h-14 items-center justify-between gap-3 border-b border-border bg-muted/20 px-4 py-2.5">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">
+                  {isComplete
+                    ? "Agent results"
+                    : isPending
+                      ? `${readyCount} of ${selectedCount} ready`
+                      : "Affected agents"}
                 </p>
+                {!isComplete && !isPending ? (
+                  <p className="mt-0.5 truncate text-xs text-muted-foreground">
+                    {[
+                      `${selectedCount} selected`,
+                      blockedCount > 0 ? `${blockedCount} blocked` : null,
+                      runningCount > 0 ? `${runningCount} running` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}
+                  </p>
+                ) : null}
+              </div>
+              {!isComplete && !isPending && eligibleChangedAgents.length > 1 ? (
+                <Button
+                  onClick={() =>
+                    setSelected(
+                      selectedCount === eligibleChangedAgents.length
+                        ? new Set()
+                        : new Set(
+                            eligibleChangedAgents.map((agent) => agent.pubkey),
+                          ),
+                    )
+                  }
+                  size="xs"
+                  type="button"
+                  variant="ghost"
+                >
+                  {selectedCount === eligibleChangedAgents.length
+                    ? "Clear selection"
+                    : "Select eligible"}
+                </Button>
               ) : null}
             </div>
             {displayedAgents.map((agent) => {
@@ -516,7 +551,7 @@ export function AgentTemplateUpdateDialog({
           </div>
           {!isComplete && selectedCount > 0 && !bindingsReady ? (
             <p className="text-sm text-destructive" role="alert">
-              Choose a ready connection for each required tool before updating.
+              Connect every required tool before applying this version.
             </p>
           ) : null}
 
@@ -544,8 +579,8 @@ export function AgentTemplateUpdateDialog({
               selected.has(agent.pubkey) && agent.runningRelays.length > 0,
           ) ? (
             <p className="rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-              Buzz finishes current work before switching versions. If the
-              update fails, it restores the previous version.
+              Buzz waits for current work to finish. If an agent fails to start,
+              Buzz restores its previous version.
             </p>
           ) : null}
         </div>
@@ -585,7 +620,7 @@ export function AgentTemplateUpdateDialog({
                 type="button"
                 variant="outline"
               >
-                {isPending ? "Continue working" : "Not now"}
+                {isPending ? "Close" : "Do this later"}
               </Button>
               <Button
                 data-testid="template-publish-and-update"
@@ -599,8 +634,8 @@ export function AgentTemplateUpdateDialog({
                 type="button"
               >
                 {isPending
-                  ? "Updating…"
-                  : `Update ${selectedCount} ${
+                  ? "Applying…"
+                  : `Apply to ${selectedCount} ${
                       selectedCount === 1 ? "agent" : "agents"
                     }`}
               </Button>

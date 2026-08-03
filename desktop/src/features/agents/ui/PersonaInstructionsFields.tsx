@@ -30,7 +30,7 @@ export function PersonaInstructionsFields({
       <div className={PERSONA_FIELD_SHELL_CLASS}>
         <Textarea
           className={cn(
-            "min-h-40 resize-y px-3 py-3 leading-5",
+            "min-h-40 resize-y px-3 py-3 leading-5 [@media(max-height:600px)]:min-h-28",
             PERSONA_FIELD_CONTROL_CLASS,
           )}
           disabled={disabled}

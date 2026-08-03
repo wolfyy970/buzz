@@ -171,14 +171,17 @@ export function AgentTemplateRecoveryBanner({
         }}
         open={selected !== null}
       >
-        <AlertDialogContent data-testid="agent-update-recovery-confirmation">
+        <AlertDialogContent
+          className="max-w-lg"
+          data-testid="agent-update-recovery-confirmation"
+        >
           <AlertDialogHeader>
             <AlertDialogTitle>
-              Restore{" "}
+              Restore the previous{" "}
               {selected
                 ? templateName(selected, templateNamesById)
-                : "this template"}
-              ?
+                : "this template"}{" "}
+              version?
             </AlertDialogTitle>
             <AlertDialogDescription>
               Buzz will stop the affected agents, then restore the version they
@@ -197,7 +200,8 @@ export function AgentTemplateRecoveryBanner({
 
           {restoreError ? (
             <p className="text-sm text-destructive" role="alert">
-              Could not restore the previous version. {restoreError}
+              Previous version wasn’t restored. {restoreError} Fix the problem
+              and try again.
             </p>
           ) : null}
 
@@ -214,7 +218,7 @@ export function AgentTemplateRecoveryBanner({
                 }
               }}
             >
-              {restore.isPending ? "Restoring..." : "Stop and restore"}
+              {restore.isPending ? "Restoring..." : "Stop agents and restore"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -256,20 +256,20 @@ export function AgentsView() {
               <div>
                 <p className="text-sm font-medium text-foreground">
                   {personas.isTemplateUpdatePending
-                    ? `Updating ${personas.templateUpdatePreview.personaName}`
+                    ? `Applying ${personas.templateUpdatePreview.personaName} version`
                     : personas.templateUpdateResult?.agents.some(
                           (agent) => agent.outcome === "rollback_failed",
                         )
                       ? `${personas.templateUpdatePreview.personaName} needs attention`
                       : personas.templateUpdateResult?.rolledBack
-                        ? `${personas.templateUpdatePreview.personaName} update rolled back`
+                        ? `${personas.templateUpdatePreview.personaName} version restored`
                         : personas.templateUpdateError
-                          ? `${personas.templateUpdatePreview.personaName} update failed`
-                          : `${personas.templateUpdatePreview.personaName} updated`}
+                          ? `Couldn’t apply ${personas.templateUpdatePreview.personaName} version`
+                          : `${personas.templateUpdatePreview.personaName} version applied`}
                 </p>
                 <p className="mt-0.5 text-xs text-muted-foreground">
                   {personas.isTemplateUpdatePending
-                    ? "The update is continuing in the background."
+                    ? "The version is being applied in the background."
                     : personas.templateUpdateError
                       ? "Open the result to review what happened."
                       : `${personas.templateUpdateResult?.agents.length ?? 0} ${

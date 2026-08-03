@@ -761,12 +761,12 @@ export function AgentDefinitionDialog({
         open={open}
       >
         <ChooserDialogContent
-          className="max-w-3xl border-0"
+          className="max-w-3xl border-0 [@media(max-height:600px)]:max-h-[calc(100vh-1rem)]"
           contentClassName="pt-3"
           data-testid="persona-dialog"
           description={description}
           footerClassName="border-t-0 pt-0"
-          headerClassName="pb-2"
+          headerClassName="pb-2 [@media(max-height:600px)]:pt-3"
           title={title}
           footer={
             <AgentDefinitionDialogFooter
@@ -789,7 +789,7 @@ export function AgentDefinitionDialog({
         >
           <form
             className={cn(
-              "grid gap-5",
+              "grid gap-5 [@media(max-height:600px)]:gap-3",
               isCreateMode && "lg:grid-cols-[220px_minmax(0,1fr)]",
             )}
             id="persona-dialog-form"

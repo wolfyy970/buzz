@@ -44,15 +44,20 @@ export function AgentDefinitionDialogFooter({
               : "Changes weren’t saved"}
           </p>
           <p className="mt-0.5 text-xs text-destructive">{errorMessage}</p>
+          {lastAction === "publish" ? (
+            <p className="mt-1 text-xs text-muted-foreground">
+              Your draft is saved. Fix the problem and try again.
+            </p>
+          ) : null}
         </div>
       ) : null}
 
       <div className="flex flex-wrap items-center justify-end gap-3">
         <div className="flex min-h-9 min-w-0 flex-1 flex-wrap items-center gap-3">
           {isTemplateEdit ? (
-            <p className="max-w-md text-xs text-muted-foreground">
-              Save keeps running agents unchanged. Publish lets you choose which
-              agents to update.
+            <p className="max-w-md text-xs text-muted-foreground [@media(max-height:600px)]:hidden">
+              Save keeps a draft. Publish creates a version, then lets you
+              choose which agents use it.
             </p>
           ) : null}
           {submitBlockReason ? (
@@ -98,7 +103,7 @@ export function AgentDefinitionDialogFooter({
             >
               {isPending && pendingAction === "save"
                 ? "Saving..."
-                : "Save changes"}
+                : "Save draft"}
             </Button>
           ) : null}
           <Button
@@ -116,7 +121,7 @@ export function AgentDefinitionDialogFooter({
                 : isTemplateEdit
                   ? errorMessage && lastAction === "publish"
                     ? "Retry publishing"
-                    : "Publish version"
+                    : "Publish new version…"
                   : publishesCatalogUpdates
                     ? "Save and publish"
                     : submitLabel}

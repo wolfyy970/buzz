@@ -10,6 +10,20 @@ const PREVIOUS_TEMPLATE_VERSION =
   "7d91f42b01481f4f36d7f3eca85bc50f684b09aa5ac9df16848e67bb0d64ae21";
 const INITIAL_TEMPLATE_INSTRUCTIONS =
   "Analyze campaign performance and explain what changed.";
+const PROJECT_CHANNEL_ID = "9a1657ac-f7aa-5db0-b632-d8bbeb6dfb50";
+const DEFAULT_MOCK_PUBKEY = "deadbeef".repeat(8);
+const PROJECT_SCOPE = {
+  relayUrl: "ws://localhost:3000",
+  operatorPubkey: DEFAULT_MOCK_PUBKEY,
+  repoAddress: `30617:${DEFAULT_MOCK_PUBKEY}:buzz`,
+  channelId: PROJECT_CHANNEL_ID,
+};
+const ANALYTICS_REQUIREMENT = {
+  id: "analytics",
+  label: "Analytics reports",
+  capability: "mcp.tool.run_report",
+  required: true,
+};
 const CAMPAIGN_SKILL = {
   name: "campaign-analysis",
   description: "Compare campaign performance with the prior period.",
@@ -131,13 +145,24 @@ test.describe("agent template update screenshots", () => {
       });
     }
 
+    const needsProjectConnection = testInfo.title.includes(
+      "opens Project connections",
+    );
     await installMockBridge(page, {
       globalAgentConfig: {
         provider: "anthropic",
         model: "claude-opus-4-5",
         env_vars: { ANTHROPIC_API_KEY: "test-only-placeholder" },
       },
-      managedAgents: LINKED_AGENTS,
+      managedAgents: needsProjectConnection
+        ? LINKED_AGENTS.map((agent) => ({
+            ...agent,
+            projectScope: PROJECT_SCOPE,
+            toolRequirements: [ANALYTICS_REQUIREMENT],
+          }))
+        : LINKED_AGENTS,
+      projectChannelId: needsProjectConnection ? PROJECT_CHANNEL_ID : undefined,
+      projectConnections: needsProjectConnection ? [] : undefined,
       agentTemplateUpdateStageDelayMs: 700,
       agentTemplateUpdateRecoveries: testInfo.title.includes(
         "interrupted update recovery",
@@ -164,6 +189,9 @@ test.describe("agent template update screenshots", () => {
           displayName: TEMPLATE_NAME,
           systemPrompt: INITIAL_TEMPLATE_INSTRUCTIONS,
           skills: [CAMPAIGN_SKILL],
+          toolRequirements: needsProjectConnection
+            ? [ANALYTICS_REQUIREMENT]
+            : undefined,
           updatedAt: "2026-07-15T12:00:00.000Z",
         },
       ],
@@ -316,13 +344,13 @@ test.describe("agent template update screenshots", () => {
         "Analyze campaign performance, explain what changed, and recommend the next action.",
       );
     await expect(templateEditor).toContainText(
-      "Save keeps running agents unchanged. Publish lets you choose which agents to update.",
+      "Save keeps a draft. Publish creates a version, then lets you choose which agents use it.",
     );
     await expect(
       templateEditor.getByTestId("persona-dialog-save-template"),
-    ).toHaveText("Save changes");
+    ).toHaveText("Save draft");
     const publishButton = templateEditor.getByTestId("persona-dialog-submit");
-    await expect(publishButton).toHaveText("Publish version");
+    await expect(publishButton).toHaveText("Publish new version…");
     await expect(publishButton).toBeEnabled({ timeout: 10_000 });
     const commandsBeforeSave = await page.evaluate(
       () => window.__BUZZ_E2E_COMMAND_LOG__?.length ?? 0,
@@ -342,10 +370,10 @@ test.describe("agent template update screenshots", () => {
         }, commandsBeforeSave),
       )
       .toBe(false);
-    await expect(updateReview).toContainText("Update Campaign Analyst");
-    await expect(updateReview).toContainText("Choose who should get");
+    await expect(updateReview).toContainText("Apply Campaign Analyst version");
+    await expect(updateReview).toContainText("Choose which agents should use");
     await expect(updateReview).toContainText(
-      "Buzz finishes current work before switching versions. If the update fails, it restores the previous version.",
+      "Buzz waits for current work to finish. If an agent fails to start, Buzz restores its previous version.",
     );
     await expect(updateReview).toContainText("Skills in this update");
     await expect(updateReview).toContainText("Changed campaign-analysis");
@@ -390,7 +418,7 @@ test.describe("agent template update screenshots", () => {
     const updateButton = updateReview.getByTestId(
       "template-publish-and-update",
     );
-    await expect(updateButton).toHaveText("Update 3 agents");
+    await expect(updateButton).toHaveText("Apply to 3 agents");
     await capture(page, updateReview, "03-update-selection-review.png");
 
     await updateButton.click();
@@ -399,18 +427,16 @@ test.describe("agent template update screenshots", () => {
     ).toBeVisible({ timeout: 2_000 });
     await expect(
       updateReview.getByRole("heading", {
-        name: "Updating Campaign Analyst",
+        name: "Applying Campaign Analyst version",
         exact: true,
       }),
     ).toBeVisible();
-    await expect(updateReview).toContainText(
-      "3 agents using Campaign Analyst are being updated.",
-    );
+    await expect(updateReview).toContainText("3 agents are moving to version");
     await expect(
       updateReview.getByTestId("template-rollout-progress"),
     ).toContainText("Preparing update");
     await expect(updateReview).toContainText(
-      "This update will continue in the background if you close this window.",
+      "This continues in the background if you close this window.",
     );
     await expect(affectedAgents).toContainText("Atlas");
     await expect(affectedAgents).toContainText("Beacon");
@@ -422,7 +448,7 @@ test.describe("agent template update screenshots", () => {
       ),
     ).toContainText("Queued");
     await expect(
-      updateReview.getByRole("button", { name: "Continue working" }),
+      updateReview.getByRole("button", { name: "Close", exact: true }).first(),
     ).toBeEnabled();
     const [progressBox, affectedAgentsProgressBox] = await Promise.all([
       updateReview.getByTestId("template-rollout-progress").boundingBox(),
@@ -456,7 +482,8 @@ test.describe("agent template update screenshots", () => {
     ).toContainText("Checking update");
     await capture(page, updateReview, "07-checking-update.png", 75);
     await updateReview
-      .getByRole("button", { name: "Continue working" })
+      .getByRole("button", { name: "Close", exact: true })
+      .first()
       .click();
     await expect(updateReview).not.toBeVisible();
     const backgroundNotice = page.getByText(
@@ -476,9 +503,11 @@ test.describe("agent template update screenshots", () => {
     await page.getByRole("button", { name: "View results" }).click();
 
     await expect(
-      updateReview.getByText("Campaign Analyst updated", { exact: true }),
+      updateReview.getByText("Campaign Analyst version applied", {
+        exact: true,
+      }),
     ).toBeVisible({ timeout: 10_000 });
-    await expect(updateReview).toContainText("3 agents were updated.");
+    await expect(updateReview).toContainText("3 agents now use version");
     await expect(updateReview).toContainText("Updated and ready");
     await expect(updateReview).toContainText(
       "Updated · starts on this version next time",
@@ -556,7 +585,7 @@ test.describe("agent template update screenshots", () => {
     await expect(
       page
         .getByTestId("template-publish-review")
-        .getByText("Update Campaign Analyst", { exact: true }),
+        .getByText("Apply Campaign Analyst version", { exact: true }),
     ).toBeVisible({ timeout: 10_000 });
   });
 
@@ -663,10 +692,10 @@ test.describe("agent template update screenshots", () => {
       templateEditor.getByTestId("template-contents-nav"),
     ).toBeVisible();
     await expect(
-      templateEditor.getByRole("button", { name: "Save changes" }),
+      templateEditor.getByRole("button", { name: "Save draft" }),
     ).toBeVisible();
     await expect(
-      templateEditor.getByRole("button", { name: "Publish version" }),
+      templateEditor.getByRole("button", { name: "Publish new version…" }),
     ).toBeVisible();
     expect(
       await templateEditor.evaluate(
@@ -694,11 +723,13 @@ test.describe("agent template update screenshots", () => {
     await expect(confirmation).toContainText(
       "Work accepted during that update may be incomplete.",
     );
-    await expect(confirmation).toContainText("Restore Campaign Analyst?");
+    await expect(confirmation).toContainText(
+      "Restore the previous Campaign Analyst version?",
+    );
     await capture(page, confirmation, "16-interrupted-update-confirmation.png");
 
     await confirmation
-      .getByRole("button", { name: "Stop and restore" })
+      .getByRole("button", { name: "Stop agents and restore" })
       .click();
     await expect(banner).not.toBeVisible();
     await expect
@@ -712,5 +743,55 @@ test.describe("agent template update screenshots", () => {
         ),
       )
       .toBe(1);
+  });
+
+  test("opens Project connections without losing the pending update", async ({
+    page,
+  }) => {
+    const templateEditor = await openTemplateEditor(page);
+    await templateEditor
+      .getByLabel("Agent instructions")
+      .fill(
+        "Analyze campaign performance, explain what changed, and recommend the next action.",
+      );
+    await templateEditor.getByTestId("persona-dialog-submit").click();
+
+    const updateReview = page.getByTestId("template-publish-review");
+    await expect(updateReview).toBeVisible();
+    const atlas = updateReview.getByTestId(
+      `template-update-agent-${TEST_IDENTITIES.alice.pubkey}`,
+    );
+    await expect(atlas).toContainText(
+      "No connection can provide Analytics reports.",
+    );
+    await atlas.getByRole("button", { name: "Manage connections" }).click();
+
+    const connectionsDialog = page.getByRole("dialog", {
+      name: "Project connections",
+    });
+    await expect(connectionsDialog).toBeVisible();
+    await expect(connectionsDialog).toContainText("No connections yet");
+    await capture(page, connectionsDialog, "17-update-missing-connection.png");
+
+    await connectionsDialog
+      .getByRole("button", { name: "Add connection" })
+      .first()
+      .click();
+    const addConnection = page.getByRole("dialog", {
+      name: "Add connection",
+    });
+    await expect(addConnection).toContainText(
+      "Buzz runs this program directly.",
+    );
+    await addConnection.getByRole("button", { name: "Cancel" }).click();
+    await connectionsDialog
+      .getByRole("button", { name: "Back to update" })
+      .click();
+
+    await expect(updateReview).toBeVisible();
+    await expect(updateReview).toContainText("3 selected");
+    await expect(atlas).toContainText(
+      "No connection can provide Analytics reports.",
+    );
   });
 });
