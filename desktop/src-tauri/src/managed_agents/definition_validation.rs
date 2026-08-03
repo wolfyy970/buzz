@@ -38,44 +38,10 @@ fn validate_visible_text(
     label: &str,
     allow_layout_controls: bool,
 ) -> Result<(), String> {
-    for character in value.chars() {
-        let allowed_layout_control = allow_layout_controls && matches!(character, '\n' | '\t');
-        if (!allowed_layout_control && character.is_control()) || is_default_ignorable(character) {
-            return Err(format!(
-                "{label} contains prohibited invisible or formatting character U+{:04X}",
-                character as u32
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Unicode `Default_Ignorable_Code_Point` ranges (DerivedCoreProperties).
-///
-/// This deliberately includes joiners and variation selectors. They can be
-/// legitimate in prose, but they are not faithfully reviewable in a prompt
-/// that will later execute with the host's access. Shared agent definitions
-/// prefer an explicit rejection over a display/execution mismatch.
-fn is_default_ignorable(character: char) -> bool {
-    matches!(
-        character as u32,
-        0x00AD
-            | 0x034F
-            | 0x061C
-            | 0x115F..=0x1160
-            | 0x17B4..=0x17B5
-            | 0x180B..=0x180F
-            | 0x200B..=0x200F
-            | 0x202A..=0x202E
-            | 0x2060..=0x206F
-            | 0x3164
-            | 0xFE00..=0xFE0F
-            | 0xFEFF
-            | 0xFFA0
-            | 0xFFF0..=0xFFF8
-            | 0x1BCA0..=0x1BCA3
-            | 0x1D173..=0x1D17A
-            | 0xE0000..=0xE0FFF
+    buzz_persona_pkg::reviewable_text::validate_reviewable_text(
+        value,
+        label,
+        allow_layout_controls,
     )
 }
 
