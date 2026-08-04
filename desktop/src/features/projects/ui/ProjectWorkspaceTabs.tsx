@@ -192,7 +192,9 @@ export function WorkspaceTabs({
       ? {
           relayUrl: activeCommunity.relayUrl,
           operatorPubkey: identityQuery.data.pubkey,
-          repoAddress: project.repoAddress,
+          // The current Project model is one repository. NIP-MP Projects will
+          // supply their explicit address here once #4671 lands.
+          projectAddress: project.repoAddress,
           channelId: project.projectChannelId,
         }
       : null;

@@ -186,7 +186,7 @@ test("launch context carries the durable Project scope and tool bindings", async
     projectScope: {
       relayUrl: "wss://buzz.example",
       operatorPubkey: "b".repeat(64),
-      repoAddress: `30617:${"a".repeat(64)}:buzz`,
+      projectAddress: `30621:${"a".repeat(64)}:buzz`,
       channelId: "project-discussion",
     },
     connectionBindings: { analytics: "ga-connection" },

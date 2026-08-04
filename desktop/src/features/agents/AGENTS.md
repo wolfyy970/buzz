@@ -173,11 +173,12 @@ with a TypeScript lookup table or an id comparison in a component.
     keyring. Product copy uses Skills, Tools, Connections, Project, agent
     template, and agent. MCP is reserved for technical details.
 14. **Tool access is a Project boundary.** Every MCP-enabled agent has one
-    canonical `AgentProjectScope`: relay URL, operator pubkey, NIP-34 repository
-    address, and Project discussion channel. Local desktop Project ids are not
-    persisted. The runtime sets `BUZZ_ACP_CHANNELS` to that discussion channel
-    so Project tools cannot be used from another channel. Remote agents with
-    Project Connections remain unsupported until the provider contract can
+    canonical `AgentProjectScope`: relay URL, operator pubkey, NIP-MP Project
+    address, and Project discussion channel. Legacy NIP-34 repository addresses
+    remain valid for single-repository Projects. Local desktop Project ids are
+    not persisted. The runtime sets `BUZZ_ACP_CHANNELS` to that discussion
+    channel so Project tools cannot be used from another channel. Remote agents
+    with Project Connections remain unsupported until the provider contract can
     broker scoped secrets safely.
 15. **Connection and template changes use controlled restarts.** Required
     unresolved tools block launch. A connection must initialize, return its

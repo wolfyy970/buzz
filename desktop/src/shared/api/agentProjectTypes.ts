@@ -1,8 +1,11 @@
 export type AgentProjectScope = {
   relayUrl: string;
   operatorPubkey: string;
-  /** Durable NIP-34 repository coordinate. Local Project.id is never persisted. */
-  repoAddress: string;
+  /**
+   * Durable NIP-MP Project coordinate. Legacy NIP-34 repository coordinates
+   * remain valid for single-repository Projects.
+   */
+  projectAddress: string;
   /** Project discussion channel used to scope agent traffic and tool access. */
   channelId: string;
 };

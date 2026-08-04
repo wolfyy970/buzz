@@ -18,7 +18,7 @@ export const projectConnectionsQueryKey = (
     "project-connections",
     projectScope?.relayUrl ?? "",
     projectScope?.operatorPubkey ?? "",
-    projectScope?.repoAddress ?? "",
+    projectScope?.projectAddress ?? "",
     projectScope?.channelId ?? "",
   ] as const;
 

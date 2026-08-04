@@ -343,11 +343,11 @@ pub(crate) fn canonical_project_scope(
     {
         return Err("Buzz could not verify who owns these connections.".to_string());
     }
-    let mut parts = scope.repo_address.splitn(3, ':');
+    let mut parts = scope.project_address.splitn(3, ':');
     let kind = parts.next();
     let owner = parts.next();
     let d_tag = parts.next();
-    if kind != Some("30617")
+    if !matches!(kind, Some("30617") | Some("30621"))
         || !owner.is_some_and(|value| {
             value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
         })
@@ -365,8 +365,9 @@ pub(crate) fn canonical_project_scope(
     Ok(AgentProjectScope {
         relay_url: canonical_relay,
         operator_pubkey: scope.operator_pubkey.to_ascii_lowercase(),
-        repo_address: format!(
-            "30617:{}:{}",
+        project_address: format!(
+            "{}:{}:{}",
+            kind.unwrap_or_default(),
             owner.unwrap_or_default().to_ascii_lowercase(),
             d_tag.unwrap_or_default()
         ),

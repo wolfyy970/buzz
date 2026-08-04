@@ -24,10 +24,12 @@ fn default_tool_requirement_required() -> bool {
 
 /// Stable Project boundary for a managed agent and its tool connections.
 ///
-/// `repo_address` is the canonical NIP-34 coordinate (`30617:<owner>:<d-tag>`),
-/// not the desktop's local Project id. `channel_id` is the Project discussion
-/// channel and is enforced through `BUZZ_ACP_CHANNELS` whenever Project tools
-/// are present, so those tools cannot be used from the agent's other channels.
+/// `project_address` is the canonical NIP-MP coordinate
+/// (`30621:<owner>:<d-tag>`), not the desktop's local Project id. Legacy
+/// NIP-34 repository coordinates remain valid for single-repository Projects.
+/// `channel_id` is the Project discussion channel and is enforced through
+/// `BUZZ_ACP_CHANNELS` whenever Project tools are present, so those tools cannot
+/// be used from the agent's other channels.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentProjectScope {
@@ -35,6 +37,7 @@ pub struct AgentProjectScope {
     pub relay_url: String,
     /// Identity that owns the local connection records and credentials.
     pub operator_pubkey: String,
-    pub repo_address: String,
+    #[serde(alias = "repoAddress")]
+    pub project_address: String,
     pub channel_id: String,
 }

@@ -153,7 +153,7 @@ export function AgentTemplateToolBindings({
       agent.projectScope
         ? projectsQuery.data?.find(
             (candidate) =>
-              candidate.repoAddress === agent.projectScope?.repoAddress,
+              candidate.repoAddress === agent.projectScope?.projectAddress,
           )
         : undefined,
     [agent.projectScope, projectsQuery.data],

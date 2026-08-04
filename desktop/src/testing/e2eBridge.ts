@@ -8451,7 +8451,7 @@ function projectScopesEqual(
   return (
     left.relayUrl === right.relayUrl &&
     left.operatorPubkey === right.operatorPubkey &&
-    left.repoAddress === right.repoAddress &&
+    left.projectAddress === right.projectAddress &&
     left.channelId === right.channelId
   );
 }

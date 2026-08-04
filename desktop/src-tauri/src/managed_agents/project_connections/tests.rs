@@ -5,7 +5,7 @@ fn scope() -> AgentProjectScope {
     AgentProjectScope {
         relay_url: "ws://127.0.0.1:3000".to_string(),
         operator_pubkey: "b".repeat(64),
-        repo_address: format!("30617:{}:portable-agents", "a".repeat(64)),
+        project_address: format!("30621:{}:portable-agents", "a".repeat(64)),
         channel_id: Uuid::nil().to_string(),
     }
 }
@@ -79,11 +79,29 @@ fn project_scope_requires_canonical_coordinate_and_channel() {
     assert_eq!(canonical_project_scope(&scope()).unwrap(), scope());
     assert!(validate_project_scope(&scope()).is_ok());
     let mut invalid = scope();
-    invalid.repo_address = "local-project-id".to_string();
+    invalid.project_address = "local-project-id".to_string();
     assert!(validate_project_scope(&invalid).is_err());
     let mut invalid = scope();
     invalid.channel_id = "general".to_string();
     assert!(validate_project_scope(&invalid).is_err());
+}
+
+#[test]
+fn project_scope_accepts_legacy_repository_coordinates_and_field_name() {
+    let legacy_address = format!("30617:{}:portable-agents", "a".repeat(64));
+    let legacy = serde_json::json!({
+        "relayUrl": "ws://127.0.0.1:3000",
+        "operatorPubkey": "b".repeat(64),
+        "repoAddress": legacy_address,
+        "channelId": Uuid::nil().to_string(),
+    });
+    let parsed: AgentProjectScope = serde_json::from_value(legacy).unwrap();
+
+    assert_eq!(parsed.project_address, legacy_address);
+    assert!(validate_project_scope(&parsed).is_ok());
+    let serialized = serde_json::to_value(parsed).unwrap();
+    assert_eq!(serialized["projectAddress"], legacy_address);
+    assert!(serialized.get("repoAddress").is_none());
 }
 
 #[test]
@@ -144,7 +162,7 @@ fn bindings_cannot_cross_project_boundaries() {
     record
         .connection_bindings
         .insert("analytics".to_string(), connection.id.clone());
-    connection.project_scope.repo_address = format!("30617:{}:another-project", "a".repeat(64));
+    connection.project_scope.project_address = format!("30621:{}:another-project", "a".repeat(64));
 
     assert!(validate_agent_bindings_against(&record, &[connection]).is_err());
 }

@@ -52,7 +52,7 @@ export function AgentProjectAccessSection({
         ? {
             relayUrl,
             operatorPubkey,
-            repoAddress: selectedProject.repoAddress,
+            projectAddress: selectedProject.repoAddress,
             channelId: selectedProject.projectChannelId,
           }
         : null,

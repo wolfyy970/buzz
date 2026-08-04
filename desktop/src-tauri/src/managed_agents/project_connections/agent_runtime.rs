@@ -534,7 +534,7 @@ mod tests {
         let scope = AgentProjectScope {
             relay_url: "ws://127.0.0.1:3000".to_string(),
             operator_pubkey: "a".repeat(64),
-            repo_address: format!("30617:{}:portable-agents", "a".repeat(64)),
+            project_address: format!("30621:{}:portable-agents", "a".repeat(64)),
             channel_id: Uuid::nil().to_string(),
         };
         let connection = ProjectConnection {

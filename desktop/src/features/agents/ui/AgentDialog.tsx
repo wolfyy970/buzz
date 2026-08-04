@@ -250,7 +250,7 @@ function AgentCreateDialogRouter({
               projectScope: {
                 relayUrl: activeCommunity.relayUrl,
                 operatorPubkey: identityQuery.data.pubkey,
-                repoAddress: selectedProject.repoAddress,
+                projectAddress: selectedProject.repoAddress,
                 channelId: selectedProject.projectChannelId,
               },
               connectionBindings: projectAccessDraft.connectionBindings,

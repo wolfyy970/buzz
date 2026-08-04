@@ -26,7 +26,7 @@ export function AgentConnectionBindingsSection({
 }) {
   const projectsQuery = useProjectsQuery();
   const project = projectsQuery.data?.find(
-    (candidate) => candidate.repoAddress === projectScope?.repoAddress,
+    (candidate) => candidate.repoAddress === projectScope?.projectAddress,
   );
   const connectionsQuery = useProjectConnectionsQuery(projectScope);
   const connections = connectionsQuery.data ?? [];
