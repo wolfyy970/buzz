@@ -54,6 +54,8 @@ pub enum RestartChange {
     Added,
     /// Dynamic-map key present only on the old side.
     Removed,
+    /// Opaque configuration changed. No before/after value is exposed.
+    Changed,
 }
 
 /// How a leaf at `path` may be displayed.
@@ -67,6 +69,8 @@ enum MaskPolicy {
     MaskedSuffix,
     /// `••••` and nothing else.
     MaskedBare,
+    /// Compared normally but rendered only as "changed".
+    Opaque,
 }
 
 /// The single redaction authority: the wire diff and the snapshot's `Debug`
@@ -84,6 +88,9 @@ fn policy_for(path: &str) -> MaskPolicy {
         // rejects userinfo but deliberately preserves query strings, so
         // `wss://relay.example/ws?token=...` is a valid value.
         "args" | "relay_url" => MaskPolicy::MaskedBare,
+        // Contains a digest of connection authority and bindings. Its value is
+        // not useful to a person; only the fact that the tool setup changed is.
+        "project_tools" => MaskPolicy::Opaque,
         // NIP-OA auth tag: a credential, but a suffix tells the user which tag
         // they are looking at.
         "auth_tag" => MaskPolicy::MaskedSuffix,
@@ -159,6 +166,7 @@ fn change_for(policy: MaskPolicy, before: &Value, after: &Value) -> RestartChang
             before: masked(policy, before),
             after: masked(policy, after),
         },
+        MaskPolicy::Opaque => RestartChange::Changed,
     }
 }
 
@@ -296,6 +304,7 @@ pub(crate) fn redacted_canonical(value: &Value) -> String {
                 MaskPolicy::Text => char_count(leaf).map_or(Value::Null, |count| {
                     Value::String(format!("<{count} chars>"))
                 }),
+                MaskPolicy::Opaque => Value::String("<opaque>".to_string()),
                 policy => masked(policy, leaf).map_or(Value::Null, Value::String),
             },
         }

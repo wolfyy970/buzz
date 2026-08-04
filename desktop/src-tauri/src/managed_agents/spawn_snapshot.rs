@@ -29,6 +29,7 @@
 use std::collections::BTreeMap;
 
 use serde::Serialize;
+use sha2::Digest as _;
 
 use super::{
     effective_config::{resolve_effective_config, EffectiveConfigResult},
@@ -107,6 +108,13 @@ pub(crate) struct SpawnConfigSnapshot {
     pub system_prompt: Option<String>,
     pub model: Option<String>,
     pub provider: Option<String>,
+    /// Durable Project coordinate and discussion scope supplied to the agent.
+    pub project_address: Option<String>,
+    pub project_channel_id: Option<String>,
+    /// Opaque digest of the Project authority, logical tool requirements and
+    /// concrete connection bindings used for this launch. The diff UI reports
+    /// only that Project tools changed; it never renders the digest.
+    pub project_tools: Option<String>,
     /// `None` when a user env override shadows `BUZZ_ACP_SESSION_TITLE`: spawn
     /// writes the title BEFORE the user env layer, so the override is what
     /// actually runs and it already reaches this snapshot through `env`.
@@ -151,6 +159,15 @@ impl SpawnConfigSnapshot {
             system_prompt: system_prompt.map(str::to_string),
             model: model.map(str::to_string),
             provider: provider.map(str::to_string),
+            project_address: record
+                .project_scope
+                .as_ref()
+                .map(|scope| scope.project_address.clone()),
+            project_channel_id: record
+                .project_scope
+                .as_ref()
+                .map(|scope| scope.channel_id.clone()),
+            project_tools: project_tools_fingerprint(record),
             session_title: (!descriptor.env.contains_key(SESSION_TITLE_ENV_VAR))
                 .then(|| resolve_session_title(record.display_name.as_deref(), &record.name))
                 .flatten(),
@@ -182,6 +199,22 @@ impl SpawnConfigSnapshot {
     pub(crate) fn canonical(&self) -> serde_json::Value {
         serde_json::to_value(self).expect("SpawnConfigSnapshot serializes infallibly")
     }
+}
+
+fn project_tools_fingerprint(record: &ManagedAgentRecord) -> Option<String> {
+    if record.project_scope.is_none()
+        && record.pinned_tool_requirements.is_empty()
+        && record.connection_bindings.is_empty()
+    {
+        return None;
+    }
+    let canonical = serde_json::to_vec(&(
+        &record.project_scope,
+        &record.pinned_tool_requirements,
+        &record.connection_bindings,
+    ))
+    .expect("managed-agent Project tool configuration serializes infallibly");
+    Some(hex::encode(sha2::Sha256::digest(canonical)))
 }
 
 impl std::fmt::Debug for SpawnConfigSnapshot {

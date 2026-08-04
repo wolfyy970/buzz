@@ -66,6 +66,12 @@ pub(crate) use operations::{
     update_project_connection_at,
 };
 use transactions::{commit_delete, commit_update, UpdateTransaction};
+mod store;
+#[cfg(any(test, not(feature = "system-keyring")))]
+use store::read_bounded_file;
+#[cfg(test)]
+use store::validate_stored_connection;
+use store::{load_store_unlocked, save_store_unlocked};
 
 pub(super) fn lock_project_connections() -> MutexGuard<'static, ()> {
     PROJECT_CONNECTIONS_LOCK
@@ -96,23 +102,8 @@ fn next_generation() -> String {
     Uuid::new_v4().simple().to_string()
 }
 
-fn is_lower_hex(value: &str, length: usize) -> bool {
-    value.len() == length
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || matches!(byte, b'a'..=b'f'))
-}
-
-fn validate_stored_connection(connection: &StoredProjectConnection) -> Result<(), String> {
-    if !is_lower_hex(&connection.id, 32)
-        || !is_lower_hex(&connection.generation, 32)
-        || !is_lower_hex(&connection.credential_generation, 32)
-        || !is_lower_hex(&connection.executable_sha256, 64)
-        || canonical_project_scope(&connection.project_scope)? != connection.project_scope
-    {
-        return Err("Project connection metadata is invalid.".to_string());
-    }
-    Ok(())
+pub(super) fn connection_mcp_server_name(connection_id: &str) -> String {
+    format!("project_{connection_id}")
 }
 
 fn valid_stable_id(value: &str, max: usize) -> bool {

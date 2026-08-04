@@ -492,6 +492,7 @@ fn sample_persona() -> AgentDefinition {
         parallelism: None,
         created_at: "2026-01-01T00:00:00Z".to_string(),
         updated_at: "2026-01-02T00:00:00Z".to_string(),
+        tool_requirements: Vec::new(),
     }
 }
 
@@ -704,6 +705,7 @@ fn summary_fixture(
         pubkey: "aa".repeat(32),
         name: "test".into(),
         persona_id: None,
+        project_scope: None,
         runtime: None,
         team_id: None,
         relay_url: String::new(),
@@ -728,6 +730,8 @@ fn summary_fixture(
         needs_restart: !restart_diff.is_empty(),
         restart_diff,
         env_vars: Default::default(),
+        tool_requirements: Vec::new(),
+        connection_bindings: Default::default(),
         backend: super::BackendKind::Local,
         backend_agent_id: None,
         status: "running".into(),

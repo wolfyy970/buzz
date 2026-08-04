@@ -21,6 +21,9 @@ fn base() -> SpawnConfigSnapshot {
         system_prompt: Some("You are a test agent.".into()),
         model: Some("gpt-5".into()),
         provider: Some("openai".into()),
+        project_address: Some(format!("30621:{}:analytics", "a".repeat(64))),
+        project_channel_id: Some(uuid::Uuid::nil().to_string()),
+        project_tools: Some("project-tools-fingerprint".into()),
         session_title: Some("Fizz".into()),
         auth_tag: Some("tag-abcdefgh".into()),
         respond_to: "owner-only".into(),
@@ -61,6 +64,11 @@ fn mutations() -> Vec<Mutation> {
         ("system_prompt", |s| s.system_prompt = None),
         ("model", |s| s.model = None),
         ("provider", |s| s.provider = None),
+        ("project_address", |s| s.project_address = None),
+        ("project_channel_id", |s| s.project_channel_id = None),
+        ("project_tools", |s| {
+            s.project_tools = Some("other-project-tools-fingerprint".into())
+        }),
         ("session_title", |s| s.session_title = None),
         ("auth_tag", |s| s.auth_tag = None),
         ("respond_to", |s| s.respond_to = "anyone".into()),
@@ -121,6 +129,18 @@ fn mutation_table_covers_every_serialized_field() {
 #[test]
 fn identical_snapshots_produce_no_entries() {
     assert!(diff(&base(), &base()).is_empty());
+}
+
+#[test]
+fn project_tool_fingerprint_is_reported_without_exposing_its_value() {
+    let before = base();
+    let mut after = base();
+    after.project_tools = Some("secret-connection-fingerprint".into());
+    let entries = diff(&before, &after);
+    assert_eq!(fields(&entries), vec!["project_tools"]);
+    assert_eq!(entries[0].change, RestartChange::Changed);
+    let debug = format!("{after:?}");
+    assert!(!debug.contains("secret-connection-fingerprint"));
 }
 
 #[test]
@@ -438,6 +458,7 @@ fn no_sentinel_reaches_the_owning_process_debug_output() {
     let process = crate::managed_agents::ManagedAgentProcess {
         child,
         log_path: std::path::PathBuf::new(),
+        project_mcp_config_path: None,
         spawn_config: seeded_with_sentinels(),
         setup_mode: false,
         adapter_availability: None,

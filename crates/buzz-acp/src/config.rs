@@ -174,6 +174,18 @@ fn validate_legacy_mcp_composition(
     Ok(())
 }
 
+pub(crate) fn validate_mcp_config_document(
+    content: &[u8],
+    legacy_mcp_command: Option<&str>,
+) -> Result<(), ConfigError> {
+    parse_mcp_config(
+        content,
+        std::path::Path::new("<in-memory>"),
+        legacy_mcp_command.unwrap_or_default(),
+    )
+    .map(|_| ())
+}
+
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]
 pub enum SubscribeMode {
     Mentions,
@@ -391,6 +403,11 @@ pub struct CliArgs {
     /// Path to a versioned JSON document defining additional local MCP servers.
     #[arg(long, env = "BUZZ_ACP_MCP_CONFIG")]
     pub mcp_config: Option<PathBuf>,
+
+    /// Remove the credential-bearing MCP configuration immediately after it
+    /// has been read. Intended for trusted launchers that create one-use files.
+    #[arg(long, env = "BUZZ_ACP_MCP_CONFIG_DELETE_AFTER_READ", hide = true)]
+    pub mcp_config_delete_after_read: bool,
 
     /// Idle timeout: max seconds of silence before killing a turn.
     /// Resets on any agent stdout activity.
@@ -1060,7 +1077,11 @@ impl Config {
 
         let agent_args = normalize_agent_args(&agent_command, args.agent_args);
         let configured_mcp_servers = match args.mcp_config.as_deref() {
-            Some(path) => load_mcp_config(path, &args.mcp_command)?,
+            Some(path) => load_mcp_config_with_cleanup(
+                path,
+                &args.mcp_command,
+                args.mcp_config_delete_after_read,
+            )?,
             None => Vec::new(),
         };
 
@@ -3106,6 +3127,14 @@ channels = "ALL"
         file: &TempMcpConfig,
         legacy_command: Option<&str>,
     ) -> Result<Config, ConfigError> {
+        config_from_mcp_file_with_cleanup(file, legacy_command, false)
+    }
+
+    fn config_from_mcp_file_with_cleanup(
+        file: &TempMcpConfig,
+        legacy_command: Option<&str>,
+        delete_after_read: bool,
+    ) -> Result<Config, ConfigError> {
         let mut argv = vec![
             "buzz-acp".to_string(),
             "--private-key".to_string(),
@@ -3116,6 +3145,9 @@ channels = "ALL"
         if let Some(command) = legacy_command {
             argv.push("--mcp-command".to_string());
             argv.push(command.to_string());
+        }
+        if delete_after_read {
+            argv.push("--mcp-config-delete-after-read".to_string());
         }
         let args = CliArgs::try_parse_from(argv).expect("clap should parse MCP config arguments");
         Config::from_args(args)

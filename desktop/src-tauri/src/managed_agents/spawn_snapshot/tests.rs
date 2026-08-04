@@ -70,6 +70,9 @@ fn record() -> ManagedAgentRecord {
         definition_respond_to_allowlist: Vec::new(),
         definition_parallelism: None,
         relay_mesh: None,
+        project_scope: None,
+        pinned_tool_requirements: Vec::new(),
+        connection_bindings: std::collections::BTreeMap::new(),
     }
 }
 
@@ -95,6 +98,7 @@ fn persona(id: &str, runtime: Option<&str>, prompt: &str) -> AgentDefinition {
         parallelism: None,
         created_at: "now".into(),
         updated_at: "now".into(),
+        tool_requirements: Vec::new(),
     }
 }
 
@@ -191,6 +195,72 @@ fn persona_prompt_edit_changes_snapshot() {
     assert_ne!(
         snapshot(&rec, &before, &[], "wss://ws.example", &Default::default()),
         snapshot(&rec, &after, &[], "wss://ws.example", &Default::default())
+    );
+}
+
+#[test]
+fn connection_binding_edit_changes_snapshot() {
+    let mut before = record();
+    before.project_scope = Some(crate::managed_agents::AgentProjectScope {
+        relay_url: "wss://relay.example".into(),
+        operator_pubkey: "a".repeat(64),
+        project_address: format!("30621:{}:analytics", "a".repeat(64)),
+        channel_id: uuid::Uuid::nil().to_string(),
+    });
+    before.pinned_tool_requirements = vec![crate::managed_agents::AgentToolRequirement {
+        id: "analytics".into(),
+        label: "Analytics".into(),
+        capability: "mcp.tool.analytics".into(),
+        required: true,
+    }];
+    before
+        .connection_bindings
+        .insert("analytics".into(), "warehouse".into());
+    let mut after = before.clone();
+    after
+        .connection_bindings
+        .insert("analytics".into(), "google-analytics".into());
+
+    assert_ne!(
+        snapshot(
+            &before,
+            &[],
+            &[],
+            "wss://relay.example",
+            &Default::default()
+        ),
+        snapshot(&after, &[], &[], "wss://relay.example", &Default::default())
+    );
+}
+
+#[test]
+fn definition_tool_edit_does_not_silently_change_existing_instance() {
+    let mut rec = record();
+    rec.persona_id = Some("pers".into());
+    rec.pinned_tool_requirements = vec![crate::managed_agents::AgentToolRequirement {
+        id: "analytics".into(),
+        label: "Analytics".into(),
+        capability: "mcp.tool.analytics".into(),
+        required: true,
+    }];
+    let before = persona("pers", Some("goose"), "prompt");
+    let mut after = before.clone();
+    after.tool_requirements = vec![crate::managed_agents::AgentToolRequirement {
+        id: "crm".into(),
+        label: "CRM".into(),
+        capability: "mcp.tool.crm".into(),
+        required: true,
+    }];
+
+    assert_eq!(
+        snapshot(
+            &rec,
+            &[before],
+            &[],
+            "wss://ws.example",
+            &Default::default()
+        ),
+        snapshot(&rec, &[after], &[], "wss://ws.example", &Default::default())
     );
 }
 

@@ -10,7 +10,6 @@ use super::*;
 
 const TEST_TIMEOUT: Duration = Duration::from_secs(8);
 const MAX_RESPONSE_BYTES: usize = 1024 * 1024;
-const MAX_DISCOVERED_TOOLS: usize = 256;
 const PROBE_BUSY_ERROR: &str =
     "Another Project connection is being tested. Try again when it finishes.";
 const EXECUTABLE_CHANGED_ERROR: &str =
@@ -127,6 +126,7 @@ fn stop_child(child: &mut Child, pid: u32) -> Result<(), String> {
     })
 }
 
+#[cfg(test)]
 fn verify_saved_executable(connection: &StoredProjectConnection) -> Result<(), String> {
     let (canonical, executable_fingerprint) = canonical_connection_command(&connection.command)?;
     let fingerprint = approved_execution_sha256(&executable_fingerprint, &connection.args)?;
@@ -134,6 +134,107 @@ fn verify_saved_executable(connection: &StoredProjectConnection) -> Result<(), S
         return Err(EXECUTABLE_CHANGED_ERROR.to_string());
     }
     Ok(())
+}
+
+fn approved_target_path(directory: &Path, connection: &StoredProjectConnection) -> PathBuf {
+    let base = format!("{}-{}", connection.id, connection.executable_sha256);
+    match Path::new(&connection.command)
+        .extension()
+        .and_then(|extension| extension.to_str())
+    {
+        Some(extension) if !extension.is_empty() => directory.join(format!("{base}.{extension}")),
+        _ => directory.join(base),
+    }
+}
+
+fn validate_existing_approved_target(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<PathBuf, String> {
+    reject_unsafe_owner_file(path)?;
+    let actual = executable_sha256(path)?;
+    if actual != expected_sha256 {
+        return Err("Buzz refused a modified approved Project executable.".to_string());
+    }
+    fs::canonicalize(path)
+        .map_err(|error| format!("failed to resolve approved Project executable: {error}"))
+}
+
+fn prepare_approved_executable_in_dir(
+    directory: &Path,
+    connection: &StoredProjectConnection,
+) -> Result<PathBuf, String> {
+    let (canonical, mut source) = open_canonical_executable(&connection.command)?;
+    if canonical != connection.command {
+        return Err(EXECUTABLE_CHANGED_ERROR.to_string());
+    }
+    let target = approved_target_path(directory, connection);
+    if target.exists() {
+        let source_sha256 = executable_sha256_file(&mut source)?;
+        if source_sha256 != connection.executable_sha256 {
+            return Err(EXECUTABLE_CHANGED_ERROR.to_string());
+        }
+        return validate_existing_approved_target(&target, &connection.executable_sha256);
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt as _;
+        options.mode(0o500);
+    }
+    let mut destination = options
+        .open(&target)
+        .map_err(|error| format!("failed to prepare approved Project executable: {error}"))?;
+    let copied = (|| {
+        let mut digest = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = source
+                .read(&mut buffer)
+                .map_err(|_| "Buzz could not read this executable.".to_string())?;
+            if count == 0 {
+                break;
+            }
+            digest.update(&buffer[..count]);
+            destination.write_all(&buffer[..count]).map_err(|error| {
+                format!("failed to prepare approved Project executable: {error}")
+            })?;
+        }
+        let actual = hex::encode(digest.finalize());
+        if actual != connection.executable_sha256 {
+            return Err(EXECUTABLE_CHANGED_ERROR.to_string());
+        }
+        destination
+            .sync_all()
+            .map_err(|error| format!("failed to prepare approved Project executable: {error}"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            destination
+                .set_permissions(fs::Permissions::from_mode(0o500))
+                .map_err(|error| {
+                    format!("failed to protect approved Project executable: {error}")
+                })?;
+        }
+        Ok(())
+    })();
+    drop(destination);
+    if let Err(error) = copied {
+        let _ = fs::remove_file(&target);
+        return Err(error);
+    }
+    validate_existing_approved_target(&target, &connection.executable_sha256)
+}
+
+pub(super) fn approved_execution_target(
+    app: &AppHandle,
+    connection: &StoredProjectConnection,
+) -> Result<PathBuf, String> {
+    let directory = workspace_connection_dir(app, &connection.project_scope)?.join("approved");
+    ensure_owner_only_directory(&directory)?;
+    prepare_approved_executable_in_dir(&directory, connection)
 }
 
 fn probe_mcp_connection(
@@ -242,15 +343,19 @@ fn probe_mcp_connection(
             .get("tools")
             .and_then(serde_json::Value::as_array)
             .ok_or_else(|| "The MCP server did not return a tool list.".to_string())?;
-        if tools.len() > MAX_DISCOVERED_TOOLS {
+        if tools.len() > buzz_agent_pkg::MAX_MCP_TOOLS_PER_SESSION {
             return Err("The MCP server returned too many tools.".to_string());
         }
+        let server_name = connection_mcp_server_name(&connection.id);
         let mut names = Vec::with_capacity(tools.len());
         for tool in tools {
             let name = tool
                 .get("name")
                 .and_then(serde_json::Value::as_str)
-                .filter(|name| valid_stable_id(name, 128))
+                .filter(|name| {
+                    valid_stable_id(name, 128)
+                        && buzz_agent_pkg::supports_mcp_server_tool_name(&server_name, name)
+                })
                 .ok_or_else(|| "The MCP server returned an invalid tool name.".to_string())?;
             names.push(name.to_string());
         }
@@ -387,6 +492,33 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
+
+    fn stored_connection_for_test(
+        command: String,
+        executable_sha256: String,
+    ) -> StoredProjectConnection {
+        StoredProjectConnection {
+            id: "c".repeat(32),
+            project_scope: ProjectConnectionScope {
+                relay_url: "ws://127.0.0.1:3000".to_string(),
+                operator_pubkey: "a".repeat(64),
+                project_address: format!("30621:{}:portable-agents", "a".repeat(64)),
+            },
+            name: "Test".to_string(),
+            provider: "Fixture".to_string(),
+            capability_ids: Vec::new(),
+            command,
+            args: Vec::new(),
+            env_keys: Vec::new(),
+            discovered_tools: Vec::new(),
+            health: ProjectConnectionHealth::default(),
+            executable_sha256,
+            generation: next_generation(),
+            credential_generation: next_generation(),
+            created_at: now_iso(),
+            updated_at: now_iso(),
+        }
+    }
 
     #[test]
     fn synthetic_server_proves_initialize_and_tool_discovery() {
