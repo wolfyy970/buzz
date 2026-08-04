@@ -12,6 +12,7 @@ use std::{
     sync::{Mutex, MutexGuard},
 };
 
+use buzz_core_pkg::mcp_config::{ConfiguredMcpServer, McpConfigDocument};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _};
 use uuid::Uuid;
@@ -179,20 +180,6 @@ impl Default for ProjectConnectionStore {
             connections: Vec::new(),
         }
     }
-}
-
-#[derive(Debug, Serialize)]
-struct MaterializedMcpServer {
-    name: String,
-    command: String,
-    args: Vec<String>,
-    env: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Serialize)]
-struct MaterializedMcpDocument {
-    version: u32,
-    servers: Vec<MaterializedMcpServer>,
 }
 
 pub(crate) struct MaterializedProjectConnections {

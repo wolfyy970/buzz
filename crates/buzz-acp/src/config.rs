@@ -3,10 +3,11 @@
 //! CLI-first: every option is a CLI flag with env var fallback.
 //! Config file (TOML) for complex subscription rules.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::io::Read;
 use std::path::PathBuf;
 
+use buzz_core::mcp_config::{parse_mcp_config_document, MCP_CONFIG_MAX_BYTES};
 use clap::Parser;
 use clap::ValueEnum;
 use nostr::Keys;
@@ -15,6 +16,14 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::filter::SubscriptionRule;
+pub(crate) use buzz_core::mcp_config::{legacy_mcp_server_name, ConfiguredMcpServer};
+#[cfg(test)]
+use buzz_core::mcp_config::{
+    MCP_CONFIG_VERSION, MCP_SERVER_MAX_ARGS, MCP_SERVER_MAX_COUNT, MCP_SERVER_MAX_ENV,
+    MCP_SERVER_NAME_MAX_BYTES, PROTECTED_MCP_ENV_NAMES,
+};
+#[cfg(test)]
+use std::collections::BTreeMap;
 
 /// Default idle timeout (seconds) when neither `--idle-timeout` nor the
 /// deprecated `--turn-timeout` is set.
@@ -46,127 +55,6 @@ pub enum ConfigError {
 
     #[error("config file error: {0}")]
     ConfigFile(String),
-}
-
-const MCP_CONFIG_VERSION: u32 = 1;
-const MCP_CONFIG_MAX_BYTES: u64 = 64 * 1024;
-const MCP_SERVER_MAX_COUNT: usize = 16;
-const MCP_SERVER_MAX_ARGS: usize = 128;
-const MCP_SERVER_MAX_ENV: usize = 128;
-const MCP_SERVER_NAME_MAX_BYTES: usize = 128;
-const PROTECTED_MCP_ENV_NAMES: [&str; 6] = [
-    "BUZZ_PRIVATE_KEY",
-    "NOSTR_PRIVATE_KEY",
-    "BUZZ_AUTH_TAG",
-    "BUZZ_API_TOKEN",
-    "BUZZ_ACP_PRIVATE_KEY",
-    "BUZZ_ACP_API_TOKEN",
-];
-
-/// One MCP server loaded from the structured MCP configuration.
-///
-/// The transport tag is part of the version-1 document even though this PR
-/// implements only stdio. Additional transports can extend the same ordered
-/// server list without introducing a parallel configuration format.
-#[derive(Clone, PartialEq, Eq, serde::Deserialize)]
-#[serde(tag = "transport", rename_all = "snake_case", deny_unknown_fields)]
-pub enum ConfiguredMcpServer {
-    /// A local MCP child process connected over stdio.
-    Stdio {
-        /// Stable ACP identifier for this server.
-        name: String,
-        /// Executable to invoke, passed directly without shell parsing.
-        command: String,
-        /// Arguments passed to the executable in their configured order.
-        args: Vec<String>,
-        /// Server-specific environment in deterministic key order.
-        #[serde(deserialize_with = "deserialize_mcp_env")]
-        env: BTreeMap<String, String>,
-    },
-}
-
-struct RedactedMcpEnv<'a>(&'a BTreeMap<String, String>);
-
-impl std::fmt::Debug for RedactedMcpEnv<'_> {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let mut map = formatter.debug_map();
-        for key in self.0.keys() {
-            map.entry(key, &"[REDACTED]");
-        }
-        map.finish()
-    }
-}
-
-impl std::fmt::Debug for ConfiguredMcpServer {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Stdio {
-                name,
-                command,
-                args,
-                env,
-            } => formatter
-                .debug_struct("Stdio")
-                .field("name", name)
-                .field("command", command)
-                .field("arg_count", &args.len())
-                .field("env", &RedactedMcpEnv(env))
-                .finish(),
-        }
-    }
-}
-
-#[derive(Debug, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct McpConfigDocument {
-    version: u32,
-    servers: Vec<ConfiguredMcpServer>,
-}
-
-fn deserialize_mcp_env<'de, D>(deserializer: D) -> Result<BTreeMap<String, String>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    struct EnvVisitor;
-
-    impl<'de> serde::de::Visitor<'de> for EnvVisitor {
-        type Value = BTreeMap<String, String>;
-
-        fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            formatter.write_str("an object containing unique environment variable names")
-        }
-
-        fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-        where
-            A: serde::de::MapAccess<'de>,
-        {
-            let mut env = BTreeMap::new();
-            let mut normalized_names = HashSet::new();
-            while let Some((key, value)) = map.next_entry::<String, String>()? {
-                if !normalized_names.insert(key.to_ascii_uppercase()) {
-                    return Err(serde::de::Error::custom(format!(
-                        "duplicate environment key '{key}'"
-                    )));
-                }
-                env.insert(key, value);
-            }
-            Ok(env)
-        }
-    }
-
-    deserializer.deserialize_map(EnvVisitor)
-}
-
-/// Derive the ACP name used by the legacy single-command MCP configuration.
-///
-/// This preserves the existing `build_mcp_servers` behavior so collision
-/// validation and runtime construction use the same name.
-pub fn legacy_mcp_server_name(command: &str) -> String {
-    std::path::Path::new(command)
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("mcp")
-        .to_string()
 }
 
 fn read_mcp_config(
@@ -225,127 +113,15 @@ fn read_mcp_config(
     Ok(content)
 }
 
-fn valid_mcp_server_name(name: &str) -> bool {
-    !name.is_empty()
-        && name.len() <= MCP_SERVER_NAME_MAX_BYTES
-        && !name.contains("__")
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
-}
-
-fn valid_mcp_env_name(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    matches!(bytes.next(), Some(byte) if byte.is_ascii_alphabetic() || byte == b'_')
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-}
-
 fn load_mcp_config(
     path: &std::path::Path,
     legacy_mcp_command: &str,
     delete_after_read: bool,
 ) -> Result<Vec<ConfiguredMcpServer>, ConfigError> {
     let content = read_mcp_config(path, delete_after_read)?;
-    let document: McpConfigDocument = serde_json::from_slice(&content).map_err(|error| {
+    parse_mcp_config_document(&content, legacy_mcp_command).map_err(|error| {
         ConfigError::ConfigFile(format!("invalid MCP config {}: {error}", path.display()))
-    })?;
-
-    if document.version != MCP_CONFIG_VERSION {
-        return Err(ConfigError::ConfigFile(format!(
-            "unsupported MCP config version {} (expected {})",
-            document.version, MCP_CONFIG_VERSION
-        )));
-    }
-
-    let legacy_count = usize::from(!legacy_mcp_command.is_empty());
-    if document.servers.len() + legacy_count > MCP_SERVER_MAX_COUNT {
-        return Err(ConfigError::ConfigFile(format!(
-            "too many MCP servers ({} structured + {legacy_count} legacy, max {MCP_SERVER_MAX_COUNT})",
-            document.servers.len()
-        )));
-    }
-
-    let legacy_name =
-        (!legacy_mcp_command.is_empty()).then(|| legacy_mcp_server_name(legacy_mcp_command));
-    let mut names = HashSet::with_capacity(document.servers.len());
-    for (index, server) in document.servers.iter().enumerate() {
-        let ConfiguredMcpServer::Stdio {
-            name,
-            command,
-            args,
-            env,
-        } = server;
-        if !valid_mcp_server_name(name) {
-            return Err(ConfigError::ConfigFile(format!(
-                "MCP server {} has invalid name '{}': use 1 to {MCP_SERVER_NAME_MAX_BYTES} ASCII letters, digits, underscores, or hyphens, without '__'",
-                index + 1,
-                name
-            )));
-        }
-        if !names.insert(name.as_str()) {
-            return Err(ConfigError::ConfigFile(format!(
-                "duplicate MCP server name '{}'",
-                name
-            )));
-        }
-        if legacy_name.as_deref() == Some(name.as_str()) {
-            return Err(ConfigError::ConfigFile(format!(
-                "MCP server name '{}' collides with the legacy --mcp-command server",
-                name
-            )));
-        }
-        if command.is_empty() || command.contains('\0') {
-            return Err(ConfigError::ConfigFile(format!(
-                "MCP server '{}' command must be nonempty and contain no NUL bytes",
-                name
-            )));
-        }
-        if args.len() > MCP_SERVER_MAX_ARGS {
-            return Err(ConfigError::ConfigFile(format!(
-                "MCP server '{}' has too many arguments ({}, max {MCP_SERVER_MAX_ARGS})",
-                name,
-                args.len()
-            )));
-        }
-        if args.iter().any(|argument| argument.contains('\0')) {
-            return Err(ConfigError::ConfigFile(format!(
-                "MCP server '{}' arguments must contain no NUL bytes",
-                name
-            )));
-        }
-        if env.len() > MCP_SERVER_MAX_ENV {
-            return Err(ConfigError::ConfigFile(format!(
-                "MCP server '{}' has too many environment entries ({}, max {MCP_SERVER_MAX_ENV})",
-                name,
-                env.len()
-            )));
-        }
-        for (key, value) in env {
-            if !valid_mcp_env_name(key) {
-                return Err(ConfigError::ConfigFile(format!(
-                    "MCP server '{}' has invalid environment key '{key}'",
-                    name
-                )));
-            }
-            if PROTECTED_MCP_ENV_NAMES
-                .iter()
-                .any(|protected| key.eq_ignore_ascii_case(protected))
-            {
-                return Err(ConfigError::ConfigFile(format!(
-                    "MCP server '{}' may not configure protected environment key '{key}'",
-                    name
-                )));
-            }
-            if value.contains('\0') {
-                return Err(ConfigError::ConfigFile(format!(
-                    "MCP server '{}' environment value for '{key}' contains a NUL byte",
-                    name
-                )));
-            }
-        }
-    }
-
-    Ok(document.servers)
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]

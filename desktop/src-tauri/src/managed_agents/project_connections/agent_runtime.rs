@@ -457,6 +457,13 @@ pub(crate) fn validate_agent_project_connections(
     validate_agent_bindings_against(record, &connections).map(|_| ())
 }
 
+fn serialize_runtime_mcp_document(servers: Vec<ConfiguredMcpServer>) -> Result<Vec<u8>, String> {
+    let document = McpConfigDocument::new(servers);
+    document
+        .to_json("")
+        .map_err(|error| format!("failed to prepare Project connections: {error}"))
+}
+
 pub(crate) fn materialize_agent_project_connections(
     app: &AppHandle,
     record: &ManagedAgentRecord,
@@ -476,19 +483,14 @@ pub(crate) fn materialize_agent_project_connections(
         connection.id.hash(&mut hasher);
         connection.generation.hash(&mut hasher);
         let env = load_secrets(app, &connection)?;
-        servers.push(MaterializedMcpServer {
+        servers.push(ConfiguredMcpServer::Stdio {
             name: format!("project_{}", connection.id),
             command: connection.command,
             args: connection.args,
             env,
         });
     }
-    let document = MaterializedMcpDocument {
-        version: 1,
-        servers,
-    };
-    let json = serde_json::to_vec(&document)
-        .map_err(|error| format!("failed to prepare Project connections: {error}"))?;
+    let json = serialize_runtime_mcp_document(servers)?;
     Ok(Some(MaterializedProjectConnections {
         json,
         generation_hash: hasher.finish(),
@@ -520,6 +522,27 @@ mod tests {
     use super::*;
     use std::path::Path;
     use uuid::Uuid;
+
+    #[test]
+    fn runtime_document_matches_the_shared_acp_contract() {
+        let json = serialize_runtime_mcp_document(vec![ConfiguredMcpServer::Stdio {
+            name: "project_analytics".to_string(),
+            command: "/opt/mcp/analytics".to_string(),
+            args: vec!["--stdio".to_string()],
+            env: BTreeMap::from([("ANALYTICS_TOKEN".to_string(), "secret".to_string())]),
+        }])
+        .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&json).unwrap();
+
+        assert_eq!(value["version"], 1);
+        assert_eq!(value["servers"][0]["transport"], "stdio");
+        assert_eq!(
+            buzz_core_pkg::mcp_config::parse_mcp_config_document(&json, "")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 
     #[test]
     fn synthetic_analytics_server_proves_initialize_and_tool_discovery() {
