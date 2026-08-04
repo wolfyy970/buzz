@@ -199,9 +199,7 @@ export function AgentTemplateUpdateDialog({
                   } moving to version ${shortPublishedVersion(preview.targetVersion)}.`
                 : hasFailed
                   ? "The published version is still available. Review the error and try again."
-                  : `Version ${shortPublishedVersion(preview.targetVersion)} is ready for ${preview.agents.length} linked ${
-                      preview.agents.length === 1 ? "agent" : "agents"
-                    }. Choose which agents should use it.`}
+                  : `Version ${shortPublishedVersion(preview.targetVersion)} is published. No linked agents have changed. Choose which agents should use it.`}
           </DialogDescription>
         </DialogHeader>
 
@@ -620,7 +618,7 @@ export function AgentTemplateUpdateDialog({
                 type="button"
                 variant="outline"
               >
-                {isPending ? "Close" : "Do this later"}
+                {isPending ? "Close" : "Leave agents unchanged"}
               </Button>
               <Button
                 data-testid="template-publish-and-update"

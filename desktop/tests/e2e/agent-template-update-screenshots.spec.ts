@@ -371,7 +371,9 @@ test.describe("agent template update screenshots", () => {
       )
       .toBe(false);
     await expect(updateReview).toContainText("Apply Campaign Analyst version");
-    await expect(updateReview).toContainText("Choose which agents should use");
+    await expect(updateReview).toContainText(
+      "No linked agents have changed. Choose which agents should use it.",
+    );
     await expect(updateReview).toContainText(
       "Buzz waits for current work to finish. If an agent fails to start, Buzz restores its previous version.",
     );
@@ -767,9 +769,12 @@ test.describe("agent template update screenshots", () => {
     await atlas.getByRole("button", { name: "Manage connections" }).click();
 
     const connectionsDialog = page.getByRole("dialog", {
-      name: "Project connections",
+      name: "Connect Analytics reports for Atlas",
     });
     await expect(connectionsDialog).toBeVisible();
+    await expect(connectionsDialog).toContainText(
+      "Buzz will keep this update open.",
+    );
     await expect(connectionsDialog).toContainText("No connections yet");
     await capture(page, connectionsDialog, "17-update-missing-connection.png");
 

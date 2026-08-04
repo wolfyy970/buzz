@@ -167,6 +167,10 @@ export function AgentTemplateToolBindings({
           connection.capabilityIds.includes(requirement.capability),
       ),
   );
+  const connectionsDialogTitle =
+    missingRequiredConnections.length === 1
+      ? `Connect ${missingRequiredConnections[0].label} for ${agent.name}`
+      : `Connect tools for ${agent.name}`;
 
   React.useEffect(() => {
     const valid =
@@ -304,10 +308,10 @@ export function AgentTemplateToolBindings({
         <Dialog onOpenChange={setConnectionsOpen} open={connectionsOpen}>
           <DialogContent className="flex max-h-[85vh] max-w-2xl flex-col overflow-hidden">
             <DialogHeader className="shrink-0">
-              <DialogTitle>Project connections</DialogTitle>
+              <DialogTitle>{connectionsDialogTitle}</DialogTitle>
               <DialogDescription>
-                Add or test the connection this agent needs in {project.name},
-                then return to the update.
+                Add or test a connection in {project.name}. Buzz will keep this
+                update open.
               </DialogDescription>
             </DialogHeader>
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
