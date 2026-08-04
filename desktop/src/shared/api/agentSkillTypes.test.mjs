@@ -54,6 +54,24 @@ test("rejects duplicate names and unsafe or duplicate file paths", () => {
   }
 });
 
+test("rejects cross-platform path collisions and reserved names", () => {
+  for (const files of [
+    [
+      validSkill.files[0],
+      { path: "references/README.md", content: "First" },
+      { path: "references/readme.md", content: "Second" },
+    ],
+    [
+      validSkill.files[0],
+      { path: "references", content: "File" },
+      { path: "references/readme.md", content: "Nested file" },
+    ],
+    [validSkill.files[0], { path: "references/CON.md", content: "Reserved" }],
+  ]) {
+    assert.equal(agentSkillsValid([{ ...validSkill, files }]), false);
+  }
+});
+
 test("requires a lowercase load name, description, and SKILL.md", () => {
   assert.equal(
     agentSkillsValid([{ ...validSkill, name: "Campaign Skill" }]),
@@ -61,10 +79,108 @@ test("requires a lowercase load name, description, and SKILL.md", () => {
   );
   assert.equal(agentSkillsValid([{ ...validSkill, description: " " }]), false);
   assert.equal(
+    agentSkillsValid([{ ...validSkill, description: " Padded summary" }]),
+    false,
+  );
+  assert.equal(
+    agentSkillsValid([{ ...validSkill, name: "double--hyphen" }]),
+    false,
+  );
+  assert.equal(
     agentSkillsValid([
       {
         ...validSkill,
         files: [{ path: "references/metrics.md", content: "metrics" }],
+      },
+    ]),
+    false,
+  );
+});
+
+test("accepts standard Agent Skills metadata and rejects unknown fields", () => {
+  const standard = {
+    ...validSkill,
+    files: [
+      {
+        path: "SKILL.md",
+        content: `---
+name: campaign-analysis
+description: Analyze campaign performance and recommend the next action.
+license: Apache-2.0
+compatibility: Requires project analytics access
+metadata:
+  author: example-org
+  version: "1.0"
+allowed-tools: Read
+---
+
+# Campaign analysis`,
+      },
+    ],
+  };
+  assert.equal(agentSkillsValid([standard]), true);
+  assert.equal(
+    agentSkillsValid([
+      {
+        ...standard,
+        files: [
+          {
+            ...standard.files[0],
+            content: standard.files[0].content.replace(
+              "\n---\n",
+              "\nruntime-policy: unrestricted\n---\n",
+            ),
+          },
+        ],
+      },
+    ]),
+    false,
+  );
+});
+
+test("rejects hidden instruction text and oversized files", () => {
+  assert.equal(
+    agentSkillsValid([
+      {
+        ...validSkill,
+        files: [
+          validSkill.files[0],
+          {
+            path: "references/hidden.md",
+            content: "Review\u2066hidden direction",
+          },
+        ],
+      },
+    ]),
+    false,
+  );
+  assert.equal(
+    agentSkillsValid([
+      {
+        ...validSkill,
+        files: [
+          validSkill.files[0],
+          { path: "references/large.md", content: "x".repeat(32 * 1_024 + 1) },
+        ],
+      },
+    ]),
+    false,
+  );
+});
+
+test("accounts for JSON expansion in the complete bundle limit", () => {
+  const quoted = '"'.repeat(32 * 1_024 - 128);
+  assert.equal(
+    agentSkillsValid([
+      {
+        ...validSkill,
+        files: [
+          validSkill.files[0],
+          ...Array.from({ length: 4 }, (_, index) => ({
+            path: `references/part-${index}.md`,
+            content: quoted,
+          })),
+        ],
       },
     ]),
     false,
@@ -160,4 +276,14 @@ test("parses valid wire values defensively and rejects partial arrays", () => {
   assert.notStrictEqual(parsed[0], validSkill);
   assert.notStrictEqual(parsed[0].files[0], validSkill.files[0]);
   assert.deepEqual(parseAgentSkills([validSkill, { name: "partial" }]), []);
+  assert.deepEqual(parseAgentSkills([{ ...validSkill, executable: true }]), []);
+  assert.deepEqual(
+    parseAgentSkills([
+      {
+        ...validSkill,
+        files: [{ ...validSkill.files[0], mode: "0755" }],
+      },
+    ]),
+    [],
+  );
 });

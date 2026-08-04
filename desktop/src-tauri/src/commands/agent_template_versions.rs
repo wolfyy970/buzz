@@ -10,6 +10,8 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tauri::{AppHandle, Manager};
 
+use buzz_persona_pkg::skill_bundle::SkillBundle;
+
 use crate::{
     app_state::AppState,
     events,
@@ -33,6 +35,10 @@ const AGENT_TEMPLATE_CHANNEL_NAME: &str = "buzz-agent-template-versions";
 const AGENT_TEMPLATE_CHANNEL_DESCRIPTION: &str =
     "Private storage used by Buzz for agent template versions.";
 const AGENT_TEMPLATE_VERSION_SCHEMA: u32 = 1;
+// Template artifact v1 owns its complete schema. Its `skills` field embeds the
+// element list from portable Skill bundle v1 without a second nested version.
+// A future Skill schema therefore requires a new template artifact schema.
+const AGENT_TEMPLATE_V1_SKILL_BUNDLE_SCHEMA: u16 = 1;
 const MAX_AGENT_TEMPLATE_ARTIFACT_BYTES: usize = 256 * 1024;
 const AGENT_TEMPLATE_CHANNEL_NAMESPACE: uuid::Uuid =
     uuid::uuid!("b76a37f9-999c-5d08-bfba-0723f71b32bb");
@@ -54,13 +60,27 @@ pub(crate) struct AgentTemplateArtifactV1 {
     respond_to_allowlist: Vec<String>,
     parallelism: Option<u32>,
     tool_requirements: Vec<AgentToolRequirement>,
+    /// Portable Skill bundle v1 elements. `schema_version` above is the sole
+    /// version authority for this immutable container.
     skills: Vec<AgentSkill>,
+}
+
+fn validate_template_artifact_skills(skills: &[AgentSkill]) -> Result<(), String> {
+    validate_agent_skills(skills)?;
+    if skills.is_empty() {
+        return Ok(());
+    }
+    SkillBundle {
+        schema_version: AGENT_TEMPLATE_V1_SKILL_BUNDLE_SCHEMA,
+        skills: skills.to_vec(),
+    }
+    .validate()
 }
 
 impl AgentTemplateArtifactV1 {
     fn from_definition(definition: &AgentDefinition) -> Result<Self, String> {
         validate_agent_definition_text(&definition.display_name, &definition.system_prompt)?;
-        validate_agent_skills(&definition.skills)?;
+        validate_template_artifact_skills(&definition.skills)?;
         crate::managed_agents::project_connections::validate_tool_requirements(
             &definition.tool_requirements,
         )?;
@@ -528,7 +548,7 @@ fn load_artifact_from_repo(
     validate_agent_definition_text(&artifact.display_name, &artifact.system_prompt).map_err(
         |error| format!("The template version contains unsafe definition text: {error}"),
     )?;
-    validate_agent_skills(&artifact.skills)?;
+    validate_template_artifact_skills(&artifact.skills)?;
     crate::managed_agents::project_connections::validate_tool_requirements(
         &artifact.tool_requirements,
     )?;

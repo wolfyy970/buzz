@@ -22,7 +22,8 @@ const MAX_SKILL_NAME_BYTES: usize = 64;
 const MAX_SKILL_DESCRIPTION_CHARS: usize = 1024;
 const MAX_SKILL_COMPATIBILITY_CHARS: usize = 500;
 const MAX_SKILL_PATH_BYTES: usize = 240;
-const SKILL_BUNDLE_SCHEMA_VERSION: u16 = 1;
+/// Current standalone portable Skill bundle schema.
+pub const SKILL_BUNDLE_SCHEMA_VERSION: u16 = 1;
 
 /// A validated collection of portable Skills.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -35,7 +36,7 @@ pub struct SkillBundle {
 }
 
 /// One portable Skill and its complete text file tree.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PortableSkill {
     /// Stable lowercase Skill identifier.
@@ -47,7 +48,7 @@ pub struct PortableSkill {
 }
 
 /// One text file inside a portable Skill.
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 pub struct PortableSkillFile {
     /// Portable POSIX-style path relative to the Skill root.
@@ -83,6 +84,14 @@ struct CommonSkillFrontmatter {
 }
 
 impl SkillBundle {
+    /// Create a bundle using the current portable Skill schema.
+    pub fn new(skills: Vec<PortableSkill>) -> Self {
+        Self {
+            schema_version: SKILL_BUNDLE_SCHEMA_VERSION,
+            skills,
+        }
+    }
+
     /// Validate the complete bundle without publishing or materializing it.
     pub fn validate(&self) -> Result<(), String> {
         if self.schema_version != SKILL_BUNDLE_SCHEMA_VERSION {

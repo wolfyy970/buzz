@@ -140,6 +140,28 @@ fn snapshot_exports_the_agents_effective_private_skills() {
 }
 
 #[test]
+fn snapshot_v1_pins_the_portable_skill_bundle_v1_element_schema() {
+    assert_eq!(
+        SNAPSHOT_V1_SKILL_BUNDLE_SCHEMA,
+        buzz_persona_pkg::skill_bundle::SKILL_BUNDLE_SCHEMA_VERSION,
+        "a new portable Skill schema requires a new Agent Snapshot version"
+    );
+
+    let mut record = minimal_record();
+    record.pinned_skills = vec![portable_skill("analysis", "Template workflow")];
+    let snapshot = build_snapshot(&record, MemoryLevel::None, vec![], None);
+    let json: serde_json::Value =
+        serde_json::from_slice(&encode_snapshot_json(&snapshot).unwrap()).unwrap();
+
+    assert_eq!(json["version"], FORMAT_VERSION);
+    assert!(json["definition"]["skills"].is_array());
+    assert!(
+        json["definition"].get("skillBundle").is_none(),
+        "the outer snapshot version is the sole schema authority"
+    );
+}
+
+#[test]
 fn json_round_trip_with_memory() {
     let record = minimal_record();
     let entries = vec![

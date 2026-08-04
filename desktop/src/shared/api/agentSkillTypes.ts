@@ -1,5 +1,7 @@
 import { parse as yamlParse, parseDocument as yamlParseDocument } from "yaml";
 
+import { isReviewableText } from "@/shared/lib/reviewableText";
+
 export type AgentSkillFile = {
   path: string;
   content: string;
@@ -27,31 +29,77 @@ export type AgentSkillValidationIssue = {
 
 const SKILL_NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/u;
 const MAX_SKILLS = 16;
-const MAX_SKILL_DESCRIPTION_BYTES = 512;
+const MAX_SKILL_DESCRIPTION_CHARACTERS = 1_024;
+const MAX_SKILL_COMPATIBILITY_CHARACTERS = 500;
 const MAX_SKILL_FILES = 32;
 const MAX_SKILL_PATH_BYTES = 240;
-const MAX_SKILL_FILE_BYTES = 64 * 1_024;
+const MAX_SKILL_FILE_BYTES = 32 * 1_024;
 const MAX_SKILL_TOTAL_BYTES = 128 * 1_024;
+const MAX_SKILL_SERIALIZED_BYTES = 192 * 1_024;
 const RESERVED_SKILL_NAMES = new Set(["buzz-cli"]);
+const STANDARD_SKILL_FRONTMATTER_KEYS = new Set([
+  "name",
+  "description",
+  "license",
+  "compatibility",
+  "metadata",
+  "allowed-tools",
+]);
 const UTF8_ENCODER = new TextEncoder();
 
 function utf8Length(value: string): number {
   return UTF8_ENCODER.encode(value).byteLength;
 }
 
+function isAscii(value: string): boolean {
+  return [...value].every(
+    (character) => (character.codePointAt(0) ?? 0x80) <= 0x7f,
+  );
+}
+
+function windowsReservedSegment(segment: string): boolean {
+  const stem = (segment.split(".", 1)[0] ?? "").toUpperCase();
+  return (
+    ["CON", "PRN", "AUX", "NUL"].includes(stem) ||
+    /^(?:COM|LPT)[1-9]$/u.test(stem)
+  );
+}
+
+function skillNameValid(name: string): boolean {
+  return (
+    SKILL_NAME_RE.test(name) &&
+    !name.includes("--") &&
+    !windowsReservedSegment(name)
+  );
+}
+
 function skillPathValid(path: string): boolean {
   if (
     path.length === 0 ||
     utf8Length(path) > MAX_SKILL_PATH_BYTES ||
-    path.startsWith("/") ||
+    !isAscii(path) ||
     path.includes("\\") ||
     path.includes("\0")
   ) {
     return false;
   }
   const segments = path.split("/");
-  return segments.every(
-    (segment) => segment.length > 0 && segment !== "." && segment !== "..",
+  return (
+    segments.every(
+      (segment) =>
+        /^[A-Za-z0-9][A-Za-z0-9._-]*[A-Za-z0-9]$/u.test(segment) ||
+        (/^[A-Za-z0-9]$/u.test(segment) && !windowsReservedSegment(segment)),
+    ) && segments.every((segment) => !windowsReservedSegment(segment))
+  );
+}
+
+function pathsCollide(left: string, right: string): boolean {
+  const leftKey = left.toLowerCase();
+  const rightKey = right.toLowerCase();
+  return (
+    leftKey === rightKey ||
+    leftKey.startsWith(`${rightKey}/`) ||
+    rightKey.startsWith(`${leftKey}/`)
   );
 }
 
@@ -126,9 +174,15 @@ function containsObviousSecret(content: string): boolean {
       .replace(/["'\s]/gu, "")
       .toUpperCase();
     if (
-      !["API_KEY", "TOKEN", "PASSWORD", "SECRET", "PRIVATE_KEY"].some(
-        (marker) => key.includes(marker),
-      )
+      ![
+        "API_KEY",
+        "TOKEN",
+        "PASSWORD",
+        "SECRET",
+        "PRIVATE_KEY",
+        "AUTHORIZATION",
+        "DATABASE_URL",
+      ].some((marker) => key.includes(marker))
     ) {
       continue;
     }
@@ -156,13 +210,62 @@ function frontmatterValid(skill: AgentSkill, content: string): boolean {
       return false;
     }
     const record = metadata as Record<string, unknown>;
-    return (
-      typeof record.name === "string" &&
-      record.name.trim() === skill.name &&
-      typeof record.description === "string" &&
-      record.description.trim().length > 0 &&
-      record.description.trim() === skill.description.trim()
-    );
+    if (
+      !Object.keys(record).every((key) =>
+        STANDARD_SKILL_FRONTMATTER_KEYS.has(key),
+      ) ||
+      record.name !== skill.name ||
+      record.description !== skill.description
+    ) {
+      return false;
+    }
+    for (const field of ["license", "allowed-tools"] as const) {
+      const value = record[field];
+      if (
+        value !== undefined &&
+        (typeof value !== "string" ||
+          value.length === 0 ||
+          value.trim() !== value ||
+          !isReviewableText(value, false))
+      ) {
+        return false;
+      }
+    }
+    const compatibility = record.compatibility;
+    if (
+      compatibility !== undefined &&
+      (typeof compatibility !== "string" ||
+        compatibility.length === 0 ||
+        compatibility.trim() !== compatibility ||
+        [...compatibility].length > MAX_SKILL_COMPATIBILITY_CHARACTERS ||
+        !isReviewableText(compatibility, false))
+    ) {
+      return false;
+    }
+    const metadataValue = record.metadata;
+    if (metadataValue !== undefined) {
+      if (
+        typeof metadataValue !== "object" ||
+        metadataValue === null ||
+        Array.isArray(metadataValue)
+      ) {
+        return false;
+      }
+      for (const [key, value] of Object.entries(metadataValue)) {
+        if (
+          key.length === 0 ||
+          key.trim() !== key ||
+          !isReviewableText(key, false) ||
+          typeof value !== "string" ||
+          value.length === 0 ||
+          value.trim() !== value ||
+          !isReviewableText(value, false)
+        ) {
+          return false;
+        }
+      }
+    }
+    return true;
   } catch {
     return false;
   }
@@ -218,10 +321,11 @@ export function agentSkillsValidationIssue(
         skillIndex,
       };
     }
-    if (!SKILL_NAME_RE.test(name)) {
+    if (!skillNameValid(name)) {
       return {
         field: "name",
-        message: "Use lowercase letters, numbers, and hyphens.",
+        message:
+          "Use a portable lowercase name with letters, numbers, and single hyphens.",
         skillIndex,
       };
     }
@@ -241,11 +345,13 @@ export function agentSkillsValidationIssue(
     }
     if (
       skill.description.trim().length === 0 ||
-      utf8Length(skill.description) > MAX_SKILL_DESCRIPTION_BYTES
+      skill.description.trim() !== skill.description ||
+      [...skill.description].length > MAX_SKILL_DESCRIPTION_CHARACTERS ||
+      !isReviewableText(skill.description, false)
     ) {
       return {
         field: "description",
-        message: `Add a description up to ${MAX_SKILL_DESCRIPTION_BYTES} bytes.`,
+        message: `Add a single-line description up to ${MAX_SKILL_DESCRIPTION_CHARACTERS} characters.`,
         skillIndex,
       };
     }
@@ -258,7 +364,7 @@ export function agentSkillsValidationIssue(
     }
     names.add(name);
 
-    const paths = new Set<string>();
+    const paths: string[] = [];
     let skillMarkdown: string | null = null;
     let skillMarkdownIndex: number | undefined;
     for (const [fileIndex, file] of skill.files.entries()) {
@@ -267,15 +373,16 @@ export function agentSkillsValidationIssue(
         return {
           field: "file-path",
           fileIndex,
-          message: "Use a safe relative path, such as references/example.md.",
+          message:
+            "Use a portable relative path with letters, numbers, dots, underscores, hyphens, and forward slashes.",
           skillIndex,
         };
       }
-      if (paths.has(path)) {
+      if (paths.some((existing) => pathsCollide(existing, path))) {
         return {
           field: "file-path",
           fileIndex,
-          message: `"${path}" is already used in this Skill.`,
+          message: `"${path}" conflicts with another file or folder in this Skill.`,
           skillIndex,
         };
       }
@@ -296,7 +403,16 @@ export function agentSkillsValidationIssue(
           skillIndex,
         };
       }
-      paths.add(path);
+      if (!isReviewableText(file.content, true)) {
+        return {
+          field: "file-content",
+          fileIndex,
+          message:
+            "Remove invisible or bidirectional formatting characters from this file.",
+          skillIndex,
+        };
+      }
+      paths.push(path);
       totalLength += utf8Length(path) + utf8Length(file.content);
       if (totalLength > MAX_SKILL_TOTAL_BYTES) {
         return {
@@ -321,6 +437,16 @@ export function agentSkillsValidationIssue(
       };
     }
   }
+  if (
+    skills.length > 0 &&
+    utf8Length(JSON.stringify({ schemaVersion: 1, skills })) >
+      MAX_SKILL_SERIALIZED_BYTES
+  ) {
+    return {
+      field: "skills",
+      message: "The complete Skill bundle is too large to publish safely.",
+    };
+  }
   return null;
 }
 
@@ -338,6 +464,7 @@ function isAgentSkillFile(value: unknown): value is AgentSkillFile {
   return (
     typeof value === "object" &&
     value !== null &&
+    Object.keys(value).every((key) => key === "path" || key === "content") &&
     "path" in value &&
     typeof value.path === "string" &&
     "content" in value &&
@@ -349,6 +476,9 @@ function isAgentSkill(value: unknown): value is AgentSkill {
   return (
     typeof value === "object" &&
     value !== null &&
+    Object.keys(value).every(
+      (key) => key === "name" || key === "description" || key === "files",
+    ) &&
     "name" in value &&
     typeof value.name === "string" &&
     "description" in value &&

@@ -14,7 +14,9 @@
 //! Both formats may carry memory at any level. Memory entries are plaintext,
 //! so callers must require an explicit opt-in before exporting them.
 //!
-//! **Zip is NOT in v1** — deferred to v2 for skills bundling.
+//! Portable text-only Skills are embedded directly in the versioned manifest.
+//! Binary Skill files, filesystem mode bits, and runtime activation are not
+//! part of v1.
 //!
 //! # Secret exclusion
 //!
@@ -41,6 +43,7 @@
 //! placed into `AgentSnapshotDefinition`) and asserted by unit tests.
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
+use buzz_persona_pkg::skill_bundle::SkillBundle;
 use png::{BitDepth, ColorType, Decoder, Encoder};
 use serde::{Deserialize, Serialize};
 use std::io::Cursor;
@@ -65,6 +68,10 @@ pub const FORMAT_DISCRIMINATOR: &str = "buzz-agent-snapshot";
 
 /// Version of the manifest format produced by this module.
 pub const FORMAT_VERSION: u32 = 1;
+// Agent Snapshot v1 owns its complete schema. Its `skills` field embeds the
+// element list from portable Skill bundle v1 without a second nested version.
+// A future Skill schema therefore requires a new Agent Snapshot version.
+const SNAPSHOT_V1_SKILL_BUNDLE_SCHEMA: u16 = 1;
 
 // ── Memory level ─────────────────────────────────────────────────────────────
 
@@ -121,7 +128,8 @@ pub struct AgentSnapshotDefinition {
     /// commands, endpoints, and credentials are deliberately excluded.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tool_requirements: Vec<AgentToolRequirement>,
-    /// Portable Skills included in the exported agent.
+    /// Portable Skill bundle v1 elements included in the exported agent.
+    /// The top-level snapshot `version` is the sole schema authority.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub skills: Vec<AgentSkill>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -434,8 +442,20 @@ pub(crate) fn validate_snapshot(snapshot: &AgentSnapshot) -> Result<(), String> 
             .unwrap_or_default(),
     )
     .map_err(|error| format!("Snapshot definition is unsafe: {error}"))?;
-    validate_agent_skills(&snapshot.definition.skills)?;
+    validate_snapshot_skills(&snapshot.definition.skills)?;
     Ok(())
+}
+
+fn validate_snapshot_skills(skills: &[AgentSkill]) -> Result<(), String> {
+    validate_agent_skills(skills)?;
+    if skills.is_empty() {
+        return Ok(());
+    }
+    SkillBundle {
+        schema_version: SNAPSHOT_V1_SKILL_BUNDLE_SCHEMA,
+        skills: skills.to_vec(),
+    }
+    .validate()
 }
 
 // ── PNG helpers ───────────────────────────────────────────────────────────────

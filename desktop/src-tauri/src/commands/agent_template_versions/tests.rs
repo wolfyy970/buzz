@@ -34,6 +34,20 @@ fn definition() -> AgentDefinition {
     }
 }
 
+fn portable_skill(name: &str) -> AgentSkill {
+    let description = "Portable template workflow";
+    AgentSkill {
+        name: name.to_string(),
+        description: description.to_string(),
+        files: vec![crate::managed_agents::AgentSkillFile {
+            path: "SKILL.md".to_string(),
+            content: format!(
+                "---\nname: {name}\ndescription: {description}\n---\n\nUse the reviewed workflow.\n"
+            ),
+        }],
+    }
+}
+
 fn local_repo_fixture() -> (tempfile::TempDir, std::path::PathBuf, String, GitAuthConfig) {
     let auth = build_test_git_auth_config().expect("test git auth");
     let root = tempfile::tempdir().expect("fixture root");
@@ -66,6 +80,29 @@ fn artifact_is_deterministic_and_excludes_environment_secrets() {
     .unwrap();
     assert!(!event_json.contains("ANALYTICS_API_KEY"));
     assert!(!event_json.contains("must-not-enter-git"));
+}
+
+#[test]
+fn artifact_v1_pins_the_portable_skill_bundle_v1_element_schema() {
+    assert_eq!(
+        AGENT_TEMPLATE_V1_SKILL_BUNDLE_SCHEMA,
+        buzz_persona_pkg::skill_bundle::SKILL_BUNDLE_SCHEMA_VERSION,
+        "a new portable Skill schema requires a new template artifact schema"
+    );
+
+    let mut definition = definition();
+    definition.skills = vec![portable_skill("weekly-analysis")];
+    let artifact = AgentTemplateArtifactV1::from_definition(&definition).unwrap();
+    let json: serde_json::Value =
+        serde_json::from_slice(&artifact.canonical_bytes().unwrap()).unwrap();
+
+    assert_eq!(json["schemaVersion"], AGENT_TEMPLATE_VERSION_SCHEMA);
+    assert!(json["skills"].is_array());
+    assert!(
+        json.get("skillBundle").is_none(),
+        "the outer artifact schema is the sole version authority"
+    );
+    assert_eq!(artifact.skills, definition.skills);
 }
 
 #[test]

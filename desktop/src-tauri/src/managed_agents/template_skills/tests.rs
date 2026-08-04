@@ -19,6 +19,7 @@ fn accepts_a_small_portable_skill() {
         "# Workflow"
     )])
     .is_ok());
+    assert!(validate_agent_skills(&[]).is_ok());
 }
 
 #[cfg(unix)]
@@ -118,6 +119,35 @@ fn bundle_hash_is_order_independent() {
         skill_bundle_hash(&[first.clone(), second.clone()]).unwrap(),
         skill_bundle_hash(&[second, first]).unwrap()
     );
+}
+
+#[test]
+fn bundle_hash_uses_the_shared_versioned_skill_format() {
+    let skills = vec![skill("alpha", "Alpha skill", "Alpha")];
+    assert_eq!(
+        skill_bundle_hash(&skills).unwrap(),
+        buzz_persona_pkg::skill_bundle::SkillBundle::new(skills)
+            .canonical_hash()
+            .unwrap()
+    );
+}
+
+#[test]
+fn activation_rejects_nonportable_skill_content() {
+    let mut hidden = skill("safe-skill", "Safe skill", "Body");
+    hidden.files[0].content.push('\u{2066}');
+    assert!(validate_agent_skills(&[hidden]).is_err());
+
+    let mut collision = skill("safe-skill", "Safe skill", "Body");
+    collision.files.push(AgentSkillFile {
+        path: "references/README.md".to_string(),
+        content: "First".to_string(),
+    });
+    collision.files.push(AgentSkillFile {
+        path: "references/readme.md".to_string(),
+        content: "Second".to_string(),
+    });
+    assert!(validate_agent_skills(&[collision]).is_err());
 }
 
 #[test]

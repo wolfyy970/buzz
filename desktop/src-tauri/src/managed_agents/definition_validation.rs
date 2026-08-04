@@ -38,11 +38,7 @@ fn validate_visible_text(
     label: &str,
     allow_layout_controls: bool,
 ) -> Result<(), String> {
-    buzz_persona_pkg::reviewable_text::validate_reviewable_text(
-        value,
-        label,
-        allow_layout_controls,
-    )
+    buzz_persona_pkg::reviewable_text::validate_reviewable_text(value, label, allow_layout_controls)
 }
 
 #[cfg(test)]

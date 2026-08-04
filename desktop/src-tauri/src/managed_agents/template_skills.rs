@@ -1,13 +1,13 @@
 //! Validation and isolated runtime materialization for portable template skills.
 
 use std::{
-    collections::{BTreeMap, HashSet},
+    collections::BTreeMap,
     fs,
     io::Write as _,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
-use serde::Deserialize;
+use buzz_persona_pkg::skill_bundle::SkillBundle;
 use sha2::{Digest as _, Sha256};
 use tauri::AppHandle;
 
@@ -16,13 +16,6 @@ use super::{
     ManagedAgentRuntimeKey,
 };
 
-pub const MAX_TEMPLATE_SKILLS: usize = 16;
-pub const MAX_SKILL_FILES: usize = 32;
-pub const MAX_SKILL_FILE_BYTES: usize = 64 * 1024;
-pub const MAX_SKILL_TOTAL_BYTES: usize = 128 * 1024;
-const MAX_SKILL_NAME_BYTES: usize = 64;
-const MAX_SKILL_DESCRIPTION_BYTES: usize = 512;
-const MAX_SKILL_PATH_BYTES: usize = 240;
 const BUILTIN_SKILL_NAME: &str = "buzz-cli";
 
 #[derive(Debug)]
@@ -142,156 +135,29 @@ fn materialize_cli_auth_from_source(
     Ok(())
 }
 
-#[derive(Deserialize)]
-struct SkillFrontmatter {
-    name: String,
-    description: String,
-}
-
 /// Validate the complete portable Skills section before it reaches storage,
 /// public events, snapshots, or the filesystem.
 pub fn validate_agent_skills(skills: &[AgentSkill]) -> Result<(), String> {
-    if skills.len() > MAX_TEMPLATE_SKILLS {
-        return Err(format!(
-            "An agent template can include at most {MAX_TEMPLATE_SKILLS} skills."
-        ));
+    if skills.is_empty() {
+        return Ok(());
     }
-
-    let mut names = HashSet::new();
-    let mut total_bytes = 0usize;
     for skill in skills {
-        validate_skill_name(&skill.name)?;
         if skill.name == BUILTIN_SKILL_NAME {
             return Err(format!(
                 "Skill name {BUILTIN_SKILL_NAME:?} is reserved by Buzz."
             ));
         }
-        if !names.insert(skill.name.as_str()) {
-            return Err(format!("Skill {:?} appears more than once.", skill.name));
-        }
-        let description = skill.description.trim();
-        if description.is_empty() || description.len() > MAX_SKILL_DESCRIPTION_BYTES {
-            return Err(format!(
-                "Skill {:?} needs a description no longer than {MAX_SKILL_DESCRIPTION_BYTES} bytes.",
-                skill.name
-            ));
-        }
-        if skill.files.is_empty() || skill.files.len() > MAX_SKILL_FILES {
-            return Err(format!(
-                "Skill {:?} must include 1 to {MAX_SKILL_FILES} files.",
-                skill.name
-            ));
-        }
-
-        let mut paths = HashSet::new();
-        let mut skill_md = None;
         for file in &skill.files {
-            validate_skill_file_path(&file.path)?;
-            if !paths.insert(file.path.as_str()) {
-                return Err(format!(
-                    "Skill {:?} contains duplicate path {:?}.",
-                    skill.name, file.path
-                ));
-            }
-            if file.content.len() > MAX_SKILL_FILE_BYTES {
-                return Err(format!(
-                    "{} in skill {:?} exceeds {MAX_SKILL_FILE_BYTES} bytes.",
-                    file.path, skill.name
-                ));
-            }
-            total_bytes = total_bytes
-                .checked_add(file.path.len())
-                .and_then(|value| value.checked_add(file.content.len()))
-                .ok_or_else(|| "Skill content size overflowed.".to_string())?;
-            if total_bytes > MAX_SKILL_TOTAL_BYTES {
-                return Err(format!(
-                    "Skills can contain at most {MAX_SKILL_TOTAL_BYTES} bytes in total."
-                ));
-            }
             reject_obvious_secret(&skill.name, file)?;
-            if file.path == "SKILL.md" {
-                skill_md = Some(file);
-            }
         }
-        let skill_md =
-            skill_md.ok_or_else(|| format!("Skill {:?} is missing SKILL.md.", skill.name))?;
-        validate_skill_frontmatter(skill, &skill_md.content)?;
     }
-    Ok(())
-}
 
-fn validate_skill_name(name: &str) -> Result<(), String> {
-    let valid = !name.is_empty()
-        && name.len() <= MAX_SKILL_NAME_BYTES
-        && name
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
-        && name
-            .bytes()
-            .next()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-        && name
-            .bytes()
-            .last()
-            .is_some_and(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit());
-    if valid {
-        Ok(())
-    } else {
-        Err(format!(
-            "Skill name {name:?} must be a lowercase slug using letters, numbers, and hyphens (maximum {MAX_SKILL_NAME_BYTES} bytes)."
-        ))
-    }
-}
-
-fn validate_skill_file_path(raw: &str) -> Result<(), String> {
-    if raw.is_empty()
-        || raw.len() > MAX_SKILL_PATH_BYTES
-        || raw.contains('\\')
-        || raw.split('/').any(|part| part.is_empty())
-    {
+    let bundle = SkillBundle::new(skills.to_vec());
+    bundle.validate()?;
+    if let Some(warning) = bundle.plaintext_warnings().into_iter().next() {
         return Err(format!(
-            "Skill file path {raw:?} is not a safe relative path."
-        ));
-    }
-    let path = Path::new(raw);
-    if path
-        .components()
-        .all(|component| matches!(component, Component::Normal(_)))
-    {
-        Ok(())
-    } else {
-        Err(format!(
-            "Skill file path {raw:?} is not a safe relative path."
-        ))
-    }
-}
-
-fn validate_skill_frontmatter(skill: &AgentSkill, content: &str) -> Result<(), String> {
-    let normalized = content.replace("\r\n", "\n");
-    let rest = normalized
-        .strip_prefix("---\n")
-        .ok_or_else(|| format!("{} SKILL.md must start with YAML frontmatter.", skill.name))?;
-    let closing = rest
-        .find("\n---\n")
-        .ok_or_else(|| format!("{} SKILL.md has incomplete YAML frontmatter.", skill.name))?;
-    let metadata: SkillFrontmatter = serde_yaml::from_str(&rest[..closing])
-        .map_err(|error| format!("{} SKILL.md frontmatter is invalid: {error}", skill.name))?;
-    if metadata.name.trim() != skill.name {
-        return Err(format!(
-            "{} SKILL.md name must match the skill name.",
-            skill.name
-        ));
-    }
-    if metadata.description.trim().is_empty() {
-        return Err(format!(
-            "{} SKILL.md needs a frontmatter description.",
-            skill.name
-        ));
-    }
-    if metadata.description.trim() != skill.description.trim() {
-        return Err(format!(
-            "{} SKILL.md description must match the skill description.",
-            skill.name
+            "{} in Skill {:?} appears to contain a secret. Remove credentials and use a Project Connection or agent environment setting instead.",
+            warning.path, warning.skill_name
         ));
     }
     Ok(())
@@ -393,16 +259,12 @@ fn secret_error(skill_name: &str, path: &str) -> Result<(), String> {
 /// a new content tree.
 pub fn skill_bundle_hash(skills: &[AgentSkill]) -> Result<String, String> {
     validate_agent_skills(skills)?;
-    let mut canonical = skills.to_vec();
-    canonical.sort_by(|left, right| left.name.cmp(&right.name));
-    for skill in &mut canonical {
-        skill
-            .files
-            .sort_by(|left, right| left.path.cmp(&right.path));
+    if skills.is_empty() {
+        let bytes = serde_json::to_vec(skills)
+            .map_err(|error| format!("Could not serialize template Skills: {error}"))?;
+        return Ok(hex::encode(Sha256::digest(bytes)));
     }
-    let bytes = serde_json::to_vec(&canonical)
-        .map_err(|error| format!("Could not serialize template skills: {error}"))?;
-    Ok(hex::encode(Sha256::digest(bytes)))
+    SkillBundle::new(skills.to_vec()).canonical_hash()
 }
 
 /// Materialize a pinned skill revision into an owner-only content-addressed
