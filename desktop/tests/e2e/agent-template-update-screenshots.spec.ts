@@ -182,7 +182,20 @@ test.describe("agent template update screenshots", () => {
                 "An updated agent may have accepted work. Buzz blocked the affected agents instead of guessing which version owns that work.",
             },
           ]
-        : undefined,
+        : testInfo.title.includes("invalid update recovery")
+          ? [
+              {
+                transactionId: null,
+                templateId: null,
+                stage: null,
+                recovery: "invalid_journal",
+                agents: [],
+                requiresAttention: true,
+                detail:
+                  "Buzz could not verify an update journal entry. Agent changes and starts are blocked until it is reviewed.",
+              },
+            ]
+          : undefined,
       personas: [
         {
           id: TEMPLATE_ID,
@@ -741,6 +754,56 @@ test.describe("agent template update screenshots", () => {
             window.__BUZZ_E2E_COMMAND_LOG__?.filter(
               (entry) =>
                 entry.command === "restore_interrupted_agent_template_update",
+            ).length ?? 0,
+        ),
+      )
+      .toBe(1);
+  });
+
+  test("shows a safe invalid update recovery path", async ({ page }) => {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("open-agents-view").click();
+
+    const banner = page.getByTestId("agent-update-recovery-banner");
+    await expect(banner).toBeVisible({ timeout: 10_000 });
+    await expect(banner).toContainText("Agent updates are paused");
+    await expect(banner).toContainText(
+      "Buzz cannot verify which agents were affected.",
+    );
+    await expect(banner).toContainText("Unverified agent update");
+    await capture(page, banner, "18-invalid-update-recovery.png");
+
+    await banner.getByTestId("agent-update-invalid-recovery-open").click();
+    const confirmation = page.getByTestId(
+      "agent-update-invalid-recovery-confirmation",
+    );
+    await expect(confirmation).toBeVisible();
+    await expect(confirmation).toContainText(
+      "Buzz cannot verify which agents were affected.",
+    );
+    await expect(confirmation).toContainText(
+      "Restart Buzz next so it can check for affected agent processes",
+    );
+    await capture(page, confirmation, "19-invalid-update-confirmation.png");
+
+    await confirmation
+      .getByRole("button", { name: "Preserve and continue" })
+      .click();
+    const relaunch = page.getByTestId("agent-update-recovery-relaunch");
+    await expect(relaunch).toBeVisible();
+    await expect(relaunch).toContainText("Restart Buzz to finish recovery");
+    await expect(relaunch).toContainText(
+      "Agent starts and edits remain paused",
+    );
+    await capture(page, relaunch, "20-invalid-update-relaunch.png");
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            window.__BUZZ_E2E_COMMAND_LOG__?.filter(
+              (entry) =>
+                entry.command === "quarantine_invalid_agent_template_updates",
             ).length ?? 0,
         ),
       )

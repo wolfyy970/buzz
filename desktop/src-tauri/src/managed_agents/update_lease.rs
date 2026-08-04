@@ -342,6 +342,26 @@ impl ManagedAgentUpdateLeaseRegistry {
         }
     }
 
+    /// Confirm that the caller still owns the global fail-closed fence.
+    ///
+    /// Quarantining an invalid journal must never create an unfenced interval.
+    /// The fence deliberately remains active until the app relaunches and
+    /// reconstructs recovery ownership from the remaining durable entries.
+    pub(crate) fn ensure_global_recovery_owned(&self, operation_id: &str) -> Result<(), String> {
+        validate_operation_id(operation_id)?;
+        let state = self.lock_state();
+        match state.recovery_global_owner.as_deref() {
+            Some(owner) if owner == operation_id => Ok(()),
+            Some(_) => {
+                Err("A different global interrupted-update recovery block is active.".to_string())
+            }
+            None => Err(
+                "Restart Buzz before quarantining this invalid update record so its recovery fence can be verified."
+                    .to_string(),
+            ),
+        }
+    }
+
     /// Release only the transaction-specific recovery ownership that was
     /// durably resolved and removed from the journal.
     pub(crate) fn clear_recovery<I, S>(&self, operation_id: &str, pubkeys: I) -> Result<(), String>
@@ -645,6 +665,29 @@ mod tests {
         let _next = registry
             .try_acquire("update-two", [pubkey.as_str()])
             .expect("resolved agent may be updated again");
+    }
+
+    #[test]
+    fn invalid_journal_quarantine_requires_and_preserves_the_global_fence() {
+        let registry = ManagedAgentUpdateLeaseRegistry::default();
+        assert!(registry
+            .ensure_global_recovery_owned("recovery-global")
+            .is_err());
+
+        registry
+            .block_all_for_recovery("recovery-global")
+            .expect("global recovery block");
+        registry
+            .ensure_global_recovery_owned("recovery-global")
+            .expect("the quarantine operation remains fenced");
+        assert!(registry
+            .ensure_global_recovery_owned("different-recovery")
+            .is_err());
+
+        let error = Arc::new(registry)
+            .try_acquire("ordinary-update", ["a".repeat(64)])
+            .expect_err("the fence remains active until relaunch");
+        assert!(error.contains("interrupted update"));
     }
 
     #[test]

@@ -564,6 +564,46 @@ fn permissive_corrupt_and_oversized_documents_are_quarantine_only() {
 }
 
 #[test]
+fn quarantine_invalid_entries_preserves_evidence_and_leaves_valid_authority_active() {
+    let (_temp, journal) = journal();
+    let transaction = transaction();
+    journal.create(&transaction).unwrap();
+
+    let invalid_path = journal.active_dir.join("untrusted-name.json.tmp");
+    write_new_owner_file(&invalid_path, b"not a transaction").unwrap();
+    let invalid_document_path = journal
+        .path_for_id(&uuid::Uuid::new_v4().hyphenated().to_string())
+        .unwrap();
+    write_new_owner_file(&invalid_document_path, b"also not a transaction").unwrap();
+
+    assert_eq!(journal.quarantine_invalid_entries().unwrap(), 2);
+    assert!(matches!(
+        journal.recovery_entries().unwrap().as_slice(),
+        [RecoveryJournalEntry::Transaction(recovered, _)]
+            if recovered.transaction_id == transaction.transaction_id
+    ));
+
+    let quarantined = read_entries(&journal.quarantine_dir).unwrap();
+    assert_eq!(quarantined.len(), 2);
+    let names = quarantined
+        .iter()
+        .map(|entry| entry.file_name().into_string().unwrap())
+        .collect::<Vec<_>>();
+    assert!(names.iter().any(|name| name.ends_with(".invalid-name.bad")));
+    assert!(names
+        .iter()
+        .any(|name| name.ends_with(".invalid-document.bad")));
+    let contents = quarantined
+        .iter()
+        .map(|entry| fs::read(entry.path()).unwrap())
+        .collect::<Vec<_>>();
+    assert!(contents.iter().any(|bytes| bytes == b"not a transaction"));
+    assert!(contents
+        .iter()
+        .any(|bytes| bytes == b"also not a transaction"));
+}
+
+#[test]
 fn strict_documents_reject_unknown_fields_and_filename_mismatches() {
     let (_temp, journal) = journal();
     let transaction = transaction();

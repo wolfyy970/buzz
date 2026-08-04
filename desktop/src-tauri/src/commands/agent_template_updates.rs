@@ -306,6 +306,9 @@ mod apply;
 mod recovery;
 mod support;
 pub use recovery::RestoreInterruptedAgentTemplateUpdateRequest;
+pub use recovery::{
+    QuarantineInvalidAgentTemplateUpdateRequest, QuarantineInvalidAgentTemplateUpdateResult,
+};
 pub use support::preview_agent_template_update;
 use support::*;
 
@@ -324,6 +327,16 @@ pub fn list_agent_template_update_recoveries(
 ) -> Result<Vec<crate::managed_agents::update_transaction::AgentTemplateUpdateRecoveryStatus>, String>
 {
     recovery::list_agent_template_update_recoveries(app)
+}
+
+/// Preserve invalid update records, then require a relaunch before recovery
+/// ownership is reconstructed and managed-agent starts can resume.
+#[tauri::command]
+pub fn quarantine_invalid_agent_template_updates(
+    input: QuarantineInvalidAgentTemplateUpdateRequest,
+    app: AppHandle,
+) -> Result<QuarantineInvalidAgentTemplateUpdateResult, String> {
+    recovery::quarantine_invalid_agent_template_updates(input, app)
 }
 
 /// Explicitly restore the previous agent versions after an interrupted update.

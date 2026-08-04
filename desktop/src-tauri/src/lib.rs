@@ -780,6 +780,7 @@ pub fn run() {
             list_managed_agents,
             preview_agent_template_update,
             list_agent_template_update_recoveries,
+            quarantine_invalid_agent_template_updates,
             restore_interrupted_agent_template_update,
             apply_agent_template_update,
             publish_agent_template_version,

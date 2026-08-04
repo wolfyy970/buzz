@@ -1,10 +1,62 @@
 use super::*;
 
+const GLOBAL_RECOVERY_OWNER: &str = "recovery-global";
+
 pub(super) fn list_agent_template_update_recoveries(
     app: AppHandle,
 ) -> Result<Vec<crate::managed_agents::update_transaction::AgentTemplateUpdateRecoveryStatus>, String>
 {
     crate::managed_agents::update_transaction::list_agent_template_update_recoveries(&app)
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantineInvalidAgentTemplateUpdateRequest {
+    /// Confirms that the invalid document cannot prove which agents or runtime
+    /// generations were involved. The global recovery fence stays active until
+    /// relaunch.
+    pub confirm_unknown_agent_scope: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QuarantineInvalidAgentTemplateUpdateResult {
+    pub quarantined_records: usize,
+    pub relaunch_required: bool,
+}
+
+/// Preserve invalid update journals for diagnosis without treating them as
+/// trustworthy startup authority.
+///
+/// This command intentionally does not clear the process-local global fence.
+/// The caller must relaunch Buzz, which reconstructs recovery ownership from
+/// the remaining valid journals before normal agent restoration can resume.
+pub(super) fn quarantine_invalid_agent_template_updates(
+    input: QuarantineInvalidAgentTemplateUpdateRequest,
+    app: AppHandle,
+) -> Result<QuarantineInvalidAgentTemplateUpdateResult, String> {
+    if !input.confirm_unknown_agent_scope {
+        return Err(
+            "Confirm that Buzz cannot verify which agents were affected before preserving the invalid update record."
+                .to_string(),
+        );
+    }
+    let state = app.state::<AppState>();
+    state
+        .managed_agent_update_leases
+        .ensure_global_recovery_owned(GLOBAL_RECOVERY_OWNER)?;
+    let journal = UpdateTransactionJournal::for_app(&app)?;
+    let quarantined_records = journal.quarantine_invalid_entries()?;
+    if quarantined_records == 0 {
+        return Err("Buzz did not find an invalid update record to quarantine.".to_string());
+    }
+    eprintln!(
+        "buzz-desktop: quarantined {quarantined_records} invalid agent update record(s); relaunch required while the global recovery fence remains active"
+    );
+    Ok(QuarantineInvalidAgentTemplateUpdateResult {
+        quarantined_records,
+        relaunch_required: true,
+    })
 }
 
 #[derive(Debug, Deserialize)]

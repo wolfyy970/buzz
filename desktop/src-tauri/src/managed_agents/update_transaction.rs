@@ -7,11 +7,12 @@
 
 use std::{
     collections::{BTreeMap, HashSet},
+    fs,
     path::{Path, PathBuf},
 };
 
 #[cfg(test)]
-use std::fs::{self, File};
+use std::fs::File;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager as _};
@@ -405,6 +406,18 @@ pub(crate) enum QuarantineReason {
     InvalidDocument,
 }
 
+impl QuarantineReason {
+    fn label(self) -> &'static str {
+        match self {
+            Self::InvalidName => "invalid-name",
+            Self::LinkOrNonFile => "link-or-non-file",
+            Self::InvalidPermissions => "invalid-permissions",
+            Self::Oversized => "oversized",
+            Self::InvalidDocument => "invalid-document",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct QuarantinedJournal {
     pub(crate) source_name: String,
@@ -563,6 +576,40 @@ impl UpdateTransactionJournal {
         }
         entries.sort_by(|left, right| recovery_entry_name(left).cmp(recovery_entry_name(right)));
         Ok(entries)
+    }
+
+    /// Preserve every unverifiable active entry outside the startup authority.
+    ///
+    /// The destination uses an opaque name because the source may be
+    /// non-Unicode or attacker-controlled. A reason tag keeps the evidence
+    /// useful without reflecting that name into a new path. Valid transactions
+    /// remain active and continue to own their scoped recovery fences.
+    pub(crate) fn quarantine_invalid_entries(&self) -> Result<usize, String> {
+        self.verify_dirs()?;
+        let mut quarantined = 0;
+        for entry in read_entries(&self.active_dir)? {
+            let source = entry.path();
+            let reason = match entry.file_name().into_string() {
+                Ok(name) => match transaction_id_from_filename(&name) {
+                    Ok(_) if self.load_path(&source).is_ok() => continue,
+                    Ok(_) => classify_invalid_path(&source),
+                    Err(_) => QuarantineReason::InvalidName,
+                },
+                Err(_) => QuarantineReason::InvalidName,
+            };
+            let destination = self.quarantine_dir.join(format!(
+                "{}.{}.bad",
+                uuid::Uuid::new_v4(),
+                reason.label()
+            ));
+            fs::rename(&source, &destination).map_err(|error| {
+                format!("Could not quarantine the invalid update journal entry: {error}")
+            })?;
+            sync_directory(&self.active_dir)?;
+            sync_directory(&self.quarantine_dir)?;
+            quarantined += 1;
+        }
+        Ok(quarantined)
     }
 
     /// Move one invalid active entry aside without following it.

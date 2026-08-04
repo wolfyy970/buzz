@@ -10860,6 +10860,7 @@ export function maybeInstallE2eTauriMocks() {
     };
   }> = [];
   const restoredAgentTemplateUpdateIds = new Set<string>();
+  let invalidAgentTemplateUpdatesQuarantined = false;
   const handleMockCommand = async (
     command: string,
     payload: unknown,
@@ -12291,9 +12292,30 @@ export function maybeInstallE2eTauriMocks() {
       case "list_agent_template_update_recoveries":
         return (activeConfig?.mock?.agentTemplateUpdateRecoveries ?? []).filter(
           (status) =>
-            !status.transactionId ||
-            !restoredAgentTemplateUpdateIds.has(status.transactionId),
+            status.transactionId
+              ? !restoredAgentTemplateUpdateIds.has(status.transactionId)
+              : !invalidAgentTemplateUpdatesQuarantined,
         );
+      case "quarantine_invalid_agent_template_updates": {
+        const confirmed = (
+          payload as {
+            input?: {
+              confirmUnknownAgentScope?: boolean;
+            };
+          }
+        ).input?.confirmUnknownAgentScope;
+        if (confirmed !== true) {
+          throw new Error("Confirm the invalid update record quarantine.");
+        }
+        const quarantinedRecords = (
+          activeConfig?.mock?.agentTemplateUpdateRecoveries ?? []
+        ).filter((status) => !status.transactionId).length;
+        invalidAgentTemplateUpdatesQuarantined = true;
+        return {
+          quarantinedRecords,
+          relaunchRequired: true,
+        };
+      }
       case "restore_interrupted_agent_template_update": {
         if (activeConfig?.mock?.restoreAgentTemplateUpdateError) {
           throw new Error(activeConfig.mock.restoreAgentTemplateUpdateError);

@@ -1,9 +1,11 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { relaunch } from "@tauri-apps/plugin-process";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import * as React from "react";
 
 import {
   listAgentTemplateUpdateRecoveries,
+  quarantineInvalidAgentTemplateUpdates,
   restoreInterruptedAgentTemplateUpdate,
   type AgentTemplateUpdateRecoveryStatus,
 } from "@/shared/api/tauriAgentTemplateUpdates";
@@ -36,7 +38,7 @@ function templateName(
 ): string {
   return status.templateId
     ? (namesById.get(status.templateId) ?? "Agent template")
-    : "Agent template";
+    : "Unverified agent update";
 }
 
 export function AgentTemplateRecoveryBanner({
@@ -45,6 +47,8 @@ export function AgentTemplateRecoveryBanner({
 }: AgentTemplateRecoveryBannerProps) {
   const [selected, setSelected] =
     React.useState<AgentTemplateUpdateRecoveryStatus | null>(null);
+  const [invalidReviewOpen, setInvalidReviewOpen] = React.useState(false);
+  const [relaunchRequired, setRelaunchRequired] = React.useState(false);
   const recoveries = useQuery({
     queryKey: RECOVERY_QUERY_KEY,
     queryFn: listAgentTemplateUpdateRecoveries,
@@ -59,14 +63,71 @@ export function AgentTemplateRecoveryBanner({
       onRecovered();
     },
   });
+  const quarantine = useMutation({
+    mutationFn: quarantineInvalidAgentTemplateUpdates,
+    onSuccess: async (result) => {
+      setInvalidReviewOpen(false);
+      if (result.relaunchRequired) {
+        setRelaunchRequired(true);
+      }
+      await recoveries.refetch();
+    },
+  });
 
-  const attention = (recoveries.data ?? []).filter(
+  const allAttention = (recoveries.data ?? []).filter(
     (status) => status.requiresAttention,
   );
+  const invalidAttention = allAttention.filter(
+    (status) => !status.transactionId,
+  );
+  const attention = [
+    ...allAttention.filter((status) => status.transactionId),
+    ...invalidAttention.slice(0, 1),
+  ];
   const queryError =
     recoveries.error instanceof Error ? recoveries.error.message : null;
   const restoreError =
     restore.error instanceof Error ? restore.error.message : null;
+  const quarantineError =
+    quarantine.error instanceof Error ? quarantine.error.message : null;
+
+  if (relaunchRequired) {
+    return (
+      <section
+        className="rounded-lg border border-warning/40 bg-warning-bg px-4 py-3"
+        data-testid="agent-update-recovery-relaunch"
+        role="alert"
+      >
+        <div className="flex items-start gap-3">
+          <AlertTriangle
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-warning"
+          />
+          <div className="min-w-0 flex-1">
+            <h2 className="text-sm font-semibold text-foreground">
+              Restart Buzz to finish recovery
+            </h2>
+            <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
+              The update record is preserved. Agent starts and edits remain
+              paused until Buzz restarts and checks for affected agent
+              processes.
+            </p>
+          </div>
+          <Button
+            className="shrink-0"
+            data-testid="agent-update-recovery-relaunch-button"
+            onClick={() => {
+              void relaunch();
+            }}
+            size="sm"
+            type="button"
+          >
+            Restart Buzz
+          </Button>
+        </div>
+      </section>
+    );
+  }
 
   if (!queryError && attention.length === 0) return null;
 
@@ -88,8 +149,8 @@ export function AgentTemplateRecoveryBanner({
                 Agent updates are paused
               </h2>
               <p className="mt-0.5 text-xs leading-5 text-muted-foreground">
-                Buzz found an interrupted update. Agent starts and edits stay
-                blocked until it is resolved.
+                Buzz found an update that needs attention. Agent starts and
+                edits stay paused until recovery finishes.
               </p>
             </div>
 
@@ -115,7 +176,11 @@ export function AgentTemplateRecoveryBanner({
             {attention.map((status, index) => {
               const key = status.transactionId ?? `invalid-${index}`;
               const names = agentList(status);
-              const name = templateName(status, templateNamesById);
+              const name = status.transactionId
+                ? templateName(status, templateNamesById)
+                : invalidAttention.length === 1
+                  ? "Unverified agent update"
+                  : `${invalidAttention.length} unverified agent updates`;
               return (
                 <div
                   className="flex flex-wrap items-center justify-between gap-3 border-t border-warning/20 pt-3"
@@ -132,7 +197,9 @@ export function AgentTemplateRecoveryBanner({
                       </p>
                     ) : null}
                     <p className="mt-1 text-xs leading-5 text-muted-foreground">
-                      {status.detail}
+                      {status.transactionId
+                        ? status.detail
+                        : "Buzz cannot verify which agents were affected."}
                     </p>
                   </div>
                   {status.transactionId ? (
@@ -151,9 +218,19 @@ export function AgentTemplateRecoveryBanner({
                       Review recovery
                     </Button>
                   ) : (
-                    <p className="shrink-0 text-xs font-medium text-warning">
-                      Manual review required
-                    </p>
+                    <Button
+                      className="shrink-0"
+                      data-testid="agent-update-invalid-recovery-open"
+                      onClick={() => {
+                        quarantine.reset();
+                        setInvalidReviewOpen(true);
+                      }}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      Continue recovery
+                    </Button>
                   )}
                 </div>
               );
@@ -219,6 +296,52 @@ export function AgentTemplateRecoveryBanner({
               }}
             >
               {restore.isPending ? "Restoring..." : "Stop agents and restore"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        onOpenChange={(open) => {
+          if (!open && !quarantine.isPending) {
+            setInvalidReviewOpen(false);
+            quarantine.reset();
+          }
+        }}
+        open={invalidReviewOpen}
+      >
+        <AlertDialogContent
+          className="max-w-lg"
+          data-testid="agent-update-invalid-recovery-confirmation"
+        >
+          <AlertDialogHeader>
+            <AlertDialogTitle>Continue agent recovery?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Buzz cannot verify which agents were affected. It will preserve
+              the update record, then stop using it for recovery. Restart Buzz
+              next so it can check for affected agent processes before agents
+              can run again.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+
+          {quarantineError ? (
+            <p className="text-sm text-destructive" role="alert">
+              Recovery couldn’t continue. {quarantineError}
+            </p>
+          ) : null}
+
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={quarantine.isPending}>
+              Cancel
+            </AlertDialogCancel>
+            <AlertDialogAction
+              disabled={quarantine.isPending}
+              onClick={(event) => {
+                event.preventDefault();
+                quarantine.mutate();
+              }}
+            >
+              {quarantine.isPending ? "Preserving..." : "Preserve and continue"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

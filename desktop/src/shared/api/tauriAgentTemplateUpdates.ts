@@ -378,6 +378,22 @@ export async function listAgentTemplateUpdateRecoveries(): Promise<
   );
 }
 
+export type QuarantineInvalidAgentTemplateUpdatesResult = {
+  quarantinedRecords: number;
+  relaunchRequired: boolean;
+};
+
+export async function quarantineInvalidAgentTemplateUpdates(): Promise<QuarantineInvalidAgentTemplateUpdatesResult> {
+  return invokeTauri<QuarantineInvalidAgentTemplateUpdatesResult>(
+    "quarantine_invalid_agent_template_updates",
+    {
+      input: {
+        confirmUnknownAgentScope: true,
+      },
+    },
+  );
+}
+
 export async function restoreInterruptedAgentTemplateUpdate(
   transactionId: string,
 ): Promise<void> {
