@@ -445,9 +445,11 @@ function ConnectionDialog({
 }
 
 export function ProjectConnectionsPanel({
+  embedded = false,
   project,
   projectScope,
 }: {
+  embedded?: boolean;
   project: Project;
   projectScope: AgentProjectScope;
 }) {
@@ -510,28 +512,40 @@ export function ProjectConnectionsPanel({
         data-project-detail-panel
         data-testid="project-connections-panel"
       >
-        <div className="flex min-h-14 items-center gap-3 border-border/50 border-b px-4 py-3">
-          <Link2 className="h-4 w-4 text-muted-foreground" />
-          <div className="min-w-0 flex-1">
-            <h3 className="text-sm font-medium text-foreground">Connections</h3>
-            <p className="text-xs text-muted-foreground">
-              Connect the services agents can use in this project.
-            </p>
-          </div>
-          <Button
-            disabled={!canAdd}
-            onClick={openAdd}
-            size="sm"
-            title={
-              canAdd
-                ? "Add connection"
-                : "Link a discussion channel before adding connections"
-            }
+        {!embedded || connections.length > 0 ? (
+          <div
+            className={`flex min-h-14 items-center gap-3 border-border/50 border-b px-4 py-3 ${
+              embedded ? "justify-end" : ""
+            }`}
           >
-            <Plus className="h-4 w-4" />
-            Add connection
-          </Button>
-        </div>
+            {!embedded ? (
+              <>
+                <Link2 className="h-4 w-4 text-muted-foreground" />
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-sm font-medium text-foreground">
+                    Connections
+                  </h3>
+                  <p className="text-xs text-muted-foreground">
+                    Connect the services agents can use in this Project.
+                  </p>
+                </div>
+              </>
+            ) : null}
+            <Button
+              disabled={!canAdd}
+              onClick={openAdd}
+              size="sm"
+              title={
+                canAdd
+                  ? "Add connection"
+                  : "Link a discussion channel before adding connections"
+              }
+            >
+              <Plus className="h-4 w-4" />
+              Add connection
+            </Button>
+          </div>
+        ) : null}
 
         {!project.projectChannelId ? (
           <div className={PROJECT_DETAIL_PANEL_MESSAGE_CLASS}>

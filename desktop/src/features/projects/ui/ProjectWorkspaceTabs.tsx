@@ -35,6 +35,7 @@ import { ProjectIssuesPanel } from "./ProjectIssuesPanel";
 import type { OpenMergeRecoveryTerminal } from "./MergePullRequestButton";
 import { ProjectOverviewPanel } from "./ProjectOverviewPanel";
 import { ProjectConnectionsPanel } from "./ProjectConnectionsPanel";
+import { projectConnectionScope } from "../projectConnectionScope";
 import {
   PullRequestDetailHeader,
   PullRequestMetaRail,
@@ -185,19 +186,11 @@ export function WorkspaceTabs({
 }) {
   const { activeCommunity } = useCommunities();
   const identityQuery = useIdentityQuery();
-  const projectScope =
-    activeCommunity?.relayUrl &&
-    identityQuery.data?.pubkey &&
-    project.projectChannelId
-      ? {
-          relayUrl: activeCommunity.relayUrl,
-          operatorPubkey: identityQuery.data.pubkey,
-          // The current Project model is one repository. NIP-MP Projects will
-          // supply their explicit address here once #4671 lands.
-          projectAddress: project.repoAddress,
-          channelId: project.projectChannelId,
-        }
-      : null;
+  const projectScope = projectConnectionScope({
+    operatorPubkey: identityQuery.data?.pubkey ?? null,
+    project,
+    relayUrl: activeCommunity?.relayUrl ?? null,
+  });
   const localCheckoutSnapshot = localSnapshot?.snapshot ?? null;
   const displayedSnapshot =
     repoSource === "local" ? localCheckoutSnapshot : snapshot;

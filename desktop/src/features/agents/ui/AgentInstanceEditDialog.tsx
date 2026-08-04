@@ -92,7 +92,7 @@ import {
   runtimeDropdownAction,
   usePendingHarnessSelection,
 } from "./addCustomHarness";
-import { useAgentConnectionBindingsDraft } from "./useAgentConnectionBindingsDraft";
+import { useAgentProjectAccessDraft } from "./useAgentProjectAccessDraft";
 import { useAgentInstanceTemplateOverridesDraft } from "./useAgentInstanceTemplateOverridesDraft";
 import {
   AgentModelField,
@@ -149,7 +149,7 @@ export function AgentInstanceEditDialog({
   const [isCustomProviderEditing, setIsCustomProviderEditing] =
     React.useState(false);
   const [envVars, setEnvVars] = React.useState<EnvVarsValue>(agent.envVars);
-  const connectionsDraft = useAgentConnectionBindingsDraft({
+  const projectAccessDraft = useAgentProjectAccessDraft({
     agent,
     disabled: updateMutation.isPending,
     open,
@@ -630,7 +630,7 @@ export function AgentInstanceEditDialog({
       requiredEnvKeyMissing,
     }) &&
     providerValid &&
-    connectionsDraft.valid &&
+    projectAccessDraft.valid &&
     templateOverrides.valid &&
     !updateMutation.isPending &&
     !isAvatarUploadPending;
@@ -734,7 +734,8 @@ export function AgentInstanceEditDialog({
         envVars: envVarsEqual(submitEnvVars, agent.envVars)
           ? undefined
           : submitEnvVars,
-        connectionBindings: connectionsDraft.update,
+        projectScope: projectAccessDraft.projectScopeUpdate,
+        connectionBindings: projectAccessDraft.connectionBindingsUpdate,
         respondTo: respondTo !== agent.respondTo ? respondTo : undefined,
         // The allowlist is preserved across mode toggles in local UI state
         // (so a user can flip away from allowlist and back without losing
@@ -858,6 +859,10 @@ export function AgentInstanceEditDialog({
   const advancedFieldsTransition = shouldReduceMotion
     ? { duration: 0 }
     : ADVANCED_FIELDS_MOTION_TRANSITION;
+  const submitBlockReason =
+    projectAccessDraft.submitBlockReason ??
+    templateOverrides.submitBlockReason ??
+    null;
 
   return (
     <Dialog onOpenChange={handleOpenChange} open={open}>
@@ -867,12 +872,12 @@ export function AgentInstanceEditDialog({
         data-testid="edit-agent-dialog"
         footerClassName="border-t-0 pt-0"
         headerClassName="pb-2"
-        title="Edit this agent"
+        title={`Edit ${agent.name}`}
         footer={
           <div className="flex w-full items-center justify-between gap-3">
-            {templateOverrides.submitBlockReason ? (
+            {submitBlockReason ? (
               <p className="text-2xs text-muted-foreground">
-                {templateOverrides.submitBlockReason}
+                {submitBlockReason}
               </p>
             ) : (
               <span />
@@ -980,7 +985,7 @@ export function AgentInstanceEditDialog({
             />
             <RunOnSummarySection backend={agent.backend} />
 
-            {connectionsDraft.section}
+            {projectAccessDraft.section}
 
             {/* Provider (runtime) */}
             <div className="space-y-1.5">

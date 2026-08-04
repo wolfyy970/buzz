@@ -4,6 +4,10 @@ import * as React from "react";
 import { useProjectsQuery } from "@/features/projects/hooks";
 import { useProjectConnectionsQuery } from "@/features/projects/projectConnectionHooks";
 import { ProjectConnectionsPanel } from "@/features/projects/ui/ProjectConnectionsPanel";
+import {
+  agentProjectScopeAddress,
+  projectMatchesConnectionAddress,
+} from "@/features/projects/projectConnectionScope";
 import type {
   AgentTemplateToolChanges,
   AgentTemplateUpdateTarget,
@@ -153,7 +157,11 @@ export function AgentTemplateToolBindings({
       agent.projectScope
         ? projectsQuery.data?.find(
             (candidate) =>
-              candidate.repoAddress === agent.projectScope?.projectAddress,
+              agent.projectScope != null &&
+              projectMatchesConnectionAddress(
+                candidate,
+                agentProjectScopeAddress(agent.projectScope),
+              ),
           )
         : undefined,
     [agent.projectScope, projectsQuery.data],
@@ -316,6 +324,7 @@ export function AgentTemplateToolBindings({
             </DialogHeader>
             <div className="min-h-0 flex-1 overflow-y-auto pr-1">
               <ProjectConnectionsPanel
+                embedded
                 project={project}
                 projectScope={agent.projectScope}
               />

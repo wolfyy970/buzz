@@ -10,6 +10,7 @@ import {
   updateProjectConnection,
 } from "@/shared/api/tauriProjectConnections";
 import type { AgentProjectScope } from "@/shared/api/types";
+import { agentProjectScopeAddress } from "./projectConnectionScope";
 
 export const projectConnectionsQueryKey = (
   projectScope: AgentProjectScope | null,
@@ -18,7 +19,7 @@ export const projectConnectionsQueryKey = (
     "project-connections",
     projectScope?.relayUrl ?? "",
     projectScope?.operatorPubkey ?? "",
-    projectScope?.projectAddress ?? "",
+    agentProjectScopeAddress(projectScope),
     projectScope?.channelId ?? "",
   ] as const;
 

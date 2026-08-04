@@ -54,6 +54,7 @@ export default defineConfig({
         "**/agent-readiness-screenshots.spec.ts",
         "**/agent-error-state-screenshots.spec.ts",
         "**/agent-template-update-screenshots.spec.ts",
+        "**/agent-project-access-screenshots.spec.ts",
         "**/edit-agent.spec.ts",
         "**/doctor-cta-screenshots.spec.ts",
         "**/pubkey-display-screenshots.spec.ts",

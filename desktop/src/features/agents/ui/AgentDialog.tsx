@@ -37,6 +37,7 @@ import {
   emptyAgentProjectAccessDraft,
   type AgentProjectAccessReadiness,
 } from "./AgentProjectAccessSection";
+import { projectConnectionScope } from "@/features/projects/projectConnectionScope";
 
 type AgentDialogCreateProps = {
   mode: "definition";
@@ -242,17 +243,18 @@ function AgentCreateDialogRouter({
             !identityQuery.data?.pubkey
           )
             return;
+          const selectedProjectScope = projectConnectionScope({
+            operatorPubkey: identityQuery.data.pubkey,
+            project: selectedProject,
+            relayUrl: activeCommunity.relayUrl,
+          });
+          if (!selectedProjectScope) return;
           const submitted = await onSubmitDefinition(
             input,
             "definition_start",
             resolveBackendIntent(runDraft),
             {
-              projectScope: {
-                relayUrl: activeCommunity.relayUrl,
-                operatorPubkey: identityQuery.data.pubkey,
-                projectAddress: selectedProject.repoAddress,
-                channelId: selectedProject.projectChannelId,
-              },
+              projectScope: selectedProjectScope,
               connectionBindings: projectAccessDraft.connectionBindings,
             },
           );
