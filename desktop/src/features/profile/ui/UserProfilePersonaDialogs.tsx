@@ -32,6 +32,7 @@ export function UserProfilePersonaDialogs({
   resolvedPersona,
   runtimes,
   runtimesLoading,
+  runtimesError = false,
   updateError,
   onCloseCardMint,
   onCloseDelete,
@@ -54,6 +55,7 @@ export function UserProfilePersonaDialogs({
   resolvedPersona: AgentPersona | undefined;
   runtimes: AcpRuntimeCatalogEntry[];
   runtimesLoading: boolean;
+  runtimesError?: boolean;
   updateError: Error | null;
   onCloseCardMint: () => void;
   onCloseDelete: () => void;
@@ -66,6 +68,11 @@ export function UserProfilePersonaDialogs({
     options: AgentDefinitionSubmitOptions,
   ) => Promise<void>;
 }) {
+  const runtimeCatalogStatus = runtimesLoading
+    ? "loading"
+    : runtimesError
+      ? "error"
+      : ("ready" as const);
   return (
     <>
       <AgentDialog
@@ -80,7 +87,7 @@ export function UserProfilePersonaDialogs({
         isPending={isPending}
         mode="definition-edit"
         runtimes={runtimes}
-        runtimesLoading={runtimesLoading}
+        runtimeCatalogStatus={runtimeCatalogStatus}
         onOpenChange={(open) => {
           if (!open) {
             onCloseDialog();

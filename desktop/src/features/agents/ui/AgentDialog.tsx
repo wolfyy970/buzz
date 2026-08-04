@@ -45,7 +45,7 @@ type AgentDialogCreateProps = {
   definitionError: Error | null;
   isDefinitionPending: boolean;
   runtimes: AcpRuntimeCatalogEntry[];
-  runtimesLoading: boolean;
+  runtimeCatalogStatus: "loading" | "ready" | "error";
   onSubmitDefinition: (
     input: CreatePersonaInput | UpdatePersonaInput,
     intent: AgentCreateIntent,
@@ -80,7 +80,7 @@ type AgentDialogDefinitionEditProps = {
   error: Error | null;
   isPending: boolean;
   runtimes: AcpRuntimeCatalogEntry[];
-  runtimesLoading?: boolean;
+  runtimeCatalogStatus?: "loading" | "ready" | "error";
   onOpenChange: (open: boolean) => void;
   onSubmit: (
     input: CreatePersonaInput | UpdatePersonaInput,
@@ -139,7 +139,7 @@ function AgentCreateDialogRouter({
   definitionError,
   isDefinitionPending,
   runtimes,
-  runtimesLoading,
+  runtimeCatalogStatus,
   onSubmitDefinition,
 }: AgentDialogCreateProps) {
   const [runDraft, setRunDraft] = React.useState(emptyWhereToRunDraft);
@@ -262,7 +262,7 @@ function AgentCreateDialogRouter({
         }}
         open
         runtimes={runtimes}
-        runtimesLoading={runtimesLoading}
+        runtimeCatalogStatus={runtimeCatalogStatus}
         submitLabel={copy.submitLabel}
         title={copy.title}
       />
