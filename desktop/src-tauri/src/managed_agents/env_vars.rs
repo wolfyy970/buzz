@@ -88,6 +88,7 @@ pub(crate) const RESERVED_ENV_KEYS: &[&str] = &[
     // launch.policy_env. A user-supplied BUZZ_ACP_AGENTS would bypass the
     // harness cap and cause OpenClaw agents to spawn uncapped workers.
     "BUZZ_ACP_AGENTS",
+    "BUZZ_ACP_MCP_CONFIG",
     // Security gates: respond-to mode + allowlist + legacy owner-only
     // fallback. Overriding would make the running agent's gate diverge
     // from the saved/UI-visible settings.
