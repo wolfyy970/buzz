@@ -240,8 +240,8 @@ function ConnectionDialog({
             </DialogTitle>
             <DialogDescription>
               {connection
-                ? "Change how this connection runs and what it can access."
-                : "Set up an MCP server and review its access before saving."}
+                ? `Change how this connection runs for ${projectName} in ${communityName} at ${projectScope.relayUrl}. Credentials stay on this device.`
+                : `Set up an MCP server for ${projectName} in ${communityName} at ${projectScope.relayUrl}, then review its access before saving. Credentials stay on this device.`}
             </DialogDescription>
           </DialogHeader>
           <fieldset className="mt-4 grid gap-x-4 gap-y-2 border-border/60 border-y py-3 text-xs sm:grid-cols-[auto_minmax(0,1fr)]">

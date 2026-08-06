@@ -278,7 +278,7 @@ test.describe("Project Connections screenshots", () => {
     expect(counts).toEqual({ workspaceA: 0, workspaceB: 1 });
   });
 
-  test("partial deletion recovery persists and retries local cleanup", async ({
+  test("Project deletion with a connection fails before publication or cleanup", async ({
     page,
   }) => {
     await page.goto("/", { waitUntil: "domcontentloaded" });
@@ -288,64 +288,31 @@ test.describe("Project Connections screenshots", () => {
     await page.getByRole("menuitem", { name: "Delete project" }).click();
     await page.getByTestId("project-delete-confirm-button-buzz").click();
 
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            window.__BUZZ_E2E_SIGNED_EVENTS__?.filter(
-              (event) => event.kind === 5,
-            ).length ?? 0,
-        ),
-      )
-      .toBe(1);
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            window.__BUZZ_E2E_PROJECT_CONNECTION_BULK_DELETE_ATTEMPTS__ ?? 0,
-        ),
-      )
-      .toBe(1);
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            JSON.parse(
-              window.localStorage.getItem(
-                "buzz.projects.pending-connection-cleanup.v1",
-              ) ?? "[]",
-            ).length,
-        ),
-      )
-      .toBe(1);
-    const pending = await page.evaluate(() =>
-      JSON.parse(
-        window.localStorage.getItem(
-          "buzz.projects.pending-connection-cleanup.v1",
-        ) ?? "[]",
-      ),
-    );
-    expect(pending).toHaveLength(1);
-    expect(pending[0].state).toBe("published");
-
-    const retry = page.getByRole("button", { name: "Retry cleanup" });
-    await expect(retry).toBeVisible();
-    await retry.click();
     await expect(
-      page.getByText("Local connection cleanup finished."),
+      page.getByText("Remove this Project's connection before deleting it."),
     ).toBeVisible();
-    await expect
-      .poll(() =>
-        page.evaluate(
-          () =>
-            JSON.parse(
-              window.localStorage.getItem(
-                "buzz.projects.pending-connection-cleanup.v1",
-              ) ?? "[]",
-            ).length,
-        ),
-      )
-      .toBe(0);
+    expect(
+      await page.evaluate(
+        () =>
+          window.__BUZZ_E2E_SIGNED_EVENTS__?.filter((event) => event.kind === 5)
+            .length ?? 0,
+      ),
+    ).toBe(0);
+    expect(
+      await page.evaluate(
+        () => window.__BUZZ_E2E_PROJECT_CONNECTION_BULK_DELETE_ATTEMPTS__ ?? 0,
+      ),
+    ).toBe(0);
+    expect(
+      await page.evaluate(
+        () =>
+          JSON.parse(
+            window.localStorage.getItem(
+              "buzz.projects.pending-connection-cleanup.v1",
+            ) ?? "[]",
+          ).length,
+      ),
+    ).toBe(0);
   });
 
   test("names the exact Project and community scope accessibly", async ({
@@ -359,7 +326,7 @@ test.describe("Project Connections screenshots", () => {
       name: "Add Project connection to Buzz",
     });
     await expect(addDialog).toHaveAccessibleDescription(
-      /buzz in E2E Test at ws:\/\/localhost:3000.*credentials stay on this device/,
+      /Buzz in E2E Test at ws:\/\/localhost:3000.*credentials stay on this device/i,
     );
     const addScope = addDialog.getByRole("group", {
       name: "Connection scope",
@@ -371,7 +338,7 @@ test.describe("Project Connections screenshots", () => {
     await expect(addScope).toContainText("Relay");
     await expect(addScope).toContainText("ws://localhost:3000");
     await expect(addScope).toContainText("Credentials");
-    await expect(addScope).toContainText("Stay on this device");
+    await expect(addScope).toContainText("This device only");
     await addDialog.getByRole("button", { name: "Cancel" }).click();
 
     await panel.getByRole("button", { name: "Edit Google Analytics" }).click();
@@ -379,7 +346,7 @@ test.describe("Project Connections screenshots", () => {
       name: "Edit Google Analytics for Buzz",
     });
     await expect(editDialog).toHaveAccessibleDescription(
-      /Edit this Project connection in E2E Test at ws:\/\/localhost:3000.*credentials stay on this device/,
+      /Change how this connection runs for Buzz in E2E Test at ws:\/\/localhost:3000.*credentials stay on this device/i,
     );
     await expect(
       editDialog
