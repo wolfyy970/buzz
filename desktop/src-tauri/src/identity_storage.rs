@@ -79,6 +79,10 @@ impl AppState {
     /// Clear the active scope and bump the generation.
     /// Called by live identity import and prepare-rollback.
     pub(crate) fn clear_active_scope(&self) {
+        if let Some(scope) = self.capture_active_scope() {
+            self.project_connection_operations
+                .cancel_and_drain(scope.generation);
+        }
         if let Ok(mut g) = self.active_agent_scope.lock() {
             *g = None;
         }

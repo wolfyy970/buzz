@@ -32,6 +32,122 @@ fn stored_connection() -> StoredProjectConnection {
     }
 }
 
+fn captured_scope(base: &std::path::Path, generation: u64) -> CapturedProjectConnectionScope {
+    let coordinator = operation_lease::ScopeOperationCoordinator::default();
+    captured_scope_with_coordinator(base, generation, &coordinator)
+}
+
+fn captured_scope_with_coordinator(
+    base: &std::path::Path,
+    generation: u64,
+    coordinator: &operation_lease::ScopeOperationCoordinator,
+) -> CapturedProjectConnectionScope {
+    let project = canonical_project_scope(&scope()).unwrap();
+    let operation = coordinator.acquire(generation).unwrap();
+    let captured = CapturedProjectConnectionScope {
+        workspace: super::super::scope::WorkspaceAgentScope::new(
+            project.relay_url.clone(),
+            project.operator_pubkey.clone(),
+            base,
+            generation,
+        ),
+        project,
+        operation,
+    };
+    fs::create_dir_all(&captured.workspace.definitions_dir).unwrap();
+    fs::write(
+        captured.workspace.definitions_dir.join("_manifest.json"),
+        serde_json::to_vec(&super::super::scope_init::ScopeManifest {
+            scope_id: captured.workspace.scope_id.clone(),
+            init_kind: super::super::scope_init::ScopeInitKind::FreshNoLegacy,
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    fs::write(captured.workspace.definitions_dir.join("_ready"), b"v1\n").unwrap();
+    captured
+}
+
+#[test]
+fn scope_drain_does_not_deadlock_a_save_at_the_commit_fence() {
+    use std::sync::{mpsc, Arc};
+    use std::time::Duration;
+
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let generation = super::super::scope::next_scope_generation();
+    let coordinator = Arc::new(operation_lease::ScopeOperationCoordinator::default());
+    let captured = Arc::new(captured_scope_with_coordinator(
+        dir.path(),
+        generation,
+        &coordinator,
+    ));
+    let (commit_started_tx, commit_started_rx) = mpsc::channel();
+    let (finish_commit_tx, finish_commit_rx) = mpsc::channel();
+
+    let saver = {
+        let captured = Arc::clone(&captured);
+        std::thread::spawn(move || {
+            with_scope_commit_fence(&captured, || {
+                commit_started_tx.send(()).unwrap();
+                finish_commit_rx.recv().unwrap();
+                Ok(())
+            })
+        })
+    };
+
+    commit_started_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("leased save must reach its commit without another scope lock");
+    let drainer = {
+        let coordinator = Arc::clone(&coordinator);
+        std::thread::spawn(move || coordinator.cancel_and_drain(generation))
+    };
+    while !captured.operation.is_cancelled() {
+        std::thread::yield_now();
+    }
+    finish_commit_tx.send(()).unwrap();
+    assert!(saver.join().unwrap().is_ok());
+    drop(captured);
+    drainer.join().unwrap();
+}
+
+#[test]
+fn cancellation_before_commit_fence_never_runs_the_write() {
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let generation = super::super::scope::next_scope_generation();
+    let coordinator = Arc::new(operation_lease::ScopeOperationCoordinator::default());
+    let captured = captured_scope_with_coordinator(dir.path(), generation, &coordinator);
+    let drainer = {
+        let coordinator = Arc::clone(&coordinator);
+        std::thread::spawn(move || coordinator.cancel_and_drain(generation))
+    };
+    while !captured.operation.is_cancelled() {
+        std::thread::yield_now();
+    }
+
+    let wrote = AtomicBool::new(false);
+    assert!(with_scope_commit_fence(&captured, || {
+        wrote.store(true, Ordering::Release);
+        Ok(())
+    })
+    .is_err());
+    assert!(!wrote.load(Ordering::Acquire));
+
+    drop(captured);
+    drainer.join().unwrap();
+}
+
 #[test]
 fn project_scope_requires_canonical_relay_identity_and_coordinate() {
     assert_eq!(canonical_project_scope(&scope()).unwrap(), scope());
@@ -48,6 +164,19 @@ fn project_scope_requires_canonical_relay_identity_and_coordinate() {
     let mut legacy = scope();
     legacy.project_address = format!("30617:{}:portable-agents", "a".repeat(64));
     assert_eq!(canonical_project_scope(&legacy).unwrap(), legacy);
+}
+
+#[test]
+fn connection_scope_uses_the_workspace_agent_scope_identity() {
+    let scope = canonical_project_scope(&scope()).unwrap();
+    let workspace = super::super::scope::WorkspaceAgentScope::new(
+        scope.relay_url.clone(),
+        scope.operator_pubkey.clone(),
+        std::path::Path::new("/tmp/buzz-agent-scope"),
+        7,
+    );
+
+    assert_eq!(workspace_scope_id(&scope), workspace.scope_id);
 }
 
 #[test]
@@ -222,32 +351,304 @@ fn connection_lookup_cannot_cross_project_boundaries() {
 }
 
 #[test]
-fn duplicate_ids_are_resolved_within_the_requested_project() {
+fn connection_store_rejects_duplicate_ids_across_projects() {
     let first = stored_connection();
     let mut second = first.clone();
     second.project_scope.project_address = format!("30621:{}:other-project", "a".repeat(64));
     let store = ProjectConnectionStore {
         version: CONNECTION_STORE_VERSION,
-        connections: vec![first, second.clone()],
+        connections: vec![first, second],
     };
+    let dir = tempfile::tempdir().unwrap();
+    // Active workspace scopes are created by `next_scope_generation`, so
+    // generation zero is not a production state.
+    let captured = captured_scope(dir.path(), 1);
 
     assert_eq!(
-        find_connection_index(&store, &second.project_scope, &second.id),
-        Some(1)
+        validate_store_for_scope(&store, &captured).unwrap_err(),
+        "Project connection metadata contains duplicate identities."
     );
 }
 
 #[test]
-fn connection_limit_is_counted_per_project() {
+fn stale_workspace_generation_cannot_create_connection_paths() {
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let generation = super::super::scope::next_scope_generation();
+    let captured = captured_scope(dir.path(), generation);
+    let path = captured
+        .workspace
+        .definitions_dir
+        .join("project-connections");
+
+    super::super::scope::next_scope_generation();
+    let error = workspace_connection_dir(&captured).unwrap_err();
+
+    assert!(error.contains("stale scope"));
+    assert!(!path.exists(), "stale operation must not create any path");
+}
+
+#[test]
+fn workspace_and_project_connection_limits_are_distinct() {
     let target_scope = scope();
     let mut other = stored_connection();
     other.project_scope.project_address = format!("30621:{}:other-project", "a".repeat(64));
     let store = ProjectConnectionStore {
         version: CONNECTION_STORE_VERSION,
-        connections: vec![other; MAX_CONNECTIONS],
+        connections: vec![other; MAX_PROJECT_CONNECTIONS],
     };
 
     assert_eq!(project_connection_count(&store, &target_scope), 0);
+    assert_eq!(store.connections.len(), MAX_PROJECT_CONNECTIONS);
+    assert!(store.connections.len() < MAX_WORKSPACE_CONNECTIONS);
+}
+
+#[test]
+fn store_accepts_legacy_per_project_counts_but_keeps_workspace_limit() {
+    let dir = tempfile::tempdir().unwrap();
+    let captured = captured_scope(dir.path(), 1);
+    let mut connections = Vec::new();
+    for project_index in 0..4 {
+        for connection_index in 0..MAX_PROJECT_CONNECTIONS {
+            let mut connection = stored_connection();
+            connection.id = format!("{:032x}", project_index * 1000 + connection_index);
+            connection.project_scope.project_address =
+                format!("30621:{}:project-{project_index}", "a".repeat(64));
+            connections.push(connection);
+        }
+    }
+    let full = ProjectConnectionStore {
+        version: CONNECTION_STORE_VERSION,
+        connections,
+    };
+    assert_eq!(full.connections.len(), MAX_WORKSPACE_CONNECTIONS);
+    validate_store_for_scope(&full, &captured).unwrap();
+
+    let mut too_many_for_project = full.clone();
+    let mut extra = stored_connection();
+    extra.id = format!("{:032x}", 99_999);
+    extra.project_scope.project_address = format!("30621:{}:project-0", "a".repeat(64));
+    too_many_for_project.connections[0] = extra.clone();
+    too_many_for_project.connections.push(extra);
+    assert!(validate_store_for_scope(&too_many_for_project, &captured)
+        .unwrap_err()
+        .contains("workspace limit"));
+
+    let mut per_project = ProjectConnectionStore::default();
+    for index in 0..=MAX_PROJECT_CONNECTIONS {
+        let mut connection = stored_connection();
+        connection.id = format!("{index:032x}");
+        per_project.connections.push(connection);
+    }
+    validate_store_for_scope(&per_project, &captured).unwrap();
+    assert!(project_connection_count(&per_project, &scope()) > MAX_PROJECT_CONNECTIONS);
+}
+
+#[test]
+fn legacy_store_over_new_size_limit_remains_readable_but_cannot_grow() {
+    let mut first = stored_connection();
+    first.env_keys.clear();
+    first.args = vec!["x".repeat(MAX_ARG_BYTES); MAX_ARGS];
+    let mut second = first.clone();
+    second.id = "d".repeat(32);
+    let store = ProjectConnectionStore {
+        version: CONNECTION_STORE_VERSION,
+        connections: vec![first, second],
+    };
+
+    let serialized = serialize_store_bounded(&store).unwrap();
+    assert!(serialized.len() as u64 > MAX_CONNECTION_STORE_BYTES);
+    assert_eq!(
+        validate_new_store_size(&store).unwrap_err(),
+        "Project connection store exceeds its size limit."
+    );
+    validate_updated_store_size(&store, &store).unwrap();
+
+    let mut larger = store.clone();
+    larger.connections[0].name.push('x');
+    assert!(validate_updated_store_size(&store, &larger)
+        .unwrap_err()
+        .contains("legacy Project connection store larger"));
+
+    let mut smaller = store.clone();
+    smaller.connections.pop();
+    validate_updated_store_size(&store, &smaller).unwrap();
+}
+
+#[test]
+fn escaped_secret_serialization_and_reader_share_the_exact_limit() {
+    let key = "TOKEN".to_string();
+    let value = "\u{0001}".repeat(MAX_SECRET_BYTES - key.len());
+    let env = BTreeMap::from([(key.clone(), value)]);
+    validate_connection_input("Test", "Fixture", "/usr/bin/true", &[], &env).unwrap();
+    let serialized = serialize_secrets(&env).unwrap();
+    assert!(serialized.len() as u64 <= MAX_SECRET_FILE_BYTES);
+
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("credentials.json");
+    atomic_write_json_restricted(&path, &serialized).unwrap();
+    assert_eq!(
+        read_bounded_owner_file(
+            &path,
+            MAX_SECRET_FILE_BYTES,
+            "Project connection credentials",
+        )
+        .unwrap()
+        .unwrap(),
+        serialized,
+    );
+
+    let oversized = BTreeMap::from([(
+        key.clone(),
+        "\u{0001}".repeat(MAX_SECRET_BYTES - key.len() + 1),
+    )]);
+    assert!(
+        validate_connection_input("Test", "Fixture", "/usr/bin/true", &[], &oversized,)
+            .unwrap_err()
+            .contains("size limit")
+    );
+}
+
+#[test]
+fn legacy_connection_store_migration_is_atomic_and_idempotent() {
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let captured = captured_scope(dir.path(), super::super::scope::next_scope_generation());
+    let legacy = dir
+        .path()
+        .join("project-connections")
+        .join(&captured.workspace.scope_id);
+    ensure_owner_only_directory(legacy.parent().unwrap()).unwrap();
+    ensure_owner_only_directory(&legacy).unwrap();
+    let store = ProjectConnectionStore {
+        version: CONNECTION_STORE_VERSION,
+        connections: vec![stored_connection()],
+    };
+    atomic_write_json_restricted(
+        &legacy.join("connections.json"),
+        &serde_json::to_vec_pretty(&store).unwrap(),
+    )
+    .unwrap();
+
+    let target = workspace_connection_dir(&captured).unwrap();
+    assert!(!legacy.exists());
+    assert!(target.join("connections.json").is_file());
+    assert_eq!(workspace_connection_dir(&captured).unwrap(), target);
+}
+
+#[test]
+fn migration_preserves_an_old_valid_store_larger_than_one_megabyte() {
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let captured = captured_scope(dir.path(), super::super::scope::next_scope_generation());
+    let legacy = dir
+        .path()
+        .join("project-connections")
+        .join(&captured.workspace.scope_id);
+    ensure_owner_only_directory(legacy.parent().unwrap()).unwrap();
+    ensure_owner_only_directory(&legacy).unwrap();
+    let mut first = stored_connection();
+    first.env_keys.clear();
+    first.args = vec!["x".repeat(MAX_ARG_BYTES); MAX_ARGS];
+    let mut second = first.clone();
+    second.id = "d".repeat(32);
+    let store = ProjectConnectionStore {
+        version: CONNECTION_STORE_VERSION,
+        connections: vec![first, second],
+    };
+    let bytes = serde_json::to_vec_pretty(&store).unwrap();
+    assert!(bytes.len() as u64 > MAX_CONNECTION_STORE_BYTES);
+    atomic_write_json_restricted(&legacy.join("connections.json"), &bytes).unwrap();
+
+    let target = workspace_connection_dir(&captured).unwrap();
+    let migrated = read_bounded_owner_file(
+        &target.join("connections.json"),
+        MAX_LEGACY_CONNECTION_STORE_BYTES,
+        "Project connection store",
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(migrated, bytes);
+    let migrated_store: ProjectConnectionStore = serde_json::from_slice(&migrated).unwrap();
+    validate_store_for_scope(&migrated_store, &captured).unwrap();
+}
+
+#[test]
+fn migration_retry_replaces_only_an_empty_uncommitted_target() {
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let captured = captured_scope(dir.path(), super::super::scope::next_scope_generation());
+    let legacy = dir
+        .path()
+        .join("project-connections")
+        .join(&captured.workspace.scope_id);
+    ensure_owner_only_directory(legacy.parent().unwrap()).unwrap();
+    ensure_owner_only_directory(&legacy).unwrap();
+    atomic_write_json_restricted(
+        &legacy.join("connections.json"),
+        &serde_json::to_vec_pretty(&ProjectConnectionStore {
+            version: CONNECTION_STORE_VERSION,
+            connections: vec![stored_connection()],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let target = captured
+        .workspace
+        .definitions_dir
+        .join("project-connections");
+    ensure_owner_only_directory(&target).unwrap();
+
+    assert_eq!(workspace_connection_dir(&captured).unwrap(), target);
+    assert!(!legacy.exists());
+    assert!(target.join("connections.json").is_file());
+}
+
+#[test]
+fn migration_conflict_preserves_both_stores_for_recovery() {
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let captured = captured_scope(dir.path(), super::super::scope::next_scope_generation());
+    let legacy = dir
+        .path()
+        .join("project-connections")
+        .join(&captured.workspace.scope_id);
+    ensure_owner_only_directory(legacy.parent().unwrap()).unwrap();
+    ensure_owner_only_directory(&legacy).unwrap();
+    atomic_write_json_restricted(
+        &legacy.join("connections.json"),
+        &serde_json::to_vec_pretty(&ProjectConnectionStore {
+            version: CONNECTION_STORE_VERSION,
+            connections: vec![stored_connection()],
+        })
+        .unwrap(),
+    )
+    .unwrap();
+    let target = captured
+        .workspace
+        .definitions_dir
+        .join("project-connections");
+    ensure_owner_only_directory(&target).unwrap();
+    atomic_write_json_restricted(
+        &target.join("connections.json"),
+        &serde_json::to_vec_pretty(&ProjectConnectionStore::default()).unwrap(),
+    )
+    .unwrap();
+
+    let error = workspace_connection_dir(&captured).unwrap_err();
+    assert!(error.contains("both previous and current"));
+    assert!(legacy.join("connections.json").is_file());
+    assert!(target.join("connections.json").is_file());
 }
 
 #[cfg(unix)]
@@ -269,4 +670,29 @@ fn connection_store_rejects_symlinks_and_non_owner_permissions() {
     assert!(reject_unsafe_owner_file(&store).is_err());
     fs::set_permissions(&store, fs::Permissions::from_mode(0o600)).unwrap();
     assert!(reject_unsafe_owner_file(&store).is_ok());
+}
+
+#[cfg(unix)]
+#[test]
+fn secure_replacement_never_follows_a_target_or_parent_symlink() {
+    use std::os::unix::fs::{symlink, PermissionsExt as _};
+
+    let dir = tempfile::tempdir().unwrap();
+    fs::set_permissions(dir.path(), fs::Permissions::from_mode(0o700)).unwrap();
+    let target = dir.path().join("target.json");
+    fs::write(&target, b"sentinel").unwrap();
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
+
+    let target_link = dir.path().join("connections.json");
+    symlink(&target, &target_link).unwrap();
+    assert!(safe_atomic_write_owner_file(&target_link, b"replacement").is_err());
+    assert_eq!(fs::read(&target).unwrap(), b"sentinel");
+
+    let real_parent = dir.path().join("real");
+    fs::create_dir(&real_parent).unwrap();
+    fs::set_permissions(&real_parent, fs::Permissions::from_mode(0o700)).unwrap();
+    let parent_link = dir.path().join("linked");
+    symlink(&real_parent, &parent_link).unwrap();
+    assert!(safe_atomic_write_owner_file(&parent_link.join("connections.json"), b"data").is_err());
+    assert!(!real_parent.join("connections.json").exists());
 }

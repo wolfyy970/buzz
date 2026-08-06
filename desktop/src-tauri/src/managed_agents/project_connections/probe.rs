@@ -60,13 +60,25 @@ fn inherited_test_env() -> BTreeMap<String, String> {
 fn recv_json_response(
     rx: &std::sync::mpsc::Receiver<ReaderMessage>,
     expected_id: u64,
+    cancellation: Option<&operation_lease::ScopeOperationLease>,
 ) -> Result<serde_json::Value, String> {
     let deadline = std::time::Instant::now() + TEST_TIMEOUT;
     loop {
+        if cancellation.is_some_and(operation_lease::ScopeOperationLease::is_cancelled) {
+            return Err(
+                "Buzz stopped testing this connection because the workspace changed.".to_string(),
+            );
+        }
         let remaining = deadline.saturating_duration_since(std::time::Instant::now());
-        let message = rx
-            .recv_timeout(remaining)
-            .map_err(|_| "The MCP server did not respond in time.".to_string())?;
+        if remaining.is_zero() {
+            return Err("The MCP server did not respond in time.".to_string());
+        }
+        let poll = remaining.min(Duration::from_millis(50));
+        let message = match rx.recv_timeout(poll) {
+            Ok(message) => message,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => ReaderMessage::Closed,
+        };
         let line = match message {
             ReaderMessage::Line(line) => line,
             ReaderMessage::Oversized => {
@@ -127,7 +139,14 @@ fn verify_saved_executable(connection: &StoredProjectConnection) -> Result<(), S
 fn probe_mcp_connection(
     connection: &StoredProjectConnection,
     secrets: &BTreeMap<String, String>,
+    cancellation: Option<&operation_lease::ScopeOperationLease>,
+    after_spawn: Option<&dyn Fn(u32)>,
 ) -> Result<Vec<String>, String> {
+    if cancellation.is_some_and(operation_lease::ScopeOperationLease::is_cancelled) {
+        return Err(
+            "Buzz stopped testing this connection because the workspace changed.".to_string(),
+        );
+    }
     verify_saved_executable(connection)?;
     let mut command = Command::new(&connection.command);
     command
@@ -147,6 +166,9 @@ fn probe_mcp_connection(
         .spawn()
         .map_err(|_| "Buzz could not start this MCP server.".to_string())?;
     let pid = child.id();
+    if let Some(after_spawn) = after_spawn {
+        after_spawn(pid);
+    }
     let Some(stdout) = child.stdout.take() else {
         let _ = stop_child(&mut child, pid);
         return Err("Buzz could not read from this MCP server.".to_string());
@@ -188,7 +210,7 @@ fn probe_mcp_connection(
         writeln!(stdin, "{initialize}")
             .and_then(|_| stdin.flush())
             .map_err(|_| "Buzz could not initialize this MCP server.".to_string())?;
-        let initialized = recv_json_response(&rx, 1)?;
+        let initialized = recv_json_response(&rx, 1, cancellation)?;
         if initialized.get("protocolVersion").is_none() {
             return Err("The MCP server did not complete initialization.".to_string());
         }
@@ -215,7 +237,7 @@ fn probe_mcp_connection(
         })
         .and_then(|_| stdin.flush())
         .map_err(|_| "Buzz could not inspect this MCP server.".to_string())?;
-        let tools_result = recv_json_response(&rx, 2)?;
+        let tools_result = recv_json_response(&rx, 2, cancellation)?;
         let tools = tools_result
             .get("tools")
             .and_then(serde_json::Value::as_array)
@@ -261,21 +283,21 @@ fn tool_capability_id(connection_id: &str, tool: &str) -> String {
     format!("mcp.tool.{connection_id}.{tool}")
 }
 
-pub fn test_project_connection(
+pub(crate) fn test_project_connection_at(
     app: &AppHandle,
-    project_scope: &ProjectConnectionScope,
+    captured_scope: &CapturedProjectConnectionScope,
     connection_id: &str,
 ) -> Result<ProjectConnection, String> {
-    let project_scope = validate_project_scope_for_app(app, project_scope)?;
+    let project_scope = captured_scope.project.clone();
     let _probe_guard = try_lock_project_connection_probe()?;
     let connection = {
         let _guard = lock_project_connections();
-        let store = load_store_unlocked(app, &project_scope)?;
+        let store = load_store_unlocked(app, captured_scope)?;
         find_connection(&store, &project_scope, connection_id)?.clone()
     };
     if let Err(error) = verify_saved_executable(&connection) {
         let _guard = lock_project_connections();
-        let mut store = load_store_unlocked(app, &project_scope)?;
+        let mut store = load_store_unlocked(app, captured_scope)?;
         if let Some(current) = store.connections.iter_mut().find(|candidate| {
             candidate.id == connection.id
                 && candidate.project_scope == project_scope
@@ -287,15 +309,15 @@ pub fn test_project_connection(
                 last_verified_at: None,
                 detail: Some("Executable approval is out of date.".to_string()),
             };
-            save_store_unlocked(app, &project_scope, &store)?;
+            save_store_unlocked(app, captured_scope, &store)?;
         }
         return Err(error);
     }
-    let secrets = match load_secrets(app, &connection) {
+    let secrets = match load_secrets(app, captured_scope, &connection) {
         Ok(secrets) => secrets,
         Err(error) => {
             let _guard = lock_project_connections();
-            let mut store = load_store_unlocked(app, &project_scope)?;
+            let mut store = load_store_unlocked(app, captured_scope)?;
             if let Some(current) = store.connections.iter_mut().find(|candidate| {
                 candidate.id == connection.id
                     && candidate.project_scope == project_scope
@@ -307,14 +329,15 @@ pub fn test_project_connection(
                     last_verified_at: None,
                     detail: Some("Saved credentials are unavailable.".to_string()),
                 };
-                save_store_unlocked(app, &project_scope, &store)?;
+                save_store_unlocked(app, captured_scope, &store)?;
             }
             return Err(error);
         }
     };
-    let result = probe_mcp_connection(&connection, &secrets);
+    captured_scope.operation.check_active()?;
+    let result = probe_mcp_connection(&connection, &secrets, Some(&captured_scope.operation), None);
     let _guard = lock_project_connections();
-    let mut store = load_store_unlocked(app, &project_scope)?;
+    let mut store = load_store_unlocked(app, captured_scope)?;
     let index = store
         .connections
         .iter()
@@ -340,7 +363,7 @@ pub fn test_project_connection(
                 detail: None,
             };
             let updated = connection.clone();
-            save_store_unlocked(app, &project_scope, &store)?;
+            save_store_unlocked(app, captured_scope, &store)?;
             Ok(updated.into())
         }
         Err(error) => {
@@ -349,7 +372,7 @@ pub fn test_project_connection(
                 last_verified_at: None,
                 detail: Some(safe_health_detail(&error)),
             };
-            save_store_unlocked(app, &project_scope, &store)?;
+            save_store_unlocked(app, captured_scope, &store)?;
             Err(error)
         }
     }
@@ -402,9 +425,65 @@ mod tests {
         )]);
 
         assert_eq!(
-            probe_mcp_connection(&connection, &secrets).unwrap(),
+            probe_mcp_connection(&connection, &secrets, None, None).unwrap(),
             ["analytics.weekly_summary"]
         );
+    }
+
+    #[test]
+    fn workspace_revocation_cancels_and_drains_a_running_probe() {
+        let node = super::super::super::resolve_command("node")
+            .expect("Hermit must provide Node for desktop tests");
+        let args = vec![
+            "-e".to_string(),
+            "process.stdin.resume(); setInterval(() => {}, 1000);".to_string(),
+        ];
+        let executable_sha256 =
+            approved_execution_sha256(&executable_sha256(&node).unwrap(), &args).unwrap();
+        let connection = StoredProjectConnection {
+            id: "c".repeat(32),
+            project_scope: ProjectConnectionScope {
+                relay_url: "ws://127.0.0.1:3000".to_string(),
+                operator_pubkey: "a".repeat(64),
+                project_address: format!("30621:{}:portable-agents", "a".repeat(64)),
+            },
+            name: "Hanging fixture".to_string(),
+            provider: "Buzz test fixture".to_string(),
+            capability_ids: Vec::new(),
+            command: node.to_string_lossy().to_string(),
+            args,
+            env_keys: Vec::new(),
+            discovered_tools: Vec::new(),
+            health: ProjectConnectionHealth::default(),
+            executable_sha256,
+            generation: next_generation(),
+            credential_generation: next_generation(),
+            created_at: now_iso(),
+            updated_at: now_iso(),
+        };
+        let coordinator = Arc::new(operation_lease::ScopeOperationCoordinator::default());
+        let lease = coordinator.acquire(42).unwrap();
+        let (spawned_tx, spawned_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            probe_mcp_connection(
+                &connection,
+                &BTreeMap::new(),
+                Some(&lease),
+                Some(&|pid| {
+                    spawned_tx.send(pid).unwrap();
+                }),
+            )
+        });
+        let _pid = spawned_rx.recv_timeout(Duration::from_secs(2)).unwrap();
+
+        let started = std::time::Instant::now();
+        coordinator.cancel_and_drain(42);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "workspace switching waited for the full probe timeout"
+        );
+        let error = worker.join().unwrap().unwrap_err();
+        assert!(error.contains("workspace changed"), "{error}");
     }
 
     #[test]

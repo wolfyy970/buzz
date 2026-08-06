@@ -21,13 +21,14 @@ export const Route = createFileRoute("/projects/$projectId")({
     issueId: typeof search.issueId === "string" ? search.issueId : undefined,
     repositoryId:
       typeof search.repositoryId === "string" ? search.repositoryId : undefined,
+    tab: search.tab === "connections" ? ("connections" as const) : undefined,
   }),
 });
 
 function ProjectDetailRouteComponent() {
   usePreviewFeatureWarning("projects");
   const { projectId } = Route.useParams();
-  const { commitHash, pullRequestId, issueId, repositoryId } =
+  const { commitHash, pullRequestId, issueId, repositoryId, tab } =
     Route.useSearch();
 
   return (
@@ -38,6 +39,7 @@ function ProjectDetailRouteComponent() {
         projectId={projectId}
         pullRequestId={pullRequestId}
         repositoryId={repositoryId}
+        tab={tab}
       />
     </React.Suspense>
   );

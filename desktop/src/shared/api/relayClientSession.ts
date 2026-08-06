@@ -68,7 +68,7 @@ import {
 import { closeWebSocket } from "@/shared/api/relayWebSocketClose";
 import { AuthOkTracker } from "@/shared/api/relayAuthPolicy";
 import { buildThreadReferenceTags } from "@/features/messages/lib/threading";
-
+import { assertExpectedRelay } from "@/shared/api/relayScopeGuard";
 export class RelayClient {
   private wsId: number | null = null;
   private relayUrl: string | null = null;
@@ -299,7 +299,6 @@ export class RelayClient {
     parentEventId?: string | null,
     rootEventId?: string | null,
   ) {
-    // Disconnected: not worth triggering a reconnect for ephemeral typing.
     if (this.wsId === null) {
       return;
     }
@@ -313,7 +312,6 @@ export class RelayClient {
       ),
     });
 
-    // Fire-and-forget: no need to wait for relay acknowledgement.
     void this.sendRaw(["EVENT", event]).catch(() => {});
   }
 
@@ -709,9 +707,10 @@ export class RelayClient {
     event: RelayEvent,
     timeoutMessage: string,
     sendErrorMessage: string,
+    expectedRelayUrl?: string,
   ) {
-    // Await the gate before sending EVENT; op timeout starts after the wait.
     await waitForRateLimit();
+    await assertExpectedRelay(expectedRelayUrl, this.relayUrl);
 
     return new Promise<RelayEvent>((resolve, reject) => {
       const timeout = window.setTimeout(() => {
@@ -736,6 +735,7 @@ export class RelayClient {
 
         try {
           await this.ensureConnected();
+          await assertExpectedRelay(expectedRelayUrl, this.relayUrl);
           if (!pendingEvent) {
             throw normalizedError;
           }
@@ -877,7 +877,6 @@ export class RelayClient {
     const buffer = this.eventBuffer;
     this.eventBuffer = [];
 
-    // Re-lookup: subscriptions removed during batch window are intentionally skipped.
     for (const { subId, event } of buffer) {
       const subscription = this.subscriptions.get(subId);
       if (subscription?.mode === "live") {

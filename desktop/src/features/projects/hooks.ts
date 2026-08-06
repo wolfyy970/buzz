@@ -14,7 +14,6 @@ import {
   listProjectLocalRepositories,
 } from "@/shared/api/projectGit";
 import {
-  KIND_DELETION,
   KIND_GIT_ISSUE,
   KIND_GIT_PATCH,
   KIND_GIT_PR_UPDATE,
@@ -65,6 +64,7 @@ import {
   fetchProjectEventsExhaustively,
 } from "./projectEnumeration";
 import { projectMatchesRouteId } from "./projectRoutes";
+import { deleteProject } from "./projectDeletion";
 
 export type {
   Project,
@@ -167,10 +167,6 @@ export async function fetchProjects(
     kinds: number[],
   ) => Promise<RelayEvent[]> = fetchProjectEventsExhaustively,
 ): Promise<Project[]> {
-  // Delegates to `buildProjectsFromFetcher` in `projectEnumeration.ts`, which
-  // is the pure, Tauri-free core of this operation. That helper's javadoc
-  // explains the fail-closed tombstone contract and the NIP-OA owner-deletion
-  // relay-side-suppression decision.
   return buildProjectsFromFetcher(fetchExhaustively, {
     relayOrigin: getCachedRelayOrigin(),
     hiddenAddresses: new Set(readHiddenProjectCards()),
@@ -597,25 +593,6 @@ async function fetchProjectActivitySummaries(
         } satisfies ProjectActivitySummary,
       ];
     }),
-  );
-}
-
-async function deleteProject(project: Project): Promise<void> {
-  const identity = await getIdentity();
-  if (identity.pubkey.toLowerCase() !== project.owner.toLowerCase()) {
-    throw new Error("Only the project owner can delete this project.");
-  }
-
-  const event = await signRelayEvent({
-    kind: KIND_DELETION,
-    content: `Delete project ${project.name}`,
-    tags: [["a", project.projectAddress]],
-  });
-
-  await relayClient.publishEvent(
-    event,
-    "Timed out deleting project.",
-    "Failed to delete project.",
   );
 }
 

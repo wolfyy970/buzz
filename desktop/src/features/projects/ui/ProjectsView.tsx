@@ -14,6 +14,7 @@ import {
   useProjectsQuery,
   useProjectsWorkItemsQuery,
 } from "@/features/projects/hooks";
+import { ProjectHasConnectionsError } from "@/features/projects/projectDeletionGuard";
 import { useRepositoryActivitySummariesQuery } from "@/features/projects/repositoryActivityHooks";
 import { useCreateProjectMutation } from "@/features/projects/useCreateProject";
 import { selectProjectRepository } from "@/features/projects/projectModels";
@@ -570,12 +571,24 @@ export function ProjectsView() {
         await deleteProjectMutation.mutateAsync(project);
         toast.success("Project deleted");
       } catch (error) {
+        if (error instanceof ProjectHasConnectionsError) {
+          toast.warning(error.message, {
+            action: {
+              label: "View connections",
+              onClick: () => {
+                void goProject(project.id, { tab: "connections" });
+              },
+            },
+            duration: Number.POSITIVE_INFINITY,
+          });
+          return;
+        }
         toast.error(
           error instanceof Error ? error.message : "Failed to delete project",
         );
       }
     },
-    [deleteProjectMutation],
+    [deleteProjectMutation, goProject],
   );
 
   if (projectsQuery.isLoading) {

@@ -100,6 +100,11 @@ pub struct AppState {
     /// Every agent command fails closed on `None` — no legacy-root fallback.
     /// Layer 2 commit epoch (no `.await` while `managed_agents_store_lock` held).
     pub active_agent_scope: Mutex<Option<WorkspaceAgentScope>>,
+    /// Per-generation leases for Project connection operations. Workspace
+    /// transitions revoke and drain the old generation before publishing the
+    /// new active scope, without holding `workspace_transition` across probes.
+    pub project_connection_operations:
+        crate::managed_agents::project_connections::ScopeOperationCoordinator,
     /// Set when the boot-time Phase 2 reset attempted a wipe but verification
     /// failed. The sentinel is preserved so the next relaunch retries. All
     /// identity-dependent setup is skipped; the frontend shows a reset-failed
@@ -219,6 +224,7 @@ pub fn build_app_state() -> AppState {
         identity_mutation: AsyncMutex::new(()),
         workspace_transition: AsyncMutex::new(()),
         active_agent_scope: Mutex::new(None),
+        project_connection_operations: Default::default(),
         managed_agents_store_lock: Mutex::new(()),
         channel_templates_store_lock: Mutex::new(()),
         managed_agent_processes: Mutex::new(HashMap::new()),

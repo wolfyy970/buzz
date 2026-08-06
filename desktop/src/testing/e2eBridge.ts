@@ -267,6 +267,7 @@ type E2eConfig = {
     projectConnectionTestDelayMs?: number;
     projectConnectionTestError?: string;
     projectConnectionDeleteError?: string;
+    projectConnectionBulkDeleteFailures?: number;
     /** Result returned by the mocked `add_agent_to_huddle` command. */
     addAgentToHuddleResult?: {
       ephemeral_added: boolean;
@@ -1323,6 +1324,31 @@ declare global {
     __BUZZ_E2E_RELEASE_CHANNELS_READ__?: () => number;
     /** Number of channel reads currently held by the seam. */
     __BUZZ_E2E_CHANNELS_READ_PENDING__?: number;
+    /** Hold the next Project connection test until explicitly released. */
+    __BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_TEST__?: () => void;
+    /** Release the held Project connection test, if any. */
+    __BUZZ_E2E_RELEASE_PROJECT_CONNECTION_TEST__?: () => number;
+    /** Number of Project connection tests currently held by the seam. */
+    __BUZZ_E2E_PROJECT_CONNECTION_TEST_PENDING__?: number;
+    /** Number of Project connection test UI handlers that fully settled. */
+    __BUZZ_E2E_PROJECT_CONNECTION_TEST_UI_SETTLED__?: number;
+    /** Hold the next Project connection create until explicitly released. */
+    __BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_SAVE__?: () => void;
+    /** Release the held Project connection create, if any. */
+    __BUZZ_E2E_RELEASE_PROJECT_CONNECTION_SAVE__?: () => number;
+    /** Number of Project connection creates currently held by the seam. */
+    __BUZZ_E2E_PROJECT_CONNECTION_SAVE_PENDING__?: number;
+    /** Number of Project connection save UI handlers that fully settled. */
+    __BUZZ_E2E_PROJECT_CONNECTION_SAVE_UI_SETTLED__?: number;
+    /** Hold the next Project connection delete until explicitly released. */
+    __BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_DELETE__?: () => void;
+    /** Release the held Project connection delete, if any. */
+    __BUZZ_E2E_RELEASE_PROJECT_CONNECTION_DELETE__?: () => number;
+    /** Number of Project connection deletes currently held by the seam. */
+    __BUZZ_E2E_PROJECT_CONNECTION_DELETE_PENDING__?: number;
+    /** Number of Project connection delete UI handlers that fully settled. */
+    __BUZZ_E2E_PROJECT_CONNECTION_DELETE_UI_SETTLED__?: number;
+    __BUZZ_E2E_PROJECT_CONNECTION_BULK_DELETE_ATTEMPTS__?: number;
   }
 }
 
@@ -1428,6 +1454,12 @@ type DeferredGetEvent = {
 let deferredGetEventQueue: DeferredGetEvent[] = [];
 let deferNextChannelsRead = false;
 let deferredChannelsReadResolve: (() => void) | null = null;
+let deferNextProjectConnectionTest = false;
+let deferredProjectConnectionTestResolve: (() => void) | null = null;
+let deferNextProjectConnectionSave = false;
+let deferredProjectConnectionSaveResolve: (() => void) | null = null;
+let deferNextProjectConnectionDelete = false;
+let deferredProjectConnectionDeleteResolve: (() => void) | null = null;
 
 const mockDisplayNames = new Map<string, string>([
   [MOCK_IDENTITY_PUBKEY, DEFAULT_MOCK_IDENTITY.display_name],
@@ -2971,6 +3003,7 @@ const realSockets = new Map<number, WebSocket>();
 let mockManagedAgents: MockManagedAgent[] = [];
 let mockManagedAgentRuntimes: MockManagedAgentRuntimeRow[] = [];
 let mockProjectConnections: ProjectConnection[] = [];
+let remainingProjectConnectionBulkDeleteFailures = 0;
 
 function projectConnectionScopesEqual(
   left: ProjectConnection["projectScope"],
@@ -3027,6 +3060,14 @@ async function handleCreateProjectConnection(
   },
   config?: E2eConfig,
 ) {
+  const deferred = deferNextProjectConnectionSave;
+  deferNextProjectConnectionSave = false;
+  if (deferred) {
+    await new Promise<void>((resolve) => {
+      deferredProjectConnectionSaveResolve = resolve;
+      window.__BUZZ_E2E_PROJECT_CONNECTION_SAVE_PENDING__ = 1;
+    });
+  }
   const delayMs = config?.mock?.projectConnectionSaveDelayMs ?? 0;
   if (delayMs > 0) {
     await new Promise((resolve) => window.setTimeout(resolve, delayMs));
@@ -3119,6 +3160,14 @@ async function handleTestProjectConnection(
   },
   config?: E2eConfig,
 ) {
+  const deferred = deferNextProjectConnectionTest;
+  deferNextProjectConnectionTest = false;
+  if (deferred) {
+    await new Promise<void>((resolve) => {
+      deferredProjectConnectionTestResolve = resolve;
+      window.__BUZZ_E2E_PROJECT_CONNECTION_TEST_PENDING__ = 1;
+    });
+  }
   const delayMs = config?.mock?.projectConnectionTestDelayMs ?? 0;
   if (delayMs > 0) {
     await new Promise((resolve) => window.setTimeout(resolve, delayMs));
@@ -3154,13 +3203,21 @@ async function handleTestProjectConnection(
   return cloneProjectConnection(connection);
 }
 
-function handleDeleteProjectConnection(
+async function handleDeleteProjectConnection(
   args: {
     projectScope: ProjectConnection["projectScope"];
     connectionId: string;
   },
   config?: E2eConfig,
 ) {
+  const deferred = deferNextProjectConnectionDelete;
+  deferNextProjectConnectionDelete = false;
+  if (deferred) {
+    await new Promise<void>((resolve) => {
+      deferredProjectConnectionDeleteResolve = resolve;
+      window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_PENDING__ = 1;
+    });
+  }
   if (config?.mock?.projectConnectionDeleteError) {
     throw new Error(config.mock.projectConnectionDeleteError);
   }
@@ -5662,9 +5719,13 @@ function isMockProjectScopedEvent(event: RelayEvent): boolean {
   const hasRepoAddressTag = event.tags.some(
     (tag) => tag[0] === "a" && (tag[1] ?? "").startsWith("30617:"),
   );
+  const hasProjectAddressTag = event.tags.some(
+    (tag) => tag[0] === "a" && (tag[1] ?? "").startsWith("30621:"),
+  );
   return (
-    (event.kind === KIND_REPO_ANNOUNCEMENT || hasRepoAddressTag) &&
-    (event.kind === 1 || MOCK_PROJECT_KINDS.has(event.kind))
+    ((event.kind === KIND_REPO_ANNOUNCEMENT || hasRepoAddressTag) &&
+      (event.kind === 1 || MOCK_PROJECT_KINDS.has(event.kind))) ||
+    (event.kind === KIND_DELETION && hasProjectAddressTag)
   );
 }
 
@@ -10116,6 +10177,9 @@ export function maybeInstallE2eTauriMocks() {
   resetMockRelayAgents(config);
   resetMockManagedAgents(config);
   resetMockProjectConnections(config);
+  remainingProjectConnectionBulkDeleteFailures =
+    config.mock?.projectConnectionBulkDeleteFailures ?? 0;
+  window.__BUZZ_E2E_PROJECT_CONNECTION_BULK_DELETE_ATTEMPTS__ = 0;
   resetMockPersonas(config);
   resetMockTeams(config);
   seedMockSearchProfiles(config);
@@ -10285,6 +10349,18 @@ export function maybeInstallE2eTauriMocks() {
   deferNextChannelsRead = false;
   deferredChannelsReadResolve = null;
   window.__BUZZ_E2E_CHANNELS_READ_PENDING__ = 0;
+  deferNextProjectConnectionTest = false;
+  deferredProjectConnectionTestResolve = null;
+  window.__BUZZ_E2E_PROJECT_CONNECTION_TEST_PENDING__ = 0;
+  window.__BUZZ_E2E_PROJECT_CONNECTION_TEST_UI_SETTLED__ = 0;
+  deferNextProjectConnectionSave = false;
+  deferredProjectConnectionSaveResolve = null;
+  window.__BUZZ_E2E_PROJECT_CONNECTION_SAVE_PENDING__ = 0;
+  window.__BUZZ_E2E_PROJECT_CONNECTION_SAVE_UI_SETTLED__ = 0;
+  deferNextProjectConnectionDelete = false;
+  deferredProjectConnectionDeleteResolve = null;
+  window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_PENDING__ = 0;
+  window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_UI_SETTLED__ = 0;
   window.__BUZZ_E2E_DEFER_NEXT_CHANNELS_READ__ = () => {
     if (deferredChannelsReadResolve) {
       throw new Error("a channel read is already deferred");
@@ -10296,6 +10372,48 @@ export function maybeInstallE2eTauriMocks() {
     const resolve = deferredChannelsReadResolve;
     deferredChannelsReadResolve = null;
     window.__BUZZ_E2E_CHANNELS_READ_PENDING__ = 0;
+    resolve?.();
+    return resolve ? 1 : 0;
+  };
+  window.__BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_TEST__ = () => {
+    if (deferredProjectConnectionTestResolve) {
+      throw new Error("a Project connection test is already deferred");
+    }
+    deferNextProjectConnectionTest = true;
+  };
+  window.__BUZZ_E2E_RELEASE_PROJECT_CONNECTION_TEST__ = () => {
+    deferNextProjectConnectionTest = false;
+    const resolve = deferredProjectConnectionTestResolve;
+    deferredProjectConnectionTestResolve = null;
+    window.__BUZZ_E2E_PROJECT_CONNECTION_TEST_PENDING__ = 0;
+    resolve?.();
+    return resolve ? 1 : 0;
+  };
+  window.__BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_SAVE__ = () => {
+    if (deferredProjectConnectionSaveResolve) {
+      throw new Error("a Project connection save is already deferred");
+    }
+    deferNextProjectConnectionSave = true;
+  };
+  window.__BUZZ_E2E_RELEASE_PROJECT_CONNECTION_SAVE__ = () => {
+    deferNextProjectConnectionSave = false;
+    const resolve = deferredProjectConnectionSaveResolve;
+    deferredProjectConnectionSaveResolve = null;
+    window.__BUZZ_E2E_PROJECT_CONNECTION_SAVE_PENDING__ = 0;
+    resolve?.();
+    return resolve ? 1 : 0;
+  };
+  window.__BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_DELETE__ = () => {
+    if (deferredProjectConnectionDeleteResolve) {
+      throw new Error("a Project connection delete is already deferred");
+    }
+    deferNextProjectConnectionDelete = true;
+  };
+  window.__BUZZ_E2E_RELEASE_PROJECT_CONNECTION_DELETE__ = () => {
+    deferNextProjectConnectionDelete = false;
+    const resolve = deferredProjectConnectionDeleteResolve;
+    deferredProjectConnectionDeleteResolve = null;
+    window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_PENDING__ = 0;
     resolve?.();
     return resolve ? 1 : 0;
   };
@@ -11916,6 +12034,27 @@ export function maybeInstallE2eTauriMocks() {
           payload as Parameters<typeof handleDeleteProjectConnection>[0],
           activeConfig,
         );
+      case "delete_project_connections_for_project": {
+        window.__BUZZ_E2E_PROJECT_CONNECTION_BULK_DELETE_ATTEMPTS__ =
+          (window.__BUZZ_E2E_PROJECT_CONNECTION_BULK_DELETE_ATTEMPTS__ ?? 0) +
+          1;
+        if (remainingProjectConnectionBulkDeleteFailures > 0) {
+          remainingProjectConnectionBulkDeleteFailures -= 1;
+          throw new Error("Keyring unavailable.");
+        }
+        const projectScope = (
+          payload as { projectScope: ProjectConnection["projectScope"] }
+        ).projectScope;
+        const before = mockProjectConnections.length;
+        mockProjectConnections = mockProjectConnections.filter(
+          (connection) =>
+            !projectConnectionScopesEqual(
+              connection.projectScope,
+              projectScope,
+            ),
+        );
+        return before - mockProjectConnections.length;
+      }
       case "get_channels": {
         // Claim the one-shot before starting the read, then hold only that
         // invocation's completion. Later reads pass through and cannot join it.
@@ -12794,6 +12933,7 @@ export function maybeInstallE2eTauriMocks() {
             (payload as { tags: string[][] }).tags,
             DEFAULT_MOCK_IDENTITY.pubkey,
             (payload as { createdAt?: number }).createdAt,
+            mockEventId(),
           ),
         );
       case "nip44_encrypt_to_self":

@@ -342,6 +342,16 @@ async fn apply_workspace_body(
                 }
             };
 
+            // Revoke and drain old-scope Project connection operations before
+            // publishing the new scope. Credentialed probes observe the
+            // cancellation lease and terminate their child process group;
+            // short keyring/file operations finish before this returns.
+            if let Some(scope) = pre_switch_scope.as_ref() {
+                state
+                    .project_connection_operations
+                    .cancel_and_drain(scope.generation);
+            }
+
             // ── Infallible commit: all guards held, no .await, no I/O ─────────
             *override_guard = Some(relay_url.clone());
             drop(override_guard);
@@ -395,6 +405,10 @@ async fn apply_workspace_body(
     // The workspace HAS switched. Post-commit failures surface as degradation
     // on the applied result — we never pretend the old scope survived.
     let mut degraded: Vec<String> = Vec::new();
+
+    crate::managed_agents::project_connections::reconcile_project_connections_on_scope_activation(
+        &restore_app,
+    );
 
     // Nest context reflects the active scope's agents.md — regenerate now that
     // the scope is committed. Best-effort; agents run fine with a stale AGENTS.md.

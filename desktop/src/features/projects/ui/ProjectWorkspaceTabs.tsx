@@ -130,6 +130,7 @@ export function WorkspaceTabs({
   localSnapshotLoading,
   initialSelectedTab = "overview",
   project,
+  projectName,
   projectScope,
   projectScopeLoading,
   projectId,
@@ -171,6 +172,7 @@ export function WorkspaceTabs({
   localSnapshotLoading: boolean;
   initialSelectedTab?: string;
   project: Repository;
+  projectName: string;
   projectScope: ProjectConnectionScope | null;
   projectScopeLoading?: boolean;
   projectId: string;
@@ -558,7 +560,11 @@ export function WorkspaceTabs({
       </TabsContent>
       <TabsContent className="m-0" value="connections">
         {projectScope ? (
-          <ProjectConnectionsPanel projectScope={projectScope} />
+          <ProjectConnectionsPanel
+            key={`${projectScope.relayUrl}\0${projectScope.operatorPubkey}\0${projectScope.projectAddress}`}
+            projectName={projectName}
+            projectScope={projectScope}
+          />
         ) : (
           <ProjectConnectionScopeUnavailable
             loading={Boolean(projectScopeLoading)}

@@ -67,6 +67,12 @@ async function captureVisible(page: Page, subject: Locator, filename: string) {
   });
 }
 
+async function scrollDialogToTop(dialog: Locator) {
+  await dialog.evaluate((element) => {
+    element.parentElement?.scrollTo({ top: 0 });
+  });
+}
+
 async function openProject(page: Page, projectSlug = "buzz") {
   await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.getByTestId("open-projects-view").click();
@@ -86,11 +92,56 @@ async function openConnections(page: Page) {
   await expect(page.getByTestId("project-connections-panel")).toBeVisible();
 }
 
+async function switchToEmptyProject(page: Page, force = false) {
+  if (force) {
+    await page
+      .getByTestId("open-projects-view")
+      .evaluate((element: HTMLElement) => element.click());
+    await expect(
+      page.getByRole("heading", { name: "Projects", exact: true }),
+    ).toBeVisible();
+    await page
+      .getByRole("button", { name: "View Empty Project", exact: true })
+      .click();
+    const panel = page.getByTestId("project-connections-panel");
+    await expect(panel).toContainText("No connections yet");
+    return panel;
+  }
+  await page.getByTestId("open-projects-view").click({ force });
+  await page.getByTestId("projects-section-projects").click({ force });
+  await page
+    .locator(
+      '[data-testid="project-card-empty"], [data-testid="project-row-empty"]',
+    )
+    .first()
+    .click({ force });
+  const panel = page.getByTestId("project-connections-panel");
+  await expect(panel).toContainText("No connections yet");
+  return panel;
+}
+
+async function switchToRepositoryProject(page: Page, projectSlug = "buzz") {
+  await page.getByTestId("open-projects-view").click();
+  await page.getByTestId("projects-section-projects").click();
+  await page
+    .locator(
+      `[data-testid="project-card-${projectSlug}"], [data-testid="project-row-${projectSlug}"]`,
+    )
+    .first()
+    .click();
+  await page.getByRole("tab", { name: "Connections", exact: true }).click();
+  const panel = page.getByTestId("project-connections-panel");
+  await expect(panel).toBeVisible();
+  return panel;
+}
+
 test.describe("Project Connections screenshots", () => {
   test.use({ viewport: { width: 1280, height: 900 } });
 
   test.beforeEach(async ({ page }, testInfo) => {
     const zeroRepositoryProject = testInfo.title.includes("zero repositories");
+    const seedZeroRepositoryProject =
+      zeroRepositoryProject || testInfo.title.includes("scope switch");
     await page.addInitScript(
       ({ identityPubkey, seedZeroRepositoryProject }) => {
         window.localStorage.setItem(
@@ -116,12 +167,15 @@ test.describe("Project Connections screenshots", () => {
       },
       {
         identityPubkey: DEFAULT_MOCK_PUBKEY,
-        seedZeroRepositoryProject: zeroRepositoryProject,
+        seedZeroRepositoryProject,
       },
     );
     const staleApproval = testInfo.title.includes("stale approval");
     const multipleRows = testInfo.title.includes("only the tested row");
     const manyTools = testInfo.title.includes("all discovered tools");
+    const exactWorkspaceCleanup = testInfo.title.includes(
+      "exact workspace cleanup",
+    );
     const primaryConnection = connectionFixture(
       staleApproval
         ? {
@@ -148,6 +202,11 @@ test.describe("Project Connections screenshots", () => {
       projectConnectionDeleteError: testInfo.title.includes("delete failure")
         ? "Keyring unavailable."
         : undefined,
+      projectConnectionBulkDeleteFailures: testInfo.title.includes(
+        "partial deletion recovery",
+      )
+        ? 1
+        : undefined,
       projectConnectionSaveDelayMs: testInfo.title.includes("pending save")
         ? 500
         : undefined,
@@ -170,8 +229,163 @@ test.describe("Project Connections screenshots", () => {
               }),
             ]
           : []),
+        ...(exactWorkspaceCleanup
+          ? [
+              connectionFixture({
+                id: "connection-same-project-workspace-b",
+                name: "Workspace B analytics",
+                projectScope: {
+                  ...PROJECT_SCOPE,
+                  relayUrl: "wss://relay-b.example",
+                },
+              }),
+            ]
+          : []),
       ],
     });
+  });
+
+  test("exact workspace cleanup preserves the same Project in workspace B", async ({
+    page,
+  }) => {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    const counts = await page.evaluate(async () => {
+      const invoke = window.__BUZZ_E2E_INVOKE_MOCK_COMMAND__;
+      if (!invoke) throw new Error("mock command bridge unavailable");
+      await invoke("delete_project_connections_for_project", {
+        projectScope: {
+          relayUrl: "ws://localhost:3000",
+          operatorPubkey: "deadbeef".repeat(8),
+          projectAddress: `30621:${"deadbeef".repeat(8)}:buzz`,
+        },
+      });
+      const workspaceA = (await invoke("list_project_connections", {
+        projectScope: {
+          relayUrl: "ws://localhost:3000",
+          operatorPubkey: "deadbeef".repeat(8),
+          projectAddress: `30621:${"deadbeef".repeat(8)}:buzz`,
+        },
+      })) as unknown[];
+      const workspaceB = (await invoke("list_project_connections", {
+        projectScope: {
+          relayUrl: "wss://relay-b.example",
+          operatorPubkey: "deadbeef".repeat(8),
+          projectAddress: `30621:${"deadbeef".repeat(8)}:buzz`,
+        },
+      })) as unknown[];
+      return { workspaceA: workspaceA.length, workspaceB: workspaceB.length };
+    });
+    expect(counts).toEqual({ workspaceA: 0, workspaceB: 1 });
+  });
+
+  test("partial deletion recovery persists and retries local cleanup", async ({
+    page,
+  }) => {
+    await page.goto("/", { waitUntil: "domcontentloaded" });
+    await page.getByTestId("open-projects-view").click();
+    await page.getByTestId("projects-section-projects").click();
+    await page.getByRole("button", { name: "More options for buzz" }).click();
+    await page.getByRole("menuitem", { name: "Delete project" }).click();
+    await page.getByTestId("project-delete-confirm-button-buzz").click();
+
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            window.__BUZZ_E2E_SIGNED_EVENTS__?.filter(
+              (event) => event.kind === 5,
+            ).length ?? 0,
+        ),
+      )
+      .toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            window.__BUZZ_E2E_PROJECT_CONNECTION_BULK_DELETE_ATTEMPTS__ ?? 0,
+        ),
+      )
+      .toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            JSON.parse(
+              window.localStorage.getItem(
+                "buzz.projects.pending-connection-cleanup.v1",
+              ) ?? "[]",
+            ).length,
+        ),
+      )
+      .toBe(1);
+    const pending = await page.evaluate(() =>
+      JSON.parse(
+        window.localStorage.getItem(
+          "buzz.projects.pending-connection-cleanup.v1",
+        ) ?? "[]",
+      ),
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0].state).toBe("published");
+
+    const retry = page.getByRole("button", { name: "Retry cleanup" });
+    await expect(retry).toBeVisible();
+    await retry.click();
+    await expect(
+      page.getByText("Local connection cleanup finished."),
+    ).toBeVisible();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            JSON.parse(
+              window.localStorage.getItem(
+                "buzz.projects.pending-connection-cleanup.v1",
+              ) ?? "[]",
+            ).length,
+        ),
+      )
+      .toBe(0);
+  });
+
+  test("names the exact Project and community scope accessibly", async ({
+    page,
+  }) => {
+    await openConnections(page);
+
+    const panel = page.getByTestId("project-connections-panel");
+    await panel.getByRole("button", { name: "Add connection" }).click();
+    const addDialog = page.getByRole("dialog", {
+      name: "Add Project connection to Buzz",
+    });
+    await expect(addDialog).toHaveAccessibleDescription(
+      /buzz in E2E Test at ws:\/\/localhost:3000.*credentials stay on this device/,
+    );
+    const addScope = addDialog.getByRole("group", {
+      name: "Connection scope",
+    });
+    await expect(addScope).toContainText("Project");
+    await expect(addScope.getByText("buzz", { exact: true })).toBeVisible();
+    await expect(addScope).toContainText("Community");
+    await expect(addScope).toContainText("E2E Test");
+    await expect(addScope).toContainText("Relay");
+    await expect(addScope).toContainText("ws://localhost:3000");
+    await expect(addScope).toContainText("Credentials");
+    await expect(addScope).toContainText("Stay on this device");
+    await addDialog.getByRole("button", { name: "Cancel" }).click();
+
+    await panel.getByRole("button", { name: "Edit Google Analytics" }).click();
+    const editDialog = page.getByRole("dialog", {
+      name: "Edit Google Analytics for Buzz",
+    });
+    await expect(editDialog).toHaveAccessibleDescription(
+      /Edit this Project connection in E2E Test at ws:\/\/localhost:3000.*credentials stay on this device/,
+    );
+    await expect(
+      editDialog
+        .getByRole("group", { name: "Connection scope" })
+        .getByText("buzz", { exact: true }),
+    ).toBeVisible();
   });
 
   test("covers setup, verification, and removal", async ({ page }) => {
@@ -203,7 +417,7 @@ test.describe("Project Connections screenshots", () => {
 
     await panel.getByRole("button", { name: "Add connection" }).click();
     const setup = page.getByRole("dialog", {
-      name: "Add Project connection",
+      name: "Add Project connection to Buzz",
     });
     await setup.getByLabel("Connection name").fill("Issue tracker");
     await setup.getByLabel("Service").fill("Linear");
@@ -219,7 +433,13 @@ test.describe("Project Connections screenshots", () => {
     await setup
       .getByLabel(/I trust this executable and the arguments above/)
       .check();
-    await capture(page, setup, "02-add-connection.png");
+    await scrollDialogToTop(setup);
+    await expect(
+      setup.getByRole("heading", {
+        name: "Add Project connection to Buzz",
+      }),
+    ).toBeInViewport();
+    await captureVisible(page, setup, "02-add-connection.png");
     await setup.getByRole("button", { name: "Save and test" }).click();
     const issueTrackerRow = panel
       .locator('[data-testid^="project-connection-"]')
@@ -233,7 +453,9 @@ test.describe("Project Connections screenshots", () => {
     await analyticsRow
       .getByRole("button", { name: "Edit Google Analytics" })
       .click();
-    const edit = page.getByRole("dialog", { name: "Google Analytics" });
+    const edit = page.getByRole("dialog", {
+      name: "Edit Google Analytics for Buzz",
+    });
     await edit
       .getByLabel("Connection command")
       .fill("/opt/homebrew/bin/analytics-connector-v2");
@@ -270,7 +492,9 @@ test.describe("Project Connections screenshots", () => {
     await panel
       .getByRole("button", { name: "Review command Google Analytics" })
       .click();
-    const dialog = page.getByRole("dialog", { name: "Google Analytics" });
+    const dialog = page.getByRole("dialog", {
+      name: "Edit Google Analytics for Buzz",
+    });
     await expect(
       dialog.getByLabel(/I trust this executable and the arguments above/),
     ).toBeVisible();
@@ -379,7 +603,7 @@ test.describe("Project Connections screenshots", () => {
       .click();
 
     const dialog = page.getByRole("dialog", {
-      name: "Add Project connection",
+      name: "Add Project connection to Buzz",
     });
     await expect
       .poll(() =>
@@ -426,7 +650,7 @@ test.describe("Project Connections screenshots", () => {
       .getByRole("button", { name: "Add connection" })
       .click();
     const dialog = page.getByRole("dialog", {
-      name: "Add Project connection",
+      name: "Add Project connection to Buzz",
     });
     await dialog.getByLabel("Connection name").fill("Linear");
     await dialog.getByLabel("Service").fill("Linear");
@@ -455,7 +679,7 @@ test.describe("Project Connections screenshots", () => {
       .getByRole("button", { name: "Add connection" })
       .click();
     const dialog = page.getByRole("dialog", {
-      name: "Add Project connection",
+      name: "Add Project connection to Buzz",
     });
     const submit = dialog.getByRole("button", { name: "Save and test" });
     await expect(submit).toBeDisabled();
@@ -538,6 +762,220 @@ test.describe("Project Connections screenshots", () => {
     ).toBeEnabled();
   });
 
+  test("scope switch ignores a pending test from the previous Project", async ({
+    page,
+  }) => {
+    await openConnections(page);
+    await page.evaluate(() => {
+      window.__BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_TEST__?.();
+    });
+    const panel = page.getByTestId("project-connections-panel");
+    await panel
+      .getByRole("button", { name: "Test again Google Analytics" })
+      .click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_TEST_PENDING__ ?? 0,
+        ),
+      )
+      .toBe(1);
+
+    const emptyPanel = await switchToEmptyProject(page);
+    expect(
+      await page.evaluate(
+        () => window.__BUZZ_E2E_RELEASE_PROJECT_CONNECTION_TEST__?.() ?? 0,
+      ),
+    ).toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_TEST_UI_SETTLED__ ?? 0,
+        ),
+      )
+      .toBe(1);
+    await expect(
+      page.getByText("Tools found for Google Analytics."),
+    ).toHaveCount(0);
+    await expect(emptyPanel).not.toContainText("Google Analytics");
+  });
+
+  test("scope switch stops a pending save before its automatic test", async ({
+    page,
+  }) => {
+    await openConnections(page);
+    const panel = page.getByTestId("project-connections-panel");
+    await panel.getByRole("button", { name: "Add connection" }).click();
+    const dialog = page.getByRole("dialog", {
+      name: "Add Project connection to Buzz",
+    });
+    await dialog.getByLabel("Connection name").fill("Issue tracker");
+    await dialog.getByLabel("Service").fill("Linear");
+    await dialog.getByLabel("Connection command").fill("/usr/bin/true");
+    await dialog
+      .getByLabel(/I trust this executable and the arguments above/)
+      .check();
+    await page.evaluate(() => {
+      window.__BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_SAVE__?.();
+    });
+    await dialog.getByRole("button", { name: "Save and test" }).click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_SAVE_PENDING__ ?? 0,
+        ),
+      )
+      .toBe(1);
+
+    const emptyPanel = await switchToEmptyProject(page, true);
+    expect(
+      await page.evaluate(
+        () => window.__BUZZ_E2E_RELEASE_PROJECT_CONNECTION_SAVE__?.() ?? 0,
+      ),
+    ).toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_SAVE_UI_SETTLED__ ?? 0,
+        ),
+      )
+      .toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_TEST_UI_SETTLED__ ?? 0,
+        ),
+      )
+      .toBe(0);
+    await expect(page.getByText("Tools found for Issue tracker.")).toHaveCount(
+      0,
+    );
+    await expect(emptyPanel).not.toContainText("Issue tracker");
+
+    const restoredPanel = await switchToRepositoryProject(page);
+    const issueTrackerRow = restoredPanel
+      .locator('[data-testid^="project-connection-"]')
+      .filter({ hasText: "Issue tracker" });
+    await expect(issueTrackerRow).toContainText("Not tested");
+    await expect(issueTrackerRow).toContainText("Automatic test interrupted");
+    await expect(issueTrackerRow).toContainText(
+      "Setup was saved, but its automatic test did not run.",
+    );
+    await expect(
+      issueTrackerRow.getByRole("button", { name: "Test Issue tracker" }),
+    ).toBeEnabled();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            JSON.parse(
+              window.localStorage.getItem(
+                "buzz.projects.pending-connection-automatic-tests.v1",
+              ) ?? "[]",
+            ).length,
+        ),
+      )
+      .toBe(1);
+
+    await issueTrackerRow
+      .getByRole("button", { name: "Test Issue tracker" })
+      .click();
+    await expect(issueTrackerRow).toContainText("Tools found");
+    await expect(issueTrackerRow).not.toContainText(
+      "Automatic test interrupted",
+    );
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () =>
+            JSON.parse(
+              window.localStorage.getItem(
+                "buzz.projects.pending-connection-automatic-tests.v1",
+              ) ?? "[]",
+            ).length,
+        ),
+      )
+      .toBe(0);
+  });
+
+  test("scope switch ignores a pending successful delete", async ({ page }) => {
+    await openConnections(page);
+    const panel = page.getByTestId("project-connections-panel");
+    await panel
+      .getByRole("button", { name: "Remove Google Analytics" })
+      .click();
+    await page.evaluate(() => {
+      window.__BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_DELETE__?.();
+    });
+    await page
+      .getByRole("alertdialog", { name: "Remove Google Analytics?" })
+      .getByRole("button", { name: "Remove connection" })
+      .click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_PENDING__ ?? 0,
+        ),
+      )
+      .toBe(1);
+
+    const emptyPanel = await switchToEmptyProject(page, true);
+    expect(
+      await page.evaluate(
+        () => window.__BUZZ_E2E_RELEASE_PROJECT_CONNECTION_DELETE__?.() ?? 0,
+      ),
+    ).toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_UI_SETTLED__ ?? 0,
+        ),
+      )
+      .toBe(1);
+    await expect(page.getByText("Google Analytics removed.")).toHaveCount(0);
+    await expect(emptyPanel).not.toContainText("Google Analytics");
+  });
+
+  test("scope switch ignores a pending delete failure", async ({ page }) => {
+    await openConnections(page);
+    const panel = page.getByTestId("project-connections-panel");
+    await panel
+      .getByRole("button", { name: "Remove Google Analytics" })
+      .click();
+    await page.evaluate(() => {
+      window.__BUZZ_E2E_DEFER_NEXT_PROJECT_CONNECTION_DELETE__?.();
+    });
+    await page
+      .getByRole("alertdialog", { name: "Remove Google Analytics?" })
+      .getByRole("button", { name: "Remove connection" })
+      .click();
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_PENDING__ ?? 0,
+        ),
+      )
+      .toBe(1);
+
+    const emptyPanel = await switchToEmptyProject(page, true);
+    expect(
+      await page.evaluate(
+        () => window.__BUZZ_E2E_RELEASE_PROJECT_CONNECTION_DELETE__?.() ?? 0,
+      ),
+    ).toBe(1);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          () => window.__BUZZ_E2E_PROJECT_CONNECTION_DELETE_UI_SETTLED__ ?? 0,
+        ),
+      )
+      .toBe(1);
+    await expect(
+      page.getByText(/Couldn't remove Google Analytics/),
+    ).toHaveCount(0);
+    await expect(emptyPanel).not.toContainText("Google Analytics");
+  });
+
   test("a Project with zero repositories can create and test a connection", async ({
     page,
   }) => {
@@ -548,7 +986,7 @@ test.describe("Project Connections screenshots", () => {
     await expect(panel).toContainText("No connections yet");
     await panel.getByRole("button", { name: "Add connection" }).first().click();
     const dialog = page.getByRole("dialog", {
-      name: "Add Project connection",
+      name: "Add Project connection to Empty Project",
     });
     await dialog.getByLabel("Connection name").fill("Linear");
     await dialog.getByLabel("Service").fill("Linear");

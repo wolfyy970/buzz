@@ -88,6 +88,7 @@ type ProjectDetailScreenProps = {
   pullRequestId?: string;
   issueId?: string;
   repositoryId?: string;
+  tab?: "connections";
 };
 
 const PROJECT_DETAIL_PANEL_SEARCH_KEYS = [
@@ -103,7 +104,8 @@ const PROJECT_REPOSITORY_SEARCH_KEYS = [
 ] as const;
 
 export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
-  const { commitHash, projectId, pullRequestId, issueId, repositoryId } = props;
+  const { commitHash, projectId, pullRequestId, issueId, repositoryId, tab } =
+    props;
   const { goChannel, goProject, goProjects } = useAppNavigation();
   const { activeCommunity } = useCommunities();
   const mainInsetRef = useMainInsetRef();
@@ -176,12 +178,10 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
     () => setSelectedCommitHash(commitHash ?? null),
     [commitHash],
   );
-  // Bumped when breadcrumb navigation should land on the project Overview
-  // tab; remounts WorkspaceTabs, which owns the selected-tab state.
   const [tabsResetKey, setTabsResetKey] = React.useState(0);
   // Mirror of the WorkspaceTabs selection so the breadcrumb can name the
   // active sub-tab. The Overview (readme) tab is "home" and gets no crumb.
-  const [activeTab, setActiveTab] = React.useState("overview");
+  const [activeTab, setActiveTab] = React.useState(tab ?? "overview");
   // Commit, PR, and issue details are mutually exclusive views, so opening
   // one clears the others.
   const handleSelectedPullRequestIdChange = React.useCallback(
@@ -904,7 +904,6 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                   />
                 </div>
               </section>
-
               <WorkspaceTabs
                 key={`${project.id}:${repository.id}:${tabsResetKey}`}
                 commitDiff={commitDiffQuery.data}
@@ -952,6 +951,7 @@ export function ProjectDetailScreen(props: ProjectDetailScreenProps) {
                 onSelectedTabChange={setActiveTab}
                 profiles={profiles}
                 project={repository}
+                projectName={project.name}
                 projectScope={projectConnectionScope}
                 projectScopeLoading={identityQuery.isPending}
                 projectId={project.id}

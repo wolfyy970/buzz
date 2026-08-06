@@ -1,18 +1,15 @@
 import {
   ChevronDown,
-  KeyRound,
   Link2,
   LoaderCircle,
-  Pencil,
   Plus,
-  RefreshCw,
   Trash2,
-  Wrench,
   XCircle,
 } from "lucide-react";
 import * as React from "react";
 import { toast } from "sonner";
 
+import { useCommunities } from "@/features/communities/useCommunities";
 import {
   useCreateProjectConnectionMutation,
   useDeleteProjectConnectionMutation,
@@ -20,12 +17,24 @@ import {
   useTestProjectConnectionMutation,
   useUpdateProjectConnectionMutation,
 } from "@/features/projects/projectConnectionHooks";
+import {
+  clearPendingProjectConnectionAutomaticTest,
+  pendingProjectConnectionAutomaticTestIds,
+  recordPendingProjectConnectionAutomaticTest,
+} from "@/features/projects/projectConnectionAutomaticTest";
 import type {
   ProjectConnection,
   ProjectConnectionDraft,
-  ProjectConnectionHealthStatus,
 } from "@/shared/api/tauriProjectConnections";
 import type { ProjectConnectionScope } from "@/shared/api/projectConnectionTypes";
+import {
+  markE2EProjectConnectionSettled,
+  useMountedRef,
+} from "./projectConnectionLifecycle";
+import {
+  ProjectConnectionRow,
+  projectConnectionNeedsEditing,
+} from "./ProjectConnectionRow";
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -54,42 +63,7 @@ import {
 } from "./projectPanelStyles";
 import { buildProjectConnectionSecretChanges } from "./projectConnectionSecrets";
 
-const HEALTH_COPY: Record<
-  ProjectConnectionHealthStatus,
-  { label: string; className: string }
-> = {
-  ready: {
-    label: "Tools found",
-    className: "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300",
-  },
-  not_tested: {
-    label: "Not tested",
-    className: "bg-muted text-muted-foreground",
-  },
-  check_needed: {
-    label: "Check needed",
-    className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  },
-  approval_required: {
-    label: "Approval required",
-    className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  },
-  sign_in_required: {
-    label: "Sign-in required",
-    className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  },
-  missing_access: {
-    label: "Missing access",
-    className: "bg-amber-500/10 text-amber-700 dark:text-amber-300",
-  },
-  unavailable: {
-    label: "Unavailable",
-    className: "bg-destructive/10 text-destructive",
-  },
-};
-
 type SecretRow = { id: string; key: string; value: string };
-const TOOL_PREVIEW_LIMIT = 4;
 const MAX_NAME_BYTES = 128;
 const MAX_PROVIDER_BYTES = 64;
 const MAX_COMMAND_BYTES = 1024;
@@ -104,73 +78,18 @@ function emptySecretRow(): SecretRow {
   return { id: crypto.randomUUID(), key: "", value: "" };
 }
 
-function toolLabel(tool: string) {
-  return tool
-    .replaceAll("_", " ")
-    .replace(/\b\w/g, (letter) => letter.toUpperCase());
-}
-
-function connectionNeedsEditing(connection: ProjectConnection) {
-  return (
-    connection.health.status === "sign_in_required" ||
-    connection.health.status === "missing_access" ||
-    connection.health.status === "approval_required" ||
-    (connection.health.status === "unavailable" &&
-      connection.health.detail === "Buzz could not start this MCP server.")
-  );
-}
-
-function connectionActionLabel(connection: ProjectConnection) {
-  if (connection.health.status === "sign_in_required") {
-    return "Update sign-in";
-  }
-  if (connection.health.status === "missing_access") {
-    return "Update credentials";
-  }
-  if (connection.health.status === "approval_required") {
-    return "Review command";
-  }
-  if (
-    connection.health.status === "unavailable" &&
-    connection.health.detail === "Buzz could not start this MCP server."
-  ) {
-    return "Review setup";
-  }
-  return connection.health.status === "not_tested" ? "Test" : "Test again";
-}
-
-function formatVerificationTime(timestamp: string | null) {
-  if (!timestamp) return "Never tested";
-  const date = new Date(timestamp);
-  return Number.isNaN(date.valueOf())
-    ? "Last test unavailable"
-    : `Tested ${date.toLocaleString()}`;
-}
-
-function ConnectionHealthBadge({
-  status,
-}: {
-  status: ProjectConnectionHealthStatus;
-}) {
-  const copy = HEALTH_COPY[status];
-  return (
-    <span
-      className={`inline-flex items-center rounded-full px-2 py-0.5 text-2xs font-medium ${copy.className}`}
-    >
-      {copy.label}
-    </span>
-  );
-}
-
 function ConnectionDialog({
+  communityName,
   connection,
   onOpenChange,
   onSave,
   onTest,
   open,
   pending,
+  projectName,
   projectScope,
 }: {
+  communityName: string;
   connection: ProjectConnection | null;
   onOpenChange: (open: boolean) => void;
   onSave: (
@@ -179,6 +98,7 @@ function ConnectionDialog({
   onTest: (connection: ProjectConnection) => Promise<void>;
   open: boolean;
   pending: boolean;
+  projectName: string;
   projectScope: ProjectConnectionScope;
 }) {
   const [name, setName] = React.useState("");
@@ -191,6 +111,7 @@ function ConnectionDialog({
   const [trusted, setTrusted] = React.useState(false);
   const [executionDirty, setExecutionDirty] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const mounted = useMountedRef();
 
   React.useEffect(() => {
     if (!open) {
@@ -219,7 +140,7 @@ function ConnectionDialog({
     setRemovedEnvKeys([]);
     setShowTechnicalDetails(Boolean(connection));
     setTrusted(false);
-    setExecutionDirty(!connection || connectionNeedsEditing(connection));
+    setExecutionDirty(!connection || projectConnectionNeedsEditing(connection));
     setError(null);
   }, [connection, open]);
 
@@ -281,16 +202,24 @@ function ConnectionDialog({
         removeEnvKeys: secretChanges.removeEnvKeys,
         executionAcknowledged: requiresApproval ? trusted : false,
       });
+      if (requiresApproval) {
+        recordPendingProjectConnectionAutomaticTest(saved);
+      }
+      if (!mounted.current) return;
       onOpenChange(false);
       if (requiresApproval) {
+        clearPendingProjectConnectionAutomaticTest(projectScope, saved.id);
         await onTest(saved);
       }
     } catch (cause) {
+      if (!mounted.current) return;
       setError(
         cause instanceof Error
           ? cause.message
           : "Couldn't save this connection. Check the details and try again.",
       );
+    } finally {
+      markE2EProjectConnectionSettled("save");
     }
   }
 
@@ -305,14 +234,37 @@ function ConnectionDialog({
         <form onSubmit={handleSubmit}>
           <DialogHeader>
             <DialogTitle>
-              {connection?.name ?? "Add Project connection"}
+              {connection
+                ? `Edit ${connection.name} for ${projectName}`
+                : `Add Project connection to ${projectName}`}
             </DialogTitle>
             <DialogDescription>
               {connection
-                ? "Edit this Project connection. It applies across every repository in the Project; its credentials stay on this device."
-                : "Connect an MCP server to this Project. The connection applies across every repository; its credentials stay on this device."}
+                ? "Change how this connection runs and what it can access."
+                : "Set up an MCP server and review its access before saving."}
             </DialogDescription>
           </DialogHeader>
+          <fieldset className="mt-4 grid gap-x-4 gap-y-2 border-border/60 border-y py-3 text-xs sm:grid-cols-[auto_minmax(0,1fr)]">
+            <legend className="sr-only">Connection scope</legend>
+            <dl className="contents">
+              <dt className="font-medium text-muted-foreground">Project</dt>
+              <dd className="min-w-0 font-medium text-foreground">
+                {projectName}
+              </dd>
+              <dt className="font-medium text-muted-foreground">Community</dt>
+              <dd className="min-w-0 text-foreground">{communityName}</dd>
+              <dt className="font-medium text-muted-foreground">Relay</dt>
+              <dd className="min-w-0 break-all font-mono text-foreground">
+                {projectScope.relayUrl}
+              </dd>
+              <dt className="font-medium text-muted-foreground">Applies to</dt>
+              <dd className="min-w-0 text-foreground">
+                Every repository in {projectName}
+              </dd>
+              <dt className="font-medium text-muted-foreground">Credentials</dt>
+              <dd className="min-w-0 text-foreground">This device only</dd>
+            </dl>
+          </fieldset>
           <div className="space-y-4 py-5">
             <div className="space-y-1.5">
               <label
@@ -626,154 +578,18 @@ function ConnectionDialog({
   );
 }
 
-function ConnectionRow({
-  connection,
-  onEdit,
-  onRemove,
-  onTest,
-  testPending,
-  testing,
-}: {
-  connection: ProjectConnection;
-  onEdit: () => void;
-  onRemove: () => void;
-  onTest: () => void;
-  testPending: boolean;
-  testing: boolean;
-}) {
-  const recoveryNeedsEdit = connectionNeedsEditing(connection);
-  const [showAllTools, setShowAllTools] = React.useState(false);
-  const visibleTools = showAllTools
-    ? connection.discoveredTools
-    : connection.discoveredTools.slice(0, TOOL_PREVIEW_LIMIT);
-  const hiddenToolCount = Math.max(
-    0,
-    connection.discoveredTools.length - TOOL_PREVIEW_LIMIT,
-  );
-  const actionLabel = connectionActionLabel(connection);
-
-  return (
-    <div
-      aria-busy={testing || undefined}
-      className="flex min-w-0 flex-wrap items-start gap-3 px-4 py-3"
-      data-testid={`project-connection-${connection.id}`}
-    >
-      <Wrench className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
-      <div className="min-w-0 flex-1 basis-64 space-y-2">
-        <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <p
-            className="min-w-0 truncate text-sm font-medium text-foreground"
-            title={connection.name}
-          >
-            {connection.name}
-          </p>
-          <ConnectionHealthBadge status={connection.health.status} />
-        </div>
-        <div className="space-y-0.5">
-          <p
-            className="truncate text-xs text-muted-foreground"
-            title={connection.provider}
-          >
-            {connection.provider}
-          </p>
-          <p
-            aria-live="polite"
-            className="text-xs text-muted-foreground"
-            role="status"
-          >
-            {testing
-              ? `Testing ${connection.name}…`
-              : formatVerificationTime(connection.health.lastVerifiedAt)}
-          </p>
-          {connection.health.detail ? (
-            <p className="text-xs text-muted-foreground">
-              {connection.health.detail}
-            </p>
-          ) : null}
-        </div>
-        {visibleTools.length > 0 ? (
-          <div className="flex flex-wrap items-center gap-1.5">
-            {visibleTools.map((tool) => (
-              <span
-                className="max-w-48 truncate rounded-md bg-muted px-2 py-1 text-2xs text-muted-foreground"
-                key={tool}
-                title={tool}
-              >
-                {toolLabel(tool)}
-              </span>
-            ))}
-            {hiddenToolCount > 0 ? (
-              <Button
-                aria-expanded={showAllTools}
-                className="h-6 px-1.5 text-2xs"
-                onClick={() => setShowAllTools((value) => !value)}
-                size="xs"
-                type="button"
-                variant="ghost"
-              >
-                {showAllTools ? "Show fewer" : `Show ${hiddenToolCount} more`}
-              </Button>
-            ) : null}
-          </div>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            {connection.health.status === "not_tested"
-              ? "Test this connection to discover its tools."
-              : "No tools are currently available."}
-          </p>
-        )}
-      </div>
-      <div className="ml-7 flex shrink-0 items-center gap-1 sm:ml-0">
-        <Button
-          aria-label={
-            testing
-              ? `Testing ${connection.name}`
-              : `${actionLabel} ${connection.name}`
-          }
-          disabled={testPending}
-          onClick={recoveryNeedsEdit ? onEdit : onTest}
-          size="sm"
-          variant="outline"
-        >
-          {testing ? (
-            <LoaderCircle className="h-4 w-4 animate-spin" />
-          ) : recoveryNeedsEdit ? (
-            <KeyRound className="h-4 w-4" />
-          ) : (
-            <RefreshCw className="h-4 w-4" />
-          )}
-          {testing ? "Testing…" : actionLabel}
-        </Button>
-        <Button
-          aria-label={`Edit ${connection.name}`}
-          disabled={testing}
-          onClick={onEdit}
-          size="icon-xs"
-          title={`Edit ${connection.name}`}
-          variant="ghost"
-        >
-          <Pencil className="h-4 w-4" />
-        </Button>
-        <Button
-          aria-label={`Remove ${connection.name}`}
-          disabled={testing}
-          onClick={onRemove}
-          size="icon-xs"
-          title={`Remove ${connection.name}`}
-          variant="ghost"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
-      </div>
-    </div>
-  );
-}
-
 export function ProjectConnectionsPanel({
+  projectName,
   projectScope,
 }: {
+  projectName: string;
   projectScope: ProjectConnectionScope;
 }) {
+  const { activeCommunity } = useCommunities();
+  const communityName =
+    activeCommunity?.relayUrl === projectScope.relayUrl
+      ? activeCommunity.name
+      : projectScope.relayUrl;
   const query = useProjectConnectionsQuery(projectScope);
   const createMutation = useCreateProjectConnectionMutation(projectScope);
   const updateMutation = useUpdateProjectConnectionMutation(projectScope);
@@ -785,6 +601,8 @@ export function ProjectConnectionsPanel({
     null,
   );
   const [removeError, setRemoveError] = React.useState<string | null>(null);
+  const scopeKey = `${projectScope.relayUrl}\0${projectScope.operatorPubkey}\0${projectScope.projectAddress}`;
+  const mounted = useMountedRef();
 
   function openAdd() {
     setEditing(null);
@@ -792,8 +610,10 @@ export function ProjectConnectionsPanel({
   }
 
   async function handleTest(connection: ProjectConnection) {
+    clearPendingProjectConnectionAutomaticTest(projectScope, connection.id);
     try {
       const tested = await testMutation.mutateAsync(connection.id);
+      if (!mounted.current) return;
       if (tested.health.status === "ready") {
         toast.success(`Tools found for ${connection.name}.`);
       } else {
@@ -802,31 +622,56 @@ export function ProjectConnectionsPanel({
         );
       }
     } catch (cause) {
+      if (!mounted.current) return;
       toast.error(
         cause instanceof Error
           ? `Couldn't test ${connection.name}: ${cause.message}`
           : `Couldn't test ${connection.name}. Check its details and try again.`,
       );
+    } finally {
+      markE2EProjectConnectionSettled("test");
     }
   }
 
   async function handleDelete() {
     if (!removing) return;
+    const removingConnection = removing;
     setRemoveError(null);
     try {
-      await deleteMutation.mutateAsync(removing.id);
-      toast.success(`${removing.name} removed.`);
+      await deleteMutation.mutateAsync(removingConnection.id);
+      if (!mounted.current) return;
+      toast.success(`${removingConnection.name} removed.`);
       setRemoving(null);
     } catch (cause) {
+      if (!mounted.current) return;
       setRemoveError(
         cause instanceof Error
-          ? `Couldn't remove ${removing.name}: ${cause.message}`
-          : `Couldn't remove ${removing.name}. Nothing was changed.`,
+          ? `Couldn't remove ${removingConnection.name}: ${cause.message}`
+          : `Couldn't remove ${removingConnection.name}. Nothing was changed.`,
       );
+    } finally {
+      markE2EProjectConnectionSettled("delete");
     }
   }
 
   const connections = query.data ?? [];
+  const pendingAutomaticTestIds =
+    pendingProjectConnectionAutomaticTestIds(projectScope);
+
+  React.useEffect(() => {
+    if (!query.data || query.isFetching) return;
+    const recordedConnectionIds =
+      pendingProjectConnectionAutomaticTestIds(projectScope);
+    const connectionsById = new Map(
+      query.data.map((connection) => [connection.id, connection]),
+    );
+    for (const connectionId of recordedConnectionIds) {
+      const connection = connectionsById.get(connectionId);
+      if (connection?.health.status !== "not_tested") {
+        clearPendingProjectConnectionAutomaticTest(projectScope, connectionId);
+      }
+    }
+  }, [projectScope, query.data, query.isFetching]);
 
   return (
     <>
@@ -843,7 +688,7 @@ export function ProjectConnectionsPanel({
                 Connections
               </h3>
               <p className="text-xs text-muted-foreground">
-                Connect MCP servers across this Project. Credentials stay on
+                Make tools available across this Project. Credentials stay on
                 this device.
               </p>
             </div>
@@ -895,7 +740,15 @@ export function ProjectConnectionsPanel({
         ) : (
           <div className="divide-y divide-border/50">
             {connections.map((connection) => (
-              <ConnectionRow
+              <ProjectConnectionRow
+                automaticTestInterrupted={
+                  connection.health.status === "not_tested" &&
+                  pendingAutomaticTestIds.has(connection.id) &&
+                  !(
+                    testMutation.isPending &&
+                    testMutation.variables === connection.id
+                  )
+                }
                 connection={connection}
                 key={connection.id}
                 onEdit={() => {
@@ -919,7 +772,9 @@ export function ProjectConnectionsPanel({
       </div>
 
       <ConnectionDialog
+        communityName={communityName}
         connection={editing}
+        key={scopeKey}
         onOpenChange={setDialogOpen}
         onSave={(input) =>
           input.id
@@ -932,6 +787,7 @@ export function ProjectConnectionsPanel({
         onTest={handleTest}
         open={dialogOpen}
         pending={createMutation.isPending || updateMutation.isPending}
+        projectName={projectName}
         projectScope={projectScope}
       />
 

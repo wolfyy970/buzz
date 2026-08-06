@@ -221,6 +221,12 @@ type MockBridgeOptions = {
   };
   managedAgents?: MockManagedAgentSeed[];
   projectConnections?: ProjectConnection[];
+  projectConnectionSaveDelayMs?: number;
+  projectConnectionTestDelayMs?: number;
+  projectConnectionTestError?: string;
+  projectConnectionDeleteError?: string;
+  /** Number of Project-wide connection cleanup attempts that fail before succeeding. */
+  projectConnectionBulkDeleteFailures?: number;
   /** Result returned by the mocked `add_agent_to_huddle` command. */
   addAgentToHuddleResult?: {
     ephemeral_added: boolean;

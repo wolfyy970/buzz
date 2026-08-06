@@ -45,7 +45,11 @@ export function ProjectWithoutRepositories({
             </p>
           </div>
           {connectionScope ? (
-            <ProjectConnectionsPanel projectScope={connectionScope} />
+            <ProjectConnectionsPanel
+              key={`${connectionScope.relayUrl}\0${connectionScope.operatorPubkey}\0${connectionScope.projectAddress}`}
+              projectName={project.name}
+              projectScope={connectionScope}
+            />
           ) : (
             <ProjectConnectionScopeUnavailable
               loading={connectionScopeLoading}
