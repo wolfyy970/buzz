@@ -605,6 +605,9 @@ async fn test_record_mesh_change_after_preflight_aborts_before_stop() {
         provider: Some("anthropic".to_string()), // initial provider — not relay-mesh
         persona_source_version: None,
         env_vars: record_env_vars,
+        project_scope: None,
+        pinned_tool_requirements: vec![],
+        connection_bindings: Default::default(),
         start_on_app_launch: false,
         auto_restart_on_config_change: false,
         runtime_pid: None,
@@ -664,6 +667,7 @@ async fn test_record_mesh_change_after_preflight_aborts_before_stop() {
         let process = crate::managed_agents::ManagedAgentProcess {
             child,
             log_path: std::path::PathBuf::new(),
+            project_mcp_config_path: None,
             spawn_config: crate::managed_agents::spawn_snapshot::prospective_spawn_config_snapshot(
                 &record,
                 &[],

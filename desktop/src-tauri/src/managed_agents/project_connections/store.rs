@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn is_lower_hex(value: &str, length: usize) -> bool {
+pub(super) fn is_lower_hex(value: &str, length: usize) -> bool {
     value.len() == length
         && value
             .bytes()
@@ -69,9 +69,11 @@ pub(super) fn validate_stored_connection(
             .last_verified_at
             .as_deref()
             .is_some_and(|value| chrono::DateTime::parse_from_rfc3339(value).is_err())
-        || connection.health.detail.as_deref().is_some_and(|detail| {
-            detail.len() > MAX_HEALTH_DETAIL_BYTES || detail.chars().any(char::is_control)
-        })
+        || connection
+            .health
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.len() > 4_096 || detail.chars().any(char::is_control))
         || (connection.health.status == ProjectConnectionHealthStatus::Ready
             && (connection.health.last_verified_at.is_none()
                 || connection.discovered_tools.is_empty()))
@@ -79,117 +81,4 @@ pub(super) fn validate_stored_connection(
         return Err("Project connection metadata is invalid.".to_string());
     }
     Ok(())
-}
-
-fn connection_store_path(
-    app: &AppHandle,
-    scope: &ProjectConnectionScope,
-) -> Result<PathBuf, String> {
-    Ok(workspace_connection_dir(app, scope)?.join("connections.json"))
-}
-
-pub(super) fn read_bounded_file(path: &Path, max_bytes: usize) -> std::io::Result<Vec<u8>> {
-    let file = fs::File::open(path)?;
-    let mut bytes = Vec::new();
-    file.take((max_bytes + 1) as u64).read_to_end(&mut bytes)?;
-    if bytes.len() > max_bytes {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "file exceeds size limit",
-        ));
-    }
-    Ok(bytes)
-}
-
-fn validate_store(
-    store: &ProjectConnectionStore,
-    scope: &ProjectConnectionScope,
-) -> Result<(), String> {
-    if store.version != CONNECTION_STORE_VERSION {
-        return Err(format!(
-            "unsupported Project connection store version {}",
-            store.version
-        ));
-    }
-    if store.connections.len() > MAX_CONNECTIONS {
-        return Err("Project connection store exceeds its connection limit".to_string());
-    }
-    let canonical_workspace = canonical_project_scope(scope)?;
-    let mut ids = BTreeSet::new();
-    for connection in &store.connections {
-        validate_stored_connection(connection)?;
-        if connection.project_scope.relay_url != canonical_workspace.relay_url
-            || connection.project_scope.operator_pubkey != canonical_workspace.operator_pubkey
-            || !ids.insert(connection.id.as_str())
-        {
-            return Err("Project connection metadata is invalid.".to_string());
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn load_store_unlocked(
-    app: &AppHandle,
-    scope: &ProjectConnectionScope,
-) -> Result<ProjectConnectionStore, String> {
-    let path = connection_store_path(app, scope)?;
-    reject_unsafe_owner_file(&path)?;
-    let bytes = match read_bounded_file(&path, MAX_CONNECTION_STORE_BYTES) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(ProjectConnectionStore::default());
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
-            return Err("Project connection store exceeds its size limit".to_string());
-        }
-        Err(error) => {
-            return Err(format!(
-                "failed to read Project connections from {}: {error}",
-                path.display()
-            ));
-        }
-    };
-    let store: ProjectConnectionStore = serde_json::from_slice(&bytes)
-        .map_err(|error| format!("failed to parse Project connections: {error}"))?;
-    validate_store(&store, scope)?;
-    Ok(store)
-}
-
-pub(super) fn save_store_unlocked(
-    app: &AppHandle,
-    scope: &ProjectConnectionScope,
-    store: &ProjectConnectionStore,
-) -> Result<(), String> {
-    validate_store(store, scope)?;
-    let path = connection_store_path(app, scope)?;
-    reject_unsafe_owner_file(&path)?;
-    let bytes = serde_json::to_vec_pretty(store)
-        .map_err(|error| format!("failed to serialize Project connections: {error}"))?;
-    if bytes.len() > MAX_CONNECTION_STORE_BYTES {
-        return Err("Project connection store exceeds its size limit".to_string());
-    }
-    atomic_write_json_restricted(&path, &bytes)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn store_rejects_duplicate_ids_and_cross_workspace_records() {
-        let connection = super::super::tests::stored_connection();
-        let duplicates = ProjectConnectionStore {
-            version: CONNECTION_STORE_VERSION,
-            connections: vec![connection.clone(), connection.clone()],
-        };
-        assert!(validate_store(&duplicates, &connection.project_scope).is_err());
-
-        let mut foreign = connection.clone();
-        foreign.project_scope.operator_pubkey = "f".repeat(64);
-        let store = ProjectConnectionStore {
-            version: CONNECTION_STORE_VERSION,
-            connections: vec![foreign],
-        };
-        assert!(validate_store(&store, &connection.project_scope).is_err());
-    }
 }

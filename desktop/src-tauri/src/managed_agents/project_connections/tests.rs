@@ -69,6 +69,26 @@ fn captured_scope_with_coordinator(
 }
 
 #[test]
+fn activation_removes_only_stale_connection_launch_files() {
+    let _generation_guard = super::super::scope::SCOPE_GENERATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let dir = tempfile::tempdir().unwrap();
+    let captured = captured_scope(dir.path(), super::super::scope::next_scope_generation());
+    let runtime = workspace_connection_dir(&captured).unwrap().join("runtime");
+    ensure_owner_only_directory(&runtime).unwrap();
+    let stale = runtime.join("agent-test-stale.json");
+    let unrelated = runtime.join("keep.txt");
+    atomic_write_json_restricted(&stale, b"{}").unwrap();
+    atomic_write_json_restricted(&unrelated, b"keep").unwrap();
+
+    remove_stale_agent_project_connection_configs(&captured).unwrap();
+
+    assert!(!stale.exists());
+    assert!(unrelated.exists());
+}
+
+#[test]
 fn scope_drain_does_not_deadlock_a_save_at_the_commit_fence() {
     use std::sync::{mpsc, Arc};
     use std::time::Duration;
@@ -378,15 +398,6 @@ fn stored_connection_revalidates_all_runtime_facing_fields() {
     let mut connection = stored_connection();
     connection.capability_ids = vec!["mcp.tool.different".to_string()];
     assert!(validate_stored_connection(&connection).is_err());
-}
-
-#[test]
-fn connection_store_size_is_bounded_before_deserialization() {
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("connections.json");
-    fs::write(&path, vec![b' '; MAX_CONNECTION_STORE_BYTES + 1]).unwrap();
-    let error = read_bounded_file(&path, MAX_CONNECTION_STORE_BYTES).unwrap_err();
-    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
 }
 
 #[test]

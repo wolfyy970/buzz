@@ -78,6 +78,9 @@ async fn test_full_tail_stop_spawn_receipt_register_save() {
         provider: Some("anthropic".to_string()),
         persona_source_version: None,
         env_vars: record_env_vars,
+        project_scope: None,
+        pinned_tool_requirements: vec![],
+        connection_bindings: Default::default(),
         start_on_app_launch: false,
         auto_restart_on_config_change: false,
         runtime_pid: None,
@@ -129,6 +132,7 @@ async fn test_full_tail_stop_spawn_receipt_register_save() {
         let process = crate::managed_agents::ManagedAgentProcess {
             child,
             log_path: std::path::PathBuf::new(),
+            project_mcp_config_path: None,
             spawn_config: crate::managed_agents::spawn_snapshot::prospective_spawn_config_snapshot(
                 &record,
                 &[],
@@ -176,6 +180,7 @@ async fn test_full_tail_stop_spawn_receipt_register_save() {
         source_team_persona_slug: None,
         catalog_source: None,
         env_vars: Default::default(),
+        tool_requirements: vec![],
         respond_to: None,
         respond_to_allowlist: Default::default(),
         parallelism: None,
@@ -287,6 +292,7 @@ async fn test_full_tail_stop_spawn_receipt_register_save() {
                 Ok(crate::managed_agents::ManagedAgentProcess {
                     child,
                     log_path: std::path::PathBuf::new(),
+                    project_mcp_config_path: None,
                     spawn_config:
                         crate::managed_agents::spawn_snapshot::prospective_spawn_config_snapshot(
                             rec,
@@ -516,6 +522,9 @@ async fn test_relay_mesh_preflight_precedes_stop() {
         provider: Some("anthropic".to_string()),
         persona_source_version: None,
         env_vars: record_env_vars,
+        project_scope: None,
+        pinned_tool_requirements: vec![],
+        connection_bindings: Default::default(),
         start_on_app_launch: false,
         auto_restart_on_config_change: false,
         runtime_pid: None,
@@ -562,6 +571,7 @@ async fn test_relay_mesh_preflight_precedes_stop() {
         let process = crate::managed_agents::ManagedAgentProcess {
             child,
             log_path: std::path::PathBuf::new(),
+            project_mcp_config_path: None,
             spawn_config: crate::managed_agents::spawn_snapshot::prospective_spawn_config_snapshot(
                 &agent_record,
                 &[],

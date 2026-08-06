@@ -179,8 +179,8 @@ fn complete_path(path: &std::path::Path) -> Result<(), String> {
     }
 }
 
-pub(super) fn reconcile(
-    app: &AppHandle,
+pub(super) fn reconcile<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     scope: &CapturedProjectConnectionScope,
     store: &ProjectConnectionStore,
 ) -> Result<(), String> {

@@ -207,8 +207,8 @@ pub(super) fn store_secrets_at_target(
     Ok(())
 }
 
-pub(super) fn load_secrets(
-    _app: &AppHandle,
+pub(super) fn load_secrets<R: tauri::Runtime>(
+    _app: &AppHandle<R>,
     scope: &CapturedProjectConnectionScope,
     connection: &StoredProjectConnection,
 ) -> Result<BTreeMap<String, String>, String> {
@@ -311,10 +311,13 @@ pub(super) fn validate_connection_input(
     args: &[String],
     env: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    if name.trim().is_empty() || name.len() > MAX_NAME_BYTES {
+    if name.trim().is_empty() || name.len() > MAX_NAME_BYTES || name.chars().any(char::is_control) {
         return Err("Give this connection a short name.".to_string());
     }
-    if provider.trim().is_empty() || provider.len() > MAX_PROVIDER_BYTES {
+    if provider.trim().is_empty()
+        || provider.len() > MAX_PROVIDER_BYTES
+        || provider.chars().any(char::is_control)
+    {
         return Err("Name the service this connection uses.".to_string());
     }
     if command.trim().is_empty()
@@ -335,10 +338,21 @@ pub(super) fn validate_connection_input(
         return Err("This connection has too many secret values.".to_string());
     }
     let mut total = 0usize;
+    let mut normalized_keys = BTreeSet::new();
     for (key, value) in env {
+        let display_key = key
+            .split(['=', '\n', '\r', '\0'])
+            .next()
+            .filter(|key| !key.is_empty())
+            .unwrap_or("This name");
         if !super::super::is_well_formed_env_key(key) || super::super::is_reserved_env_key(key) {
             return Err(format!(
-                "'{key}' cannot be used as a connection secret name."
+                "'{display_key}' cannot be used as a connection secret name."
+            ));
+        }
+        if !normalized_keys.insert(key.to_ascii_uppercase()) {
+            return Err(format!(
+                "'{display_key}' duplicates another connection secret name."
             ));
         }
         if value.is_empty() {

@@ -18,8 +18,8 @@ pub(super) struct CapturedCredentialTarget {
     pub(super) path: PathBuf,
 }
 
-pub(super) fn capture_credential_target(
-    app: &AppHandle,
+pub(super) fn capture_credential_target<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     scope: &CapturedProjectConnectionScope,
     connection_id: &str,
     credential_generation: &str,

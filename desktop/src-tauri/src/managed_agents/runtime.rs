@@ -506,10 +506,15 @@ pub(crate) fn spawn_agent_child_at<R: tauri::Runtime>(
     );
 
     let runtime_meta = super::known_acp_runtime(effective_command);
-    let _ = lazy; // lazy flag: not used for env setup, kept for API symmetry
-    let _ = agent_args;
-    let _ = resolved_agent_command;
-    let _ = resolved_mcp_command;
+    let legacy_mcp_command = resolved_mcp_command
+        .as_deref()
+        .map(|path| path.to_string_lossy().to_string());
+    let project_mcp_config_bytes =
+        super::project_connections::materialize_agent_project_connections(
+            app,
+            record,
+            legacy_mcp_command.as_deref(),
+        )?;
 
     let mut command = std::process::Command::new(&resolved_acp_command);
     if let Some(home) = super::default_agent_workdir() {
@@ -524,6 +529,18 @@ pub(crate) fn spawn_agent_child_at<R: tauri::Runtime>(
     command.env("RUST_LOG", child_rust_log_filter());
     command.env("BUZZ_PRIVATE_KEY", &record.private_key_nsec);
     command.env("BUZZ_RELAY_URL", &effective_relay_url);
+    command.env("BUZZ_ACP_LAZY_POOL", if lazy { "true" } else { "false" });
+    command.env("BUZZ_ACP_AGENT_COMMAND", &resolved_agent_command);
+    command.env("BUZZ_ACP_AGENT_ARGS", agent_args.join(","));
+    match &resolved_mcp_command {
+        Some(mcp_command) => command.env("BUZZ_ACP_MCP_COMMAND", mcp_command),
+        None => command.env("BUZZ_ACP_MCP_COMMAND", ""),
+    };
+    if let Some(scope) = record.project_scope.as_ref() {
+        command.env("BUZZ_ACP_CHANNELS", &scope.channel_id);
+    } else {
+        command.env_remove("BUZZ_ACP_CHANNELS");
+    }
 
     let spawned_setup_mode;
     {

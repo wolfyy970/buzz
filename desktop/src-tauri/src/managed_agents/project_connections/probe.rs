@@ -126,7 +126,6 @@ fn stop_child(child: &mut Child, pid: u32) -> Result<(), String> {
     })
 }
 
-#[cfg(test)]
 fn verify_saved_executable(connection: &StoredProjectConnection) -> Result<(), String> {
     let (canonical, executable_fingerprint) = canonical_connection_command(&connection.command)?;
     let fingerprint = approved_execution_sha256(&executable_fingerprint, &connection.args)?;
@@ -136,105 +135,105 @@ fn verify_saved_executable(connection: &StoredProjectConnection) -> Result<(), S
     Ok(())
 }
 
-fn approved_target_path(directory: &Path, connection: &StoredProjectConnection) -> PathBuf {
-    let base = format!("{}-{}", connection.id, connection.executable_sha256);
-    match Path::new(&connection.command)
-        .extension()
-        .and_then(|extension| extension.to_str())
-    {
-        Some(extension) if !extension.is_empty() => directory.join(format!("{base}.{extension}")),
-        _ => directory.join(base),
+pub(super) struct ApprovedExecutionTarget {
+    pub(super) command: PathBuf,
+    pub(super) args: Vec<String>,
+}
+
+fn approved_file_path(directory: &Path, stem: &str, source: &Path) -> PathBuf {
+    match source.extension().and_then(|extension| extension.to_str()) {
+        Some(extension) if !extension.is_empty() => directory.join(format!("{stem}.{extension}")),
+        _ => directory.join(stem),
     }
 }
 
-fn validate_existing_approved_target(
-    path: &Path,
+fn copy_approved_file(
+    source: &Path,
+    target: &Path,
     expected_sha256: &str,
-) -> Result<PathBuf, String> {
-    reject_unsafe_owner_file(path)?;
-    let actual = executable_sha256(path)?;
-    if actual != expected_sha256 {
-        return Err("Buzz refused a modified approved Project executable.".to_string());
-    }
-    fs::canonicalize(path)
-        .map_err(|error| format!("failed to resolve approved Project executable: {error}"))
-}
-
-fn prepare_approved_executable_in_dir(
-    directory: &Path,
-    connection: &StoredProjectConnection,
-) -> Result<PathBuf, String> {
-    let (canonical, mut source) = open_canonical_executable(&connection.command)?;
-    if canonical != connection.command {
-        return Err(EXECUTABLE_CHANGED_ERROR.to_string());
-    }
-    let target = approved_target_path(directory, connection);
+    executable: bool,
+) -> Result<(), String> {
     if target.exists() {
-        let source_sha256 = executable_sha256_file(&mut source)?;
-        if source_sha256 != connection.executable_sha256 {
-            return Err(EXECUTABLE_CHANGED_ERROR.to_string());
+        if executable_sha256(target)? == expected_sha256 {
+            return Ok(());
         }
-        return validate_existing_approved_target(&target, &connection.executable_sha256);
+        return Err("Buzz refused a modified approved Project file.".to_string());
     }
-
+    let mut source_file =
+        fs::File::open(source).map_err(|_| "Buzz could not read an approved Project file.")?;
     let mut options = fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        options.mode(0o500);
+        options.mode(if executable { 0o500 } else { 0o400 });
     }
-    let mut destination = options
-        .open(&target)
-        .map_err(|error| format!("failed to prepare approved Project executable: {error}"))?;
+    let mut target_file = options
+        .open(target)
+        .map_err(|error| format!("failed to prepare approved Project file: {error}"))?;
     let copied = (|| {
-        let mut digest = Sha256::new();
-        let mut buffer = [0u8; 64 * 1024];
-        loop {
-            let count = source
-                .read(&mut buffer)
-                .map_err(|_| "Buzz could not read this executable.".to_string())?;
-            if count == 0 {
-                break;
-            }
-            digest.update(&buffer[..count]);
-            destination.write_all(&buffer[..count]).map_err(|error| {
-                format!("failed to prepare approved Project executable: {error}")
-            })?;
-        }
-        let actual = hex::encode(digest.finalize());
-        if actual != connection.executable_sha256 {
-            return Err(EXECUTABLE_CHANGED_ERROR.to_string());
-        }
-        destination
+        std::io::copy(&mut source_file, &mut target_file)
+            .map_err(|error| format!("failed to prepare approved Project file: {error}"))?;
+        target_file
             .sync_all()
-            .map_err(|error| format!("failed to prepare approved Project executable: {error}"))?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt as _;
-            destination
-                .set_permissions(fs::Permissions::from_mode(0o500))
-                .map_err(|error| {
-                    format!("failed to protect approved Project executable: {error}")
-                })?;
+            .map_err(|error| format!("failed to protect approved Project file: {error}"))?;
+        if executable_sha256(target)? != expected_sha256 {
+            return Err(EXECUTABLE_CHANGED_ERROR.to_string());
         }
         Ok(())
     })();
-    drop(destination);
     if let Err(error) = copied {
-        let _ = fs::remove_file(&target);
+        let _ = fs::remove_file(target);
         return Err(error);
     }
-    validate_existing_approved_target(&target, &connection.executable_sha256)
+    Ok(())
 }
 
 pub(super) fn approved_execution_target(
-    app: &AppHandle,
+    captured_scope: &CapturedProjectConnectionScope,
     connection: &StoredProjectConnection,
-) -> Result<PathBuf, String> {
-    let directory = workspace_connection_dir(app, &connection.project_scope)?.join("approved");
+) -> Result<ApprovedExecutionTarget, String> {
+    verify_saved_executable(connection)?;
+    let directory = workspace_connection_dir(captured_scope)?
+        .join("approved")
+        .join(format!(
+            "{}-{}",
+            connection.id, connection.executable_sha256
+        ));
     ensure_owner_only_directory(&directory)?;
-    prepare_approved_executable_in_dir(&directory, connection)
+
+    let source_command = Path::new(&connection.command);
+    let command_sha256 = executable_sha256(source_command)?;
+    let approved_command = approved_file_path(&directory, "command", source_command);
+    copy_approved_file(source_command, &approved_command, &command_sha256, true)?;
+
+    let mut approved_args = Vec::with_capacity(connection.args.len());
+    for (index, argument) in connection.args.iter().enumerate() {
+        let (prefix, candidate) = argument
+            .split_once('=')
+            .map_or(("", argument.as_str()), |(key, value)| (key, value));
+        let source = Path::new(candidate);
+        if source.is_file() {
+            let canonical = fs::canonicalize(source)
+                .map_err(|_| "Buzz could not verify a file used by this connection.")?;
+            let expected = executable_sha256(&canonical)?;
+            let approved = approved_file_path(&directory, &format!("arg-{index}"), &canonical);
+            copy_approved_file(&canonical, &approved, &expected, false)?;
+            let approved = approved.to_string_lossy();
+            approved_args.push(if prefix.is_empty() {
+                approved.into_owned()
+            } else {
+                format!("{prefix}={approved}")
+            });
+        } else {
+            approved_args.push(argument.clone());
+        }
+    }
+    verify_saved_executable(connection)?;
+    Ok(ApprovedExecutionTarget {
+        command: approved_command,
+        args: approved_args,
+    })
 }
 
 fn probe_mcp_connection(
@@ -384,8 +383,8 @@ fn safe_health_detail(error: &str) -> String {
     }
 }
 
-fn tool_capability_id(connection_id: &str, tool: &str) -> String {
-    format!("mcp.tool.{connection_id}.{tool}")
+fn tool_capability_id(tool: &str) -> String {
+    format!("mcp.tool.{tool}")
 }
 
 pub(crate) fn test_project_connection_at(
@@ -458,10 +457,7 @@ pub(crate) fn test_project_connection_at(
     match result {
         Ok(tools) => {
             connection.discovered_tools = tools.clone();
-            connection.capability_ids = tools
-                .iter()
-                .map(|tool| tool_capability_id(&connection.id, tool))
-                .collect();
+            connection.capability_ids = tools.iter().map(|tool| tool_capability_id(tool)).collect();
             connection.health = ProjectConnectionHealth {
                 status: ProjectConnectionHealthStatus::Ready,
                 last_verified_at: Some(now_iso()),
@@ -492,33 +488,6 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
         Arc,
     };
-
-    fn stored_connection_for_test(
-        command: String,
-        executable_sha256: String,
-    ) -> StoredProjectConnection {
-        StoredProjectConnection {
-            id: "c".repeat(32),
-            project_scope: ProjectConnectionScope {
-                relay_url: "ws://127.0.0.1:3000".to_string(),
-                operator_pubkey: "a".repeat(64),
-                project_address: format!("30621:{}:portable-agents", "a".repeat(64)),
-            },
-            name: "Test".to_string(),
-            provider: "Fixture".to_string(),
-            capability_ids: Vec::new(),
-            command,
-            args: Vec::new(),
-            env_keys: Vec::new(),
-            discovered_tools: Vec::new(),
-            health: ProjectConnectionHealth::default(),
-            executable_sha256,
-            generation: next_generation(),
-            credential_generation: next_generation(),
-            created_at: now_iso(),
-            updated_at: now_iso(),
-        }
-    }
 
     #[test]
     fn synthetic_server_proves_initialize_and_tool_discovery() {
@@ -558,7 +527,15 @@ mod tests {
 
         assert_eq!(
             probe_mcp_connection(&connection, &secrets, None, None).unwrap(),
-            ["analytics.weekly_summary"]
+            ["analytics_weekly_summary"]
+        );
+    }
+
+    #[test]
+    fn discovered_tool_capability_is_portable_across_connections() {
+        assert_eq!(
+            tool_capability_id("analytics_weekly_summary"),
+            "mcp.tool.analytics_weekly_summary"
         );
     }
 
@@ -625,11 +602,8 @@ mod tests {
     }
 
     #[test]
-    fn capability_ids_distinguish_the_same_tool_on_different_connections() {
-        assert_ne!(
-            tool_capability_id("analytics", "run_report"),
-            tool_capability_id("warehouse", "run_report")
-        );
+    fn capability_ids_describe_the_tool_not_the_local_connection() {
+        assert_eq!(tool_capability_id("run_report"), "mcp.tool.run_report");
     }
 
     #[test]

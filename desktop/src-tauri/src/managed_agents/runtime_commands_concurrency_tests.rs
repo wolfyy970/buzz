@@ -63,6 +63,9 @@ fn test_compensate_drain_writer_vs_compensation_deterministic() {
         provider: None,
         persona_source_version: None,
         env_vars: Default::default(),
+        project_scope: None,
+        pinned_tool_requirements: vec![],
+        connection_bindings: Default::default(),
         start_on_app_launch: true,
         auto_restart_on_config_change: false,
         runtime_pid: None,
@@ -119,6 +122,7 @@ fn test_compensate_drain_writer_vs_compensation_deterministic() {
         let process = crate::managed_agents::ManagedAgentProcess {
             child,
             log_path: std::path::PathBuf::new(),
+            project_mcp_config_path: None,
             spawn_config: crate::managed_agents::spawn_snapshot::prospective_spawn_config_snapshot(
                 &initial_record,
                 &[],
@@ -311,6 +315,9 @@ fn test_compensate_drain_concurrent_start_is_blocked() {
         provider: None,
         persona_source_version: None,
         env_vars: Default::default(),
+        project_scope: None,
+        pinned_tool_requirements: vec![],
+        connection_bindings: Default::default(),
         start_on_app_launch: true,
         auto_restart_on_config_change: false,
         runtime_pid: None,

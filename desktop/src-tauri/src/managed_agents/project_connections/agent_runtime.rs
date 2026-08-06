@@ -4,44 +4,30 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use serde::Serialize;
 use sha2::Digest as _;
 use tauri::AppHandle;
 
 use super::{
-    canonical_project_scope, connection_mcp_server_name, find_connection, health_for_display,
-    load_secrets, load_store_unlocked, lock_project_connections, probe::approved_execution_target,
-    validate_project_scope_for_app, workspace_connection_dir, ProjectConnection,
-    ProjectConnectionHealthStatus, ProjectConnectionScope, StoredProjectConnection,
+    canonical_project_scope, capture_project_scope_for_app, connection_mcp_server_name,
+    find_connection, health_for_display, load_secrets, load_store_unlocked,
+    lock_project_connections, probe::approved_execution_target, workspace_connection_dir,
+    CapturedProjectConnectionScope, ProjectConnection, ProjectConnectionHealthStatus,
+    ProjectConnectionScope, StoredProjectConnection,
 };
 use crate::managed_agents::{
     validate_agent_project_scope, validate_tool_requirements, AgentDefinition, AgentProjectScope,
     AgentToolRequirement, BackendKind, ManagedAgentRecord,
 };
 
-#[derive(Serialize)]
-struct McpConfigDocument {
-    version: u32,
-    servers: Vec<MaterializedMcpServer>,
-}
-
-#[derive(Serialize)]
-struct MaterializedMcpServer {
-    name: String,
-    transport: &'static str,
-    command: String,
-    args: Vec<String>,
-    env: BTreeMap<String, String>,
-}
-
-pub(crate) fn canonical_agent_project_scope_for_app(
-    app: &AppHandle,
+pub(crate) fn canonical_agent_project_scope_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     scope: &AgentProjectScope,
 ) -> Result<AgentProjectScope, String> {
     let channel_id = uuid::Uuid::parse_str(&scope.channel_id)
         .map_err(|_| "Choose a valid Project discussion channel.".to_string())?
         .to_string();
-    let canonical = validate_project_scope_for_app(app, &ProjectConnectionScope::from(scope))?;
+    let canonical =
+        capture_project_scope_for_app(app, &ProjectConnectionScope::from(scope))?.project;
     Ok(AgentProjectScope {
         relay_url: canonical.relay_url,
         operator_pubkey: canonical.operator_pubkey,
@@ -50,8 +36,8 @@ pub(crate) fn canonical_agent_project_scope_for_app(
     })
 }
 
-pub(crate) fn prepare_agent_project_assignment(
-    app: &AppHandle,
+pub(crate) fn prepare_agent_project_assignment<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     definition: Option<&AgentDefinition>,
     requested_scope: Option<&AgentProjectScope>,
 ) -> Result<(Vec<AgentToolRequirement>, Option<AgentProjectScope>), String> {
@@ -65,8 +51,8 @@ pub(crate) fn prepare_agent_project_assignment(
     Ok((requirements, scope))
 }
 
-pub(crate) fn apply_agent_project_connection_update(
-    app: &AppHandle,
+pub(crate) fn apply_agent_project_connection_update<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     record: &mut ManagedAgentRecord,
     project_scope: Option<Option<AgentProjectScope>>,
     connection_bindings: Option<BTreeMap<String, String>>,
@@ -156,22 +142,22 @@ fn validate_agent_bindings_against(
     Ok(())
 }
 
-fn connections_for_scope(
-    app: &AppHandle,
+fn connections_for_scope<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     scope: &AgentProjectScope,
-) -> Result<(ProjectConnectionScope, Vec<StoredProjectConnection>), String> {
-    let canonical = validate_project_scope_for_app(app, &ProjectConnectionScope::from(scope))?;
-    let store = load_store_unlocked(app, &canonical)?;
+) -> Result<(CapturedProjectConnectionScope, Vec<StoredProjectConnection>), String> {
+    let captured = capture_project_scope_for_app(app, &ProjectConnectionScope::from(scope))?;
+    let store = load_store_unlocked(app, &captured)?;
     let connections = store
         .connections
         .into_iter()
-        .filter(|connection| connection.project_scope == canonical)
+        .filter(|connection| connection.project_scope == captured.project)
         .collect();
-    Ok((canonical, connections))
+    Ok((captured, connections))
 }
 
-pub(crate) fn validate_agent_project_connections(
-    app: &AppHandle,
+pub(crate) fn validate_agent_project_connections<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     record: &ManagedAgentRecord,
 ) -> Result<(), String> {
     if record.backend != BackendKind::Local
@@ -212,30 +198,29 @@ pub(crate) fn validate_agent_project_connections(
     )
 }
 
-fn materialized_server(
-    app: &AppHandle,
+fn materialized_server<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    captured_scope: &CapturedProjectConnectionScope,
     connection: &StoredProjectConnection,
-) -> Result<MaterializedMcpServer, String> {
-    let approved_command = approved_execution_target(app, connection)?;
-    Ok(MaterializedMcpServer {
+) -> Result<buzz_core_pkg::mcp_config::ConfiguredMcpServer, String> {
+    let approved = approved_execution_target(captured_scope, connection)?;
+    Ok(buzz_core_pkg::mcp_config::ConfiguredMcpServer::Stdio {
         name: connection_mcp_server_name(&connection.id),
-        transport: "stdio",
-        command: approved_command.to_string_lossy().to_string(),
-        args: connection.args.clone(),
-        env: load_secrets(app, connection)?,
+        command: approved.command.to_string_lossy().to_string(),
+        args: approved.args,
+        env: load_secrets(app, captured_scope, connection)?,
     })
 }
 
 fn serialize_mcp_config(
-    servers: Vec<MaterializedMcpServer>,
+    servers: Vec<buzz_core_pkg::mcp_config::ConfiguredMcpServer>,
     legacy_mcp_command: Option<&str>,
 ) -> Result<Vec<u8>, String> {
-    const MAX_CONFIG_BYTES: usize = 64 * 1024;
-    const MAX_SERVERS: usize = 16;
     let legacy_count = usize::from(legacy_mcp_command.is_some_and(|command| !command.is_empty()));
-    if servers.len() + legacy_count > MAX_SERVERS {
+    if servers.len() + legacy_count > buzz_core_pkg::mcp_config::MCP_SERVER_MAX_COUNT {
         return Err(format!(
-            "Project connections exceed the agent runtime limit of {MAX_SERVERS} MCP servers."
+            "Project connections exceed the agent runtime limit of {} MCP servers.",
+            buzz_core_pkg::mcp_config::MCP_SERVER_MAX_COUNT
         ));
     }
     let legacy_name = legacy_mcp_command
@@ -245,38 +230,24 @@ fn serialize_mcp_config(
         .unwrap_or("mcp");
     let mut server_names = BTreeSet::new();
     for server in &servers {
-        if !server_names.insert(server.name.as_str())
-            || (legacy_count != 0 && server.name == legacy_name)
-        {
+        let buzz_core_pkg::mcp_config::ConfiguredMcpServer::Stdio { name, env, .. } = server;
+        if !server_names.insert(name.as_str()) || (legacy_count != 0 && name == legacy_name) {
             return Err("Project connections have colliding MCP server names.".to_string());
         }
         let mut normalized_env_keys = BTreeSet::new();
-        if server
-            .env
+        if env
             .keys()
             .any(|key| !normalized_env_keys.insert(key.to_ascii_uppercase()))
         {
             return Err(format!(
                 "Project connection {} has duplicate secret names.",
-                server.name
+                name
             ));
         }
     }
-    let document = McpConfigDocument {
-        version: 1,
-        servers,
-    };
-    let bytes = serde_json::to_vec(&document)
-        .map_err(|error| format!("failed to prepare Project connections: {error}"))?;
-    if bytes.len() > MAX_CONFIG_BYTES {
-        return Err(format!(
-            "Project connections exceed the agent runtime's {MAX_CONFIG_BYTES} byte limit."
-        ));
-    }
-    #[cfg(test)]
-    buzz_acp_pkg::validate_structured_mcp_config(&bytes, legacy_mcp_command)
-        .map_err(|error| format!("Project connections exceed the agent runtime limits: {error}"))?;
-    Ok(bytes)
+    buzz_core_pkg::mcp_config::McpLaunchConfigDocument::new(servers)
+        .to_json()
+        .map_err(|error| format!("failed to prepare Project connections: {error}"))
 }
 
 fn validate_session_tool_count(counts: impl IntoIterator<Item = usize>) -> Result<(), String> {
@@ -293,8 +264,8 @@ fn validate_session_tool_count(counts: impl IntoIterator<Item = usize>) -> Resul
     Ok(())
 }
 
-pub(crate) fn materialize_agent_project_connections(
-    app: &AppHandle,
+pub(crate) fn materialize_agent_project_connections<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     record: &ManagedAgentRecord,
     legacy_mcp_command: Option<&str>,
 ) -> Result<Option<Vec<u8>>, String> {
@@ -328,7 +299,7 @@ pub(crate) fn materialize_agent_project_connections(
         return Ok(None);
     }
     let _guard = lock_project_connections();
-    let (canonical, store_connections) = connections_for_scope(app, scope)?;
+    let (captured, store_connections) = connections_for_scope(app, scope)?;
     let public: Vec<_> = store_connections
         .iter()
         .cloned()
@@ -348,7 +319,7 @@ pub(crate) fn materialize_agent_project_connections(
     let connection_ids: BTreeSet<_> = record.connection_bindings.values().cloned().collect();
     let selected_connections = connection_ids
         .iter()
-        .map(|connection_id| find_connection(&store, &canonical, connection_id))
+        .map(|connection_id| find_connection(&store, &captured.project, connection_id))
         .collect::<Result<Vec<_>, _>>()?;
     validate_session_tool_count(
         selected_connections
@@ -357,21 +328,21 @@ pub(crate) fn materialize_agent_project_connections(
     )?;
     let mut servers = Vec::with_capacity(connection_ids.len());
     for connection in selected_connections {
-        servers.push(materialized_server(app, connection)?);
+        servers.push(materialized_server(app, &captured, connection)?);
     }
     serialize_mcp_config(servers, legacy_mcp_command).map(Some)
 }
 
-pub(crate) fn write_agent_project_connection_config(
-    app: &AppHandle,
+pub(crate) fn write_agent_project_connection_config<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     record: &ManagedAgentRecord,
     bytes: &[u8],
 ) -> Result<PathBuf, String> {
     let scope = record.project_scope.as_ref().ok_or_else(|| {
         "Choose the Project where this agent will use its connections.".to_string()
     })?;
-    let canonical = validate_project_scope_for_app(app, &ProjectConnectionScope::from(scope))?;
-    let runtime_dir = workspace_connection_dir(app, &canonical)?.join("runtime");
+    let captured = capture_project_scope_for_app(app, &ProjectConnectionScope::from(scope))?;
+    let runtime_dir = workspace_connection_dir(&captured)?.join("runtime");
     super::ensure_owner_only_directory(&runtime_dir)?;
     let agent_digest = sha2::Sha256::digest(record.pubkey.as_bytes());
     let path = runtime_dir.join(format!(
@@ -380,7 +351,7 @@ pub(crate) fn write_agent_project_connection_config(
         uuid::Uuid::new_v4().simple()
     ));
     super::reject_unsafe_owner_file(&path)?;
-    super::atomic_write_json_restricted(&path, bytes)?;
+    crate::managed_agents::atomic_write_json_restricted(&path, bytes)?;
     Ok(path)
 }
 
@@ -393,6 +364,35 @@ pub(crate) fn remove_agent_project_connection_config(path: &Path) -> Result<(), 
             path.display()
         )),
     }
+}
+
+pub(crate) fn remove_stale_agent_project_connection_configs(
+    captured_scope: &CapturedProjectConnectionScope,
+) -> Result<(), String> {
+    let runtime_dir = workspace_connection_dir(captured_scope)?.join("runtime");
+    let entries = match fs::read_dir(&runtime_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect stale Project connection launch files: {error}"
+            ));
+        }
+    };
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!("failed to inspect stale Project connection launch file: {error}")
+        })?;
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("agent-") || !name.ends_with(".json") {
+            continue;
+        }
+        let path = entry.path();
+        super::reject_unsafe_owner_file(&path)?;
+        remove_agent_project_connection_config(&path)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -439,10 +439,11 @@ mod tests {
         }
     }
 
-    fn materialized_server_for_test(index: usize) -> MaterializedMcpServer {
-        MaterializedMcpServer {
+    fn materialized_server_for_test(
+        index: usize,
+    ) -> buzz_core_pkg::mcp_config::ConfiguredMcpServer {
+        buzz_core_pkg::mcp_config::ConfiguredMcpServer::Stdio {
             name: format!("project_{index:032x}"),
-            transport: "stdio",
             command: "/usr/bin/true".to_string(),
             args: Vec::new(),
             env: BTreeMap::new(),
@@ -549,14 +550,16 @@ mod tests {
         assert!(serialize_mcp_config(sixteen_with_legacy, Some("/usr/bin/legacy")).is_err());
 
         let mut oversized = materialized_server_for_test(0);
-        oversized.args.push("x".repeat(64 * 1024));
+        let buzz_core_pkg::mcp_config::ConfiguredMcpServer::Stdio { args, .. } = &mut oversized;
+        args.push("x".repeat(64 * 1024));
         assert!(serialize_mcp_config(vec![oversized], None).is_err());
     }
 
     #[test]
     fn materialized_config_rejects_case_colliding_environment_names() {
         let mut server = materialized_server_for_test(0);
-        server.env = BTreeMap::from([
+        let buzz_core_pkg::mcp_config::ConfiguredMcpServer::Stdio { env, .. } = &mut server;
+        *env = BTreeMap::from([
             ("API_TOKEN".to_string(), "one".to_string()),
             ("api_token".to_string(), "two".to_string()),
         ]);
@@ -566,7 +569,8 @@ mod tests {
     #[test]
     fn materialized_config_rejects_structured_and_legacy_server_name_collisions() {
         let server = materialized_server_for_test(0);
-        let legacy = format!("/usr/local/bin/{}", server.name);
+        let buzz_core_pkg::mcp_config::ConfiguredMcpServer::Stdio { name, .. } = &server;
+        let legacy = format!("/usr/local/bin/{name}");
         assert!(serialize_mcp_config(vec![server], Some(&legacy)).is_err());
     }
 

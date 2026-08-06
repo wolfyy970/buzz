@@ -48,6 +48,7 @@ const HEALTH_STALE_AFTER_SECONDS: i64 = 24 * 60 * 60;
 
 static PROJECT_CONNECTIONS_LOCK: Mutex<()> = Mutex::new(());
 
+mod agent_runtime;
 mod approval;
 mod connection_data;
 mod credential_journal;
@@ -55,7 +56,7 @@ mod credential_target;
 mod operation_lease;
 mod operations;
 mod transactions;
-#[cfg(test)]
+pub(crate) use agent_runtime::*;
 use approval::executable_sha256;
 use approval::{approved_execution_sha256, canonical_connection_command};
 pub use connection_data::*;
@@ -67,11 +68,7 @@ pub(crate) use operations::{
 };
 use transactions::{commit_delete, commit_update, UpdateTransaction};
 mod store;
-#[cfg(any(test, not(feature = "system-keyring")))]
-use store::read_bounded_file;
-#[cfg(test)]
-use store::validate_stored_connection;
-use store::{load_store_unlocked, save_store_unlocked};
+use store::{is_lower_hex, validate_stored_connection};
 
 pub(super) fn lock_project_connections() -> MutexGuard<'static, ()> {
     PROJECT_CONNECTIONS_LOCK
@@ -156,8 +153,8 @@ pub(super) fn canonical_project_scope(
     })
 }
 
-pub(crate) fn capture_project_scope_for_app(
-    app: &AppHandle,
+pub(crate) fn capture_project_scope_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     scope: &ProjectConnectionScope,
 ) -> Result<CapturedProjectConnectionScope, String> {
     let canonical = canonical_project_scope(scope)?;
@@ -228,14 +225,17 @@ pub(crate) fn reconcile_project_connections_on_scope_activation(app: &AppHandle)
     let app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = lock_project_connections();
+        if let Err(error) = remove_stale_agent_project_connection_configs(&captured) {
+            eprintln!("buzz-desktop: stale Project connection launch cleanup failed: {error}");
+        }
         if let Err(error) = load_store_unlocked(&app, &captured) {
             eprintln!("buzz-desktop: Project connection activation recovery failed: {error}");
         }
     });
 }
 
-fn validate_captured_scope_for_app(
-    app: &AppHandle,
+fn validate_captured_scope_for_app<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     scope: &CapturedProjectConnectionScope,
 ) -> Result<(), String> {
     scope.operation.check_active()?;
@@ -759,8 +759,8 @@ fn open_regular_file_no_follow(path: &Path, require_owner_only: bool) -> std::io
     Ok(file)
 }
 
-fn load_store_unlocked(
-    app: &AppHandle,
+fn load_store_unlocked<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     scope: &CapturedProjectConnectionScope,
 ) -> Result<ProjectConnectionStore, String> {
     let path = connection_store_path(scope)?;

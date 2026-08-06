@@ -138,6 +138,31 @@ fn load_mcp_config(
     Ok(servers)
 }
 
+fn load_mcp_config_with_cleanup(
+    path: &std::path::Path,
+    legacy_mcp_command: &str,
+    delete_after_read: bool,
+) -> Result<Vec<ConfiguredMcpServer>, ConfigError> {
+    let loaded = load_mcp_config(path, legacy_mcp_command);
+    if !delete_after_read {
+        return loaded;
+    }
+    let cleanup = std::fs::remove_file(path).map_err(|error| {
+        ConfigError::ConfigFile(format!(
+            "failed to remove MCP config {} after reading: {error}",
+            path.display()
+        ))
+    });
+    match (loaded, cleanup) {
+        (Ok(servers), Ok(())) => Ok(servers),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error),
+        (Err(load_error), Ok(())) => Err(load_error),
+        (Err(load_error), Err(cleanup_error)) => Err(ConfigError::ConfigFile(format!(
+            "{load_error}; {cleanup_error}"
+        ))),
+    }
+}
+
 /// Derive the ACP name used by the legacy single-command MCP configuration.
 pub(crate) fn legacy_mcp_server_name(command: &str) -> String {
     std::path::Path::new(command)
@@ -178,12 +203,9 @@ pub(crate) fn validate_mcp_config_document(
     content: &[u8],
     legacy_mcp_command: Option<&str>,
 ) -> Result<(), ConfigError> {
-    parse_mcp_config(
-        content,
-        std::path::Path::new("<in-memory>"),
-        legacy_mcp_command.unwrap_or_default(),
-    )
-    .map(|_| ())
+    let servers = parse_mcp_config_document(content)
+        .map_err(|error| ConfigError::ConfigFile(format!("invalid MCP config: {error}")))?;
+    validate_legacy_mcp_composition(&servers, legacy_mcp_command.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, PartialEq, clap::ValueEnum)]

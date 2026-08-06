@@ -57,5 +57,5 @@ pub(super) fn make_pair_runtime_placeholder() -> crate::managed_agents::ManagedA
         #[cfg(windows)]
         job: None,
     };
-    crate::managed_agents::ManagedAgentPairRuntime::starting(process)
+    crate::managed_agents::ManagedAgentPairRuntime::starting(process, None)
 }
