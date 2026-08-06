@@ -41,4 +41,15 @@ for await (const line of lines) {
       })}\n`,
     );
   }
+  if (request.method === "tools/call") {
+    process.stdout.write(
+      `${JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          content: [{ type: "text", text: "weekly-total: 42" }],
+        },
+      })}\n`,
+    );
+  }
 }
