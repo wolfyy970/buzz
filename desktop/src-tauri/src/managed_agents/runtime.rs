@@ -26,6 +26,9 @@ pub(crate) use metadata::{
     DISPLAY_NAME_ENV_VAR, SESSION_TITLE_ENV_VAR,
 };
 
+mod mcp;
+pub(crate) use mcp::effective_mcp_command;
+
 mod stop;
 pub(crate) use stop::managed_agent_runtime_keys;
 pub use stop::{stop_managed_agent_process, stop_managed_agent_workspace_pair};
@@ -291,10 +294,10 @@ pub fn build_managed_agent_summary(
             env: Default::default(),
         }
     });
-    let effective_mcp_command = known_acp_runtime(&descriptor.command)
-        .and_then(|r| r.mcp_command)
-        .unwrap_or("")
-        .to_string();
+    let effective_mcp_command = effective_mcp_command(
+        &record.mcp_command,
+        known_acp_runtime(&descriptor.command).and_then(|runtime| runtime.mcp_command),
+    );
 
     Ok(ManagedAgentSummary {
         pubkey: record.pubkey.clone(),
@@ -414,9 +417,9 @@ pub fn spawn_agent_child(
     let runtime_key = ManagedAgentRuntimeKey::new(record.pubkey.clone(), relay_url)?;
     // Resolve the effective harness (agent command) from the linked persona, so
     // persona harness edits propagate on the next spawn; an explicit per-agent
-    // override wins. `agent_args` and `mcp_command` are pure derivations of the
-    // command, so we recompute them from the effective value rather than the
-    // frozen record snapshot. Mirrors the model resolution below.
+    // override wins. `agent_args` is derived from that command. MCP catalog
+    // defaults are also derived here, while a distinct legacy stored command
+    // is carried only as a device-local compatibility server.
     let personas = super::load_personas(app).unwrap_or_default();
     let teams = super::load_teams(app).unwrap_or_default();
     // Load global config once; used for runtime_metadata_env_vars (model/provider fallback)
@@ -458,6 +461,15 @@ pub fn spawn_agent_child(
     let effective_command = &descriptor.command;
     let agent_args = &descriptor.args;
 
+    let resolved_acp_command = resolve_command(&record.acp_command)
+        .ok_or_else(|| missing_command_message(&record.acp_command, "ACP harness command"))?;
+    let runtime_meta = known_acp_runtime(effective_command);
+    let mcp_launch = mcp::resolve_mcp_launch(
+        &record.mcp_command,
+        runtime_meta.and_then(|runtime| runtime.mcp_command),
+    )?;
+    mcp::validate_harness_compatibility(&mcp_launch, &resolved_acp_command)?;
+
     let log_path = super::managed_agent_runtime_log_path(app, &runtime_key)?;
     append_log_marker(
         &log_path,
@@ -473,24 +485,6 @@ pub fn spawn_agent_child(
     let stderr = stdout
         .try_clone()
         .map_err(|error| format!("failed to clone log handle: {error}"))?;
-    let resolved_acp_command = resolve_command(&record.acp_command)
-        .ok_or_else(|| missing_command_message(&record.acp_command, "ACP harness command"))?;
-    let effective_mcp_command = known_acp_runtime(effective_command)
-        .and_then(|r| r.mcp_command)
-        .unwrap_or("");
-    let resolved_mcp_command: Option<std::path::PathBuf> = if effective_mcp_command.is_empty() {
-        None
-    } else {
-        match resolve_command(effective_mcp_command) {
-            Some(path) => Some(path),
-            None => {
-                eprintln!(
-                    "buzz-desktop: mcp_command {effective_mcp_command:?} not found, skipping"
-                );
-                None
-            }
-        }
-    };
     // Resolve agent command to a full path (DMG launches have minimal PATH).
     let resolved_agent_command = resolve_command(effective_command)
         .map(|p| p.display().to_string())
@@ -533,17 +527,9 @@ pub fn spawn_agent_child(
     command.env("BUZZ_ACP_LAZY_POOL", if lazy { "true" } else { "false" });
     command.env("BUZZ_ACP_AGENT_COMMAND", &resolved_agent_command);
     command.env("BUZZ_ACP_AGENT_ARGS", agent_args.join(","));
-    match &resolved_mcp_command {
-        Some(mcp_cmd) => {
-            command.env("BUZZ_ACP_MCP_COMMAND", mcp_cmd);
-        }
-        None => {
-            command.env("BUZZ_ACP_MCP_COMMAND", "");
-        }
-    }
+    let mcp_config_path = mcp::configure_mcp_environment(&mut command, &mcp_launch)?;
     // Enable MCP hook tools (_Stop, _PostCompact) for agents that need them.
     // Uses "*" because build_mcp_servers() hard-codes the server name to "buzz-mcp".
-    let runtime_meta = known_acp_runtime(effective_command);
     if runtime_meta.is_some_and(|r| r.mcp_hooks) {
         command.env("MCP_HOOK_SERVERS", "*");
     }
@@ -898,6 +884,7 @@ pub fn spawn_agent_child(
         spawned_setup_mode,
         spawned_adapter_availability,
         start_nonce,
+        mcp_config_path,
         &record.name,
     ));
     #[cfg(not(windows))]
@@ -908,6 +895,7 @@ pub fn spawn_agent_child(
         setup_mode: spawned_setup_mode,
         adapter_availability: spawned_adapter_availability,
         start_nonce,
+        _mcp_config_path: mcp_config_path,
     })
 }
 

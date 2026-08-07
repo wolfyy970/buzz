@@ -75,7 +75,7 @@ fn common_binary_paths() -> &'static [PathBuf] {
     })
 }
 
-const KNOWN_ACP_RUNTIMES: &[KnownAcpRuntime] = &[
+pub(super) const KNOWN_ACP_RUNTIMES: &[KnownAcpRuntime] = &[
     KnownAcpRuntime {
         id: "goose",
         label: "Goose",
@@ -500,7 +500,7 @@ fn command_search_dirs() -> Vec<PathBuf> {
     })
 }
 
-fn is_executable_file(path: &Path) -> bool {
+pub(super) fn is_executable_file(path: &Path) -> bool {
     let Ok(metadata) = path.metadata() else {
         return false;
     };

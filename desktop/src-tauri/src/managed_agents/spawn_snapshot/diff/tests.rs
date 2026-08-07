@@ -442,6 +442,7 @@ fn no_sentinel_reaches_the_owning_process_debug_output() {
         setup_mode: false,
         adapter_availability: None,
         start_nonce: "test-nonce".to_string(),
+        _mcp_config_path: None,
         #[cfg(windows)]
         job: None,
     };

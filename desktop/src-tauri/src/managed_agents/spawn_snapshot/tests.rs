@@ -166,6 +166,30 @@ fn record_prompt_edit_changes_snapshot() {
 }
 
 #[test]
+fn distinct_legacy_mcp_edit_changes_the_restart_snapshot() {
+    let rec = record();
+    let mut edited = rec.clone();
+    edited.mcp_command = "analytics-mcp".into();
+
+    assert_ne!(
+        snapshot(&rec, &[], &[], "wss://ws.example", &Default::default()),
+        snapshot(&edited, &[], &[], "wss://ws.example", &Default::default())
+    );
+}
+
+#[test]
+fn stale_catalog_mcp_snapshot_does_not_change_a_runtime_without_that_server() {
+    let rec = record();
+    let mut stale = rec.clone();
+    stale.mcp_command = "buzz-dev-mcp".into();
+
+    assert_eq!(
+        snapshot(&rec, &[], &[], "wss://ws.example", &Default::default()),
+        snapshot(&stale, &[], &[], "wss://ws.example", &Default::default())
+    );
+}
+
+#[test]
 fn persona_runtime_edit_changes_snapshot() {
     // The harness command resolves live personas at spawn, so a persona
     // runtime change means a restart WOULD change what runs → badge trips.

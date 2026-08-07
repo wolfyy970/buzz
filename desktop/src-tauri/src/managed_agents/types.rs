@@ -255,10 +255,9 @@ pub struct ManagedAgentRecord {
     #[serde(default)]
     pub agent_command_override: Option<String>,
     pub agent_args: Vec<String>,
-    /// Create-time snapshot of the catalog MCP command. Never read at spawn —
-    /// the effective MCP command is always re-derived from the runtime catalog
-    /// (`known_acp_runtime`) — and no longer written by updates. Kept for
-    /// serde compatibility with existing stores.
+    /// Legacy MCP snapshot. Catalog values derive from the runtime; a distinct
+    /// value is honored only as a device-local compatibility server. Updates
+    /// no longer write it; kept for serde compatibility until Projects replace it.
     pub mcp_command: String,
     /// Deprecated: `BUZZ_ACP_TURN_TIMEOUT` is ignored by the harness and the
     /// desktop no longer emits or edits it. Kept for serde compatibility with
@@ -482,6 +481,9 @@ pub struct ManagedAgentProcess {
     pub adapter_availability: Option<AcpAvailabilityStatus>,
     /// Unpredictable identity shared only with this harness generation.
     pub start_nonce: String,
+    /// Owner-only MCP document kept for the harness process lifetime and
+    /// removed on spawn failure or process teardown.
+    pub _mcp_config_path: Option<tempfile::TempPath>,
     /// Win32 Job Object owning the harness + its entire process tree. Closing
     /// the handle (via `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) kills the whole
     /// tree — the Windows mirror of the Unix process-group teardown. `None`
@@ -509,8 +511,8 @@ pub struct ManagedAgentSummary {
     /// concrete pin (`agent_command` above is the resolved/effective command).
     pub agent_command_override: Option<String>,
     pub agent_args: Vec<String>,
-    /// Catalog-derived from the effective harness (not the record's stored
-    /// field), so the UI always shows what a spawn would actually use.
+    /// Effective device-local compatibility command. Catalog defaults follow
+    /// the harness; a distinct legacy stored value is reported when honored.
     pub mcp_command: String,
     /// Deprecated passthrough of the stored record value; the harness ignores
     /// it. Kept for wire compatibility.

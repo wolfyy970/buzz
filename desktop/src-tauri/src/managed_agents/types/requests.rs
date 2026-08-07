@@ -147,9 +147,9 @@ pub struct CreateManagedAgentRequest {
     pub harness_override: bool,
     #[serde(default)]
     pub agent_args: Vec<String>,
-    /// Accepted for wire compatibility; not applied to the record. The
-    /// effective MCP command is always derived from the runtime catalog at
-    /// spawn time — a per-record override is never read.
+    /// Accepted for wire compatibility; not applied to the record. Spawn may
+    /// honor a distinct value already stored by an older Desktop version, but
+    /// this request field does not create or update that compatibility state.
     ///
     /// @deprecated — sending this field has no effect.
     #[allow(dead_code)]

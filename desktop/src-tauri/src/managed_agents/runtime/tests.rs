@@ -1207,7 +1207,6 @@ fn receipt_invalid_when_process_not_running() {
 }
 
 // ── Test helpers ────────────────────────────────────────────────────────────
-
 fn minimal_record(pubkey: &str) -> crate::managed_agents::ManagedAgentRecord {
     serde_json::from_str(&format!(
         r#"{{
@@ -1267,6 +1266,7 @@ fn make_pair_runtime_placeholder() -> crate::managed_agents::ManagedAgentPairRun
         setup_mode: false,
         adapter_availability: None,
         start_nonce: "test-nonce".to_string(),
+        _mcp_config_path: None,
         #[cfg(windows)]
         job: None,
     };
