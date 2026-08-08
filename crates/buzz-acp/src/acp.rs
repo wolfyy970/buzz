@@ -169,6 +169,9 @@ pub struct PermissionDecision {
     pub option_id: String,
 }
 
+type SharedPermissionDecisionReceiver =
+    std::sync::Arc<tokio::sync::Mutex<tokio::sync::mpsc::Receiver<PermissionDecision>>>;
+
 /// Lifecycle state of a single `session/request_permission` request under
 /// the `ask` policy.
 #[derive(Debug, Clone)]
@@ -252,8 +255,11 @@ pub struct AcpClient {
     owner_pubkey_known: bool,
     /// Channel for delivering `permission_decision` control frames from the
     /// observer dispatch loop into the read loop's decision arm.
-    /// Installed by `install_permission_decision_rx`; consumed by the read loop.
-    permission_decision_rx: Option<tokio::sync::mpsc::Receiver<PermissionDecision>>,
+    /// Installed by `install_permission_decision_rx` and shared across every
+    /// prompt read loop in the task. Keeping the receiver behind an `Arc`
+    /// prevents an initial-message prompt or cancellation from consuming the
+    /// only decision route before the main prompt runs.
+    permission_decision_rx: Option<SharedPermissionDecisionReceiver>,
     /// The JSON-RPC id of the most recently sent `session/prompt` request.
     /// Used by [`cancel_with_cleanup`] to drain the correct response.
     /// Set in [`session_prompt_with_idle_timeout`]; consumed in [`cancel_with_cleanup`].
@@ -696,7 +702,7 @@ impl AcpClient {
         &mut self,
         rx: tokio::sync::mpsc::Receiver<PermissionDecision>,
     ) {
-        self.permission_decision_rx = Some(rx);
+        self.permission_decision_rx = Some(std::sync::Arc::new(tokio::sync::Mutex::new(rx)));
     }
 
     /// Update metadata that will be attached to subsequent raw wire events.
@@ -1750,10 +1756,10 @@ impl AcpClient {
         // so the ack_tx oneshot is never leaked silently).
         let mut steer_rx = self.steer_rx.take();
 
-        // Take the per-session permission decision receiver into a local for
-        // the same reason: `self.reader` and `decision_rx` cannot both be
-        // borrowed inside `select!` via `self`.
-        let mut decision_rx = self.permission_decision_rx.take();
+        // Clone the per-task decision receiver handle into the read loop. The
+        // receiver itself stays owned by the client, so sequential prompts
+        // (notably initial_message followed by the real turn) share one route.
+        let decision_rx = self.permission_decision_rx.clone();
 
         // Tracks the in-flight steer write: `(request_id, transport, ack_tx)`.
         // While `Some`, the steer arm is gated off so we don't stack writes,
@@ -1918,8 +1924,8 @@ impl AcpClient {
                 // owner decisions are not starved by a continuously-ready stdout.
                 // Cancel-safe: `mpsc::Receiver::recv` does not lose messages on drop.
                 Some(decision) = async {
-                    match decision_rx.as_mut() {
-                        Some(rx) => rx.recv().await,
+                    match decision_rx.as_ref() {
+                        Some(rx) => rx.lock().await.recv().await,
                         None => None,
                     }
                 } => {
@@ -2691,15 +2697,21 @@ impl AcpClient {
             }
             PermissionPolicy::Ask => {
                 // Availability gate (spec §10): `ask` requires both an active observer
-                // and a known owner. Without either, downgrade to `reject` with a loud
-                // warning — never sideways to `allow`.
+                // and a known owner plus a live route for the owner's decision.
+                // Without all three, downgrade to `reject` with a loud warning —
+                // never sideways to `allow`.
                 let observer_active = self.observer.is_some();
-                if !observer_active || !self.owner_pubkey_known {
+                let decision_route_active = match self.permission_decision_rx.as_ref() {
+                    Some(rx) => !rx.lock().await.is_closed(),
+                    None => false,
+                };
+                if !observer_active || !self.owner_pubkey_known || !decision_route_active {
                     tracing::warn!(
                         target: "acp::permission",
-                        "ask policy unavailable (observer={}, owner_known={}) — downgrading to reject for id={id}",
+                        "ask policy unavailable (observer={}, owner_known={}, decision_route={}) — downgrading to reject for id={id}",
                         observer_active,
-                        self.owner_pubkey_known
+                        self.owner_pubkey_known,
+                        decision_route_active
                     );
                     // Fall through to the Reject arm's logic.
                     self.pending_permission_id = Some(id.clone());
@@ -2710,7 +2722,9 @@ impl AcpClient {
                         msg,
                         &nonce,
                         false,
-                        Some("policy=ask unavailable (no observer/owner); downgraded to reject"),
+                        Some(
+                            "policy=ask unavailable (no observer/owner/decision route); downgraded to reject",
+                        ),
                     );
                     let response = permission_denial_response(&id, &options)?;
                     self.finish_permission_sync(&id, &nonce, "rejected", response)
@@ -6221,12 +6235,49 @@ mod tests {
         let config = ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap();
         client.set_permission_config(config);
         client.set_owner_pubkey_known(false); // explicitly unknown
+        client.set_observer(Some(crate::observer::ObserverHandle::in_process()), 0);
+        let (_tx, rx) = tokio::sync::mpsc::channel::<PermissionDecision>(1);
+        client.install_permission_decision_rx(rx);
 
         let msg = perm_request(2, default_opts());
         let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         let result = client.handle_permission_request(&msg, hard_deadline).await;
         assert!(result.is_ok());
         assert!(client.pending_permissions.is_empty());
+    }
+
+    #[tokio::test]
+    async fn ask_without_live_decision_route_is_non_actionable_and_rejected() {
+        let mut client = spawn_inert_client().await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+        let observer = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(observer.clone()), 0);
+        let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(1);
+        client.install_permission_decision_rx(decision_rx);
+        drop(decision_tx);
+
+        let msg = perm_request(3, default_opts());
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        client
+            .handle_permission_request(&msg, hard_deadline)
+            .await
+            .expect("missing route must fail closed without breaking the transport");
+
+        assert!(client.pending_permissions.is_empty());
+        let event = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.kind == "acp_read" && event.authorization.is_some())
+            .expect("permission request must remain observable");
+        let authorization = event.authorization.expect("checked above");
+        assert!(!authorization.actionable);
+        assert!(authorization
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("decision route")));
     }
 
     // ── Production-path tests: real loop emits request, captures nonce ──────
@@ -6378,6 +6429,90 @@ mod tests {
             Some("opt-allow"),
             "wire response optionId must match the delivered decision"
         );
+    }
+
+    #[tokio::test]
+    async fn ask_decision_route_survives_sequential_prompt_read_loops() {
+        let capture_file = std::env::temp_dir().join(format!(
+            "buzz-acp-sequential-{}.ndjson",
+            uuid::Uuid::new_v4()
+        ));
+        let request_one = r#"{"jsonrpc":"2.0","id":41,"method":"session/request_permission","params":{"sessionId":"sess","options":[{"optionId":"opt-allow","kind":"allow_once","name":"Allow"},{"optionId":"opt-deny","kind":"reject_once","name":"Deny"}]}}"#;
+        let request_two = r#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{"sessionId":"sess","options":[{"optionId":"opt-allow","kind":"allow_once","name":"Allow"},{"optionId":"opt-deny","kind":"reject_once","name":"Deny"}]}}"#;
+        let terminal_one = r#"{"jsonrpc":"2.0","id":1001,"result":{"stopReason":"end_turn"}}"#;
+        let terminal_two = r#"{"jsonrpc":"2.0","id":1002,"result":{"stopReason":"end_turn"}}"#;
+        let script = format!(
+            r#"printf '{request_one}\n'; read -r response; printf '%s\n' "$response" >> {capture}; printf '{terminal_one}\n'; printf '{request_two}\n'; read -r response; printf '%s\n' "$response" >> {capture}; printf '{terminal_two}\n'"#,
+            capture = capture_file.display(),
+        );
+
+        let mut client = spawn_script(&script).await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+        let observer = crate::observer::ObserverHandle::in_process();
+        let mut observer_rx = observer.subscribe();
+        client.set_observer(Some(observer), 0);
+        let (decision_tx, decision_rx) =
+            tokio::sync::mpsc::channel::<PermissionDecision>(PERMISSION_MAP_CAP);
+        client.install_permission_decision_rx(decision_rx);
+
+        let decision_task = tokio::spawn(async move {
+            let mut delivered = 0;
+            while delivered < 2 {
+                let event =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), observer_rx.recv())
+                        .await
+                        .expect("permission event timed out")
+                        .expect("observer channel closed");
+                let Some(authorization) = event.authorization else {
+                    continue;
+                };
+                if !authorization.actionable {
+                    continue;
+                }
+                decision_tx
+                    .send(PermissionDecision {
+                        request_nonce: authorization.request_nonce,
+                        option_id: "opt-allow".to_string(),
+                    })
+                    .await
+                    .expect("decision route must remain open");
+                delivered += 1;
+            }
+        });
+
+        let idle_timeout = std::time::Duration::from_secs(5);
+        let max_duration = std::time::Duration::from_secs(15);
+        for expected_id in [1001, 1002] {
+            let result = client
+                .read_until_response_with_idle_timeout(
+                    "sess",
+                    expected_id,
+                    idle_timeout,
+                    tokio::time::Instant::now() + max_duration,
+                    max_duration,
+                )
+                .await
+                .expect("both sequential prompts must complete");
+            assert_eq!(result["stopReason"], "end_turn");
+        }
+        decision_task.await.expect("decision task failed");
+
+        let capture = std::fs::read_to_string(&capture_file).expect("read wire capture");
+        let _ = std::fs::remove_file(&capture_file);
+        let responses: Vec<serde_json::Value> = capture
+            .lines()
+            .map(|line| serde_json::from_str(line).expect("valid response JSON"))
+            .collect();
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0]["id"], 41);
+        assert_eq!(responses[1]["id"], 42);
+        assert!(responses.iter().all(|response| {
+            response["result"]["outcome"]["outcome"] == "selected"
+                && response["result"]["outcome"]["optionId"] == "opt-allow"
+        }));
     }
 
     /// Cancel test: asserts exactly one JSON-RPC response per pending id, no

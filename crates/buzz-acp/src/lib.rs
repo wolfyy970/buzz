@@ -3434,10 +3434,10 @@ fn dispatch_pending(
         let steer_tx = Some(tx);
 
         // Permission decision channel: delivers `permission_decision` control
-        // frames into the read loop's decision arm (spec §4). Installed
-        // per-session (the receiver is taken by the read loop and dropped
-        // when the turn ends; the next turn installs a fresh pair). Capacity
-        // matches PERMISSION_MAP_CAP so each pending entry gets a slot.
+        // frames into the read loop's decision arm (spec §4). Sequential read
+        // loops within this task share the receiver; the next dispatched task
+        // replaces it with a fresh pair. Capacity matches PERMISSION_MAP_CAP so
+        // each pending entry gets a slot.
         let (perm_tx, perm_rx) = tokio::sync::mpsc::channel::<crate::acp::PermissionDecision>(
             crate::acp::PERMISSION_MAP_CAP,
         );
