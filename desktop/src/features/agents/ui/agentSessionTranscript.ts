@@ -768,11 +768,22 @@ export function processTranscriptEvent(
       if (auth) {
         const existing = d.itemsById.get(itemId);
         if (existing?.type === "lifecycle") {
+          const hasOneTimeChoice = request.options.length > 0;
+          const actionable = auth.actionable && hasOneTimeChoice;
+          const unsupportedChoiceReason =
+            request.unsupportedOptionCount > 0
+              ? "Buzz only supports one-time choices here. Other permission choices were ignored."
+              : undefined;
           replaceItem(d, itemId, {
             ...existing,
             requestNonce: auth.requestNonce,
-            actionable: auth.actionable,
-            authorizationReason: auth.reason,
+            actionable,
+            canCancelPermission: auth.canCancel === true,
+            authorizationReason:
+              auth.reason ??
+              (!hasOneTimeChoice
+                ? "No supported one-time permission choice was offered."
+                : unsupportedChoiceReason),
             options: request.options,
           });
         }

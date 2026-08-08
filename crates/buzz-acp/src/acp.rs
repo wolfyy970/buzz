@@ -164,9 +164,20 @@ pub struct PermissionDecision {
     /// The nonce that was advertised in the `authorization` envelope of the
     /// `acp_read` frame for this request.
     pub request_nonce: String,
-    /// The `optionId` the owner chose. Must exactly match one of the options in
-    /// the original request.
-    pub option_id: String,
+    /// The one-request outcome chosen by the owner.
+    pub outcome: PermissionDecisionOutcome,
+}
+
+/// Owner-controlled outcomes supported by Buzz's permission surface.
+#[derive(Debug, Clone)]
+pub enum PermissionDecisionOutcome {
+    /// Select one of the adapter's offered one-time options.
+    Selected {
+        /// Must exactly match a validated `allow_once` or `reject_once` option.
+        option_id: String,
+    },
+    /// Decline without fabricating an adapter option identifier.
+    Cancelled,
 }
 
 type SharedPermissionDecisionReceiver =
@@ -1224,6 +1235,7 @@ impl AcpClient {
                 AuthorizationEnvelope {
                     request_nonce: write.nonce,
                     actionable: false,
+                    can_cancel: None,
                     reason: Some("uncertain".to_string()),
                 },
                 serde_json::json!({ "id": write.request_id }),
@@ -1273,6 +1285,7 @@ impl AcpClient {
                         AuthorizationEnvelope {
                             request_nonce: entry.nonce.clone(),
                             actionable: false,
+                            can_cancel: None,
                             reason: Some("uncertain".to_string()),
                         },
                         serde_json::json!({ "id": req_id_str }),
@@ -1459,6 +1472,7 @@ impl AcpClient {
                     AuthorizationEnvelope {
                         request_nonce: nonce.to_string(),
                         actionable: false,
+                        can_cancel: None,
                         reason: Some(reason.to_string()),
                     },
                     response,
@@ -1498,6 +1512,7 @@ impl AcpClient {
                     AuthorizationEnvelope {
                         request_nonce: nonce.to_string(),
                         actionable: false,
+                        can_cancel: None,
                         reason: Some("uncertain".to_string()),
                     },
                     serde_json::json!({ "id": id_val }),
@@ -1542,6 +1557,7 @@ impl AcpClient {
                     AuthorizationEnvelope {
                         request_nonce: nonce.to_string(),
                         actionable: false,
+                        can_cancel: None,
                         reason: Some(reason.to_string()),
                     },
                     response,
@@ -2010,23 +2026,29 @@ impl AcpClient {
                         .map(|(k, _)| k.clone());
 
                     if let Some(id_str) = entry_id {
-                        // Validate the chosen option_id is in the snapshot.
-                        let opt_valid = self.pending_permissions
-                            .get(&id_str)
-                            .map(|e| {
-                                e.options_snapshot.iter().any(|opt| {
-                                    opt.get("optionId")
-                                        .and_then(|v| v.as_str())
-                                        == Some(decision.option_id.as_str())
+                        // A selected option must be one of the validated one-time
+                        // choices. Cancellation is always a safe owner decision.
+                        let decision_valid = match &decision.outcome {
+                            PermissionDecisionOutcome::Cancelled => true,
+                            PermissionDecisionOutcome::Selected { option_id } => self
+                                .pending_permissions
+                                .get(&id_str)
+                                .map(|entry| {
+                                    entry.options_snapshot.iter().any(|option| {
+                                        is_one_time_permission_option(option)
+                                            && option
+                                                .get("optionId")
+                                                .and_then(|value| value.as_str())
+                                                == Some(option_id.as_str())
+                                    })
                                 })
-                            })
-                            .unwrap_or(false);
+                                .unwrap_or(false),
+                        };
 
-                        if !opt_valid {
+                        if !decision_valid {
                             tracing::warn!(
                                 target: "acp::permission",
-                                "permission_decision optionId {:?} not in snapshot for id={id_str} — ignoring",
-                                decision.option_id
+                                "permission_decision selected an unavailable option for id={id_str} — ignoring"
                             );
                         } else {
                             // Transition Pending → Writing.
@@ -2040,14 +2062,21 @@ impl AcpClient {
                                 )
                             };
 
-                            let response = permission_response_selected(&id_val, &decision.option_id);
+                            let (response, reason) = match &decision.outcome {
+                                PermissionDecisionOutcome::Selected { option_id } => {
+                                    (permission_response_selected(&id_val, option_id), "applied")
+                                }
+                                PermissionDecisionOutcome::Cancelled => {
+                                    (permission_response_cancelled(&id_val), "cancelled")
+                                }
+                            };
                             let write_deadline = (Instant::now()
                                 + std::time::Duration::from_secs(30))
                             .min(hard_deadline);
                             let ok = self
                                 .finish_permission(
                                     (&id_str, &id_val),
-                                    (&nonce, "applied", response),
+                                    (&nonce, reason, response),
                                     Some(write_deadline),
                                     Some((&mut idle_deadline, idle_timeout)),
                                 )
@@ -2055,8 +2084,7 @@ impl AcpClient {
                             if ok {
                                 tracing::info!(
                                     target: "acp::permission",
-                                    "permission id={id_val} answered: optionId={:?}",
-                                    decision.option_id
+                                    "permission id={id_val} answered by owner: {reason}"
                                 );
                             } else {
                                 // Write failed → process poisoned; break out immediately.
@@ -2679,7 +2707,7 @@ impl AcpClient {
             tracing::warn!(target: "acp::permission", "preflight failed: {reason}, id={id}");
             let nonce = new_permission_nonce();
             self.emit_permission_read_non_actionable(&id, msg, &nonce, &reason);
-            let response = permission_denial_response(&id, &options)?;
+            let response = permission_response_cancelled(&id);
             self.finish_permission_sync(&id, &nonce, "rejected", response)
                 .await?;
             return Ok(true);
@@ -2767,6 +2795,25 @@ impl AcpClient {
                 Ok(true)
             }
             PermissionPolicy::Ask => {
+                let one_time_options: Vec<serde_json::Value> = options
+                    .iter()
+                    .filter(|option| is_one_time_permission_option(option))
+                    .cloned()
+                    .collect();
+                if one_time_options.is_empty() {
+                    let reason = "no supported one-time permission choice was offered";
+                    tracing::warn!(
+                        target: "acp::permission",
+                        "ask policy cannot route persistent or unknown choices, id={id}"
+                    );
+                    let nonce = new_permission_nonce();
+                    self.emit_permission_read_non_actionable(&id, msg, &nonce, reason);
+                    let response = permission_denial_response(&id, &options)?;
+                    self.finish_permission_sync(&id, &nonce, "rejected", response)
+                        .await?;
+                    return Ok(true);
+                }
+
                 // Availability gate (spec §10): `ask` requires both an active observer
                 // and a known owner plus a live route for the owner's decision.
                 // Without all three, downgrade to `reject` with a loud warning —
@@ -2817,7 +2864,11 @@ impl AcpClient {
                     AuthorizationEnvelope {
                         request_nonce: nonce.clone(),
                         actionable: true,
-                        reason: None,
+                        can_cancel: Some(true),
+                        reason: (one_time_options.len() != options.len()).then(|| {
+                            "Buzz only supports one-time choices here. Other permission choices were ignored."
+                                .to_string()
+                        }),
                     },
                     msg.clone(),
                 );
@@ -2831,7 +2882,7 @@ impl AcpClient {
                     id_str,
                     PermissionEntry {
                         nonce,
-                        options_snapshot: options.clone(),
+                        options_snapshot: one_time_options,
                         state: PermissionEntryState::Pending,
                         deadline: entry_deadline,
                     },
@@ -2863,6 +2914,7 @@ impl AcpClient {
             AuthorizationEnvelope {
                 request_nonce: nonce.to_string(),
                 actionable: false,
+                can_cancel: None,
                 reason: Some(reason.to_string()),
             },
             msg.clone(),
@@ -2884,6 +2936,7 @@ impl AcpClient {
             AuthorizationEnvelope {
                 request_nonce: nonce.to_string(),
                 actionable,
+                can_cancel: None,
                 reason: reason.map(str::to_string),
             },
             msg.clone(),
@@ -3071,6 +3124,16 @@ fn select_allow_once(options: &[serde_json::Value]) -> Result<String, String> {
     }
 }
 
+/// Return whether an ACP permission option is a one-request decision that Buzz
+/// can safely expose. Persistent and unknown choices remain observable but are
+/// never granted by this permission surface.
+fn is_one_time_permission_option(option: &serde_json::Value) -> bool {
+    matches!(
+        option.get("kind").and_then(|kind| kind.as_str()),
+        Some("allow_once" | "reject_once")
+    )
+}
+
 /// Validate a `session/request_permission` request before it touches the
 /// pending map or policy dispatch.
 ///
@@ -3178,6 +3241,7 @@ fn run_admission_preflight(
             // UUID nonce — all production nonces are this length.
             request_nonce: "00000000-0000-0000-0000-000000000000".to_string(),
             actionable: true,
+            can_cancel: Some(true),
             reason: None,
         }),
         payload: msg.clone(),
@@ -5908,6 +5972,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn one_time_permission_options_exclude_persistent_and_unknown_kinds() {
+        assert!(is_one_time_permission_option(&serde_json::json!({
+            "kind": "allow_once"
+        })));
+        assert!(is_one_time_permission_option(&serde_json::json!({
+            "kind": "reject_once"
+        })));
+        assert!(!is_one_time_permission_option(&serde_json::json!({
+            "kind": "allow_always"
+        })));
+        assert!(!is_one_time_permission_option(&serde_json::json!({
+            "kind": "future_scope"
+        })));
+    }
+
     // ── Pinned §3: duplicate option IDs ──────────────────────────────────────
 
     #[test]
@@ -6060,6 +6140,7 @@ mod tests {
             authorization: Some(AuthorizationEnvelope {
                 request_nonce: "00000000-0000-0000-0000-000000000000".to_string(),
                 actionable: true,
+                can_cancel: Some(true),
                 reason: None,
             }),
             payload: msg.clone(),
@@ -6351,6 +6432,97 @@ mod tests {
             .is_some_and(|reason| reason.contains("decision route")));
     }
 
+    #[tokio::test]
+    async fn ask_with_only_persistent_or_unknown_choices_fails_closed() {
+        let mut client = spawn_inert_client().await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+        let observer = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(observer.clone()), 0);
+        let (_decision_tx, decision_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(1);
+        client.install_permission_decision_rx(decision_rx);
+
+        let msg = perm_request(
+            4,
+            &[
+                ("persistent", "allow_always", "Always allow"),
+                ("future", "future_scope", "Future choice"),
+            ],
+        );
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        client
+            .handle_permission_request(&msg, hard_deadline)
+            .await
+            .expect("unsupported choices must be rejected without breaking transport");
+
+        assert!(client.pending_permissions.is_empty());
+        let request_event = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.kind == "acp_read" && event.authorization.is_some())
+            .expect("rejected request must remain observable");
+        let authorization = request_event.authorization.expect("checked above");
+        assert!(!authorization.actionable);
+        assert!(authorization
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("one-time")));
+    }
+
+    #[tokio::test]
+    async fn ask_exposes_only_one_time_choices_from_a_mixed_request() {
+        let mut client = spawn_inert_client().await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+        let observer = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(observer.clone()), 0);
+        let (_decision_tx, decision_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(1);
+        client.install_permission_decision_rx(decision_rx);
+
+        let msg = perm_request(
+            5,
+            &[
+                ("allow", "allow_once", "Allow once"),
+                ("reject", "reject_once", "Reject once"),
+                ("persistent", "allow_always", "Always allow"),
+                ("future", "future_scope", "Future choice"),
+            ],
+        );
+        let hard_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+        client
+            .handle_permission_request(&msg, hard_deadline)
+            .await
+            .expect("recognized one-time choices must remain actionable");
+
+        let entry = client
+            .pending_permissions
+            .values()
+            .next()
+            .expect("request must remain pending for its owner");
+        let kinds: Vec<&str> = entry
+            .options_snapshot
+            .iter()
+            .filter_map(|option| option.get("kind").and_then(|kind| kind.as_str()))
+            .collect();
+        assert_eq!(kinds, ["allow_once", "reject_once"]);
+
+        let request_event = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.kind == "acp_read" && event.authorization.is_some())
+            .expect("actionable request must be observed");
+        let authorization = request_event.authorization.expect("checked above");
+        assert!(authorization.actionable);
+        assert!(authorization
+            .reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("ignored")));
+    }
+
     // ── Production-path tests: real loop emits request, captures nonce ──────
 
     /// Full end-to-end production path test for the `ask` decision flow:
@@ -6418,7 +6590,9 @@ mod tests {
             perm_tx
                 .send(PermissionDecision {
                     request_nonce: nonce,
-                    option_id: "opt-allow".to_string(),
+                    outcome: PermissionDecisionOutcome::Selected {
+                        option_id: "opt-allow".to_string(),
+                    },
                 })
                 .await
                 .expect("decision channel must accept");
@@ -6503,6 +6677,111 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn duplicate_option_ids_cancel_on_the_production_wire() {
+        let permission = r#"{"jsonrpc":"2.0","id":43,"method":"session/request_permission","params":{"sessionId":"sess","options":[{"optionId":"ambiguous","kind":"reject_once","name":"Reject"},{"optionId":"ambiguous","kind":"allow_always","name":"Always allow"}]}}"#;
+        let terminal = r#"{"jsonrpc":"2.0","id":999,"result":{"stopReason":"end_turn"}}"#;
+        let script = format!(
+            r#"printf '{permission}\n'; read -r response; printf '{{"jsonrpc":"2.0","method":"_test/capture","params":{{"response":%s}}}}\n' "$response"; printf '{terminal}\n'"#,
+        );
+
+        let mut client = spawn_script(&script).await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+        let observer = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(observer.clone()), 0);
+
+        let max_duration = std::time::Duration::from_secs(15);
+        client
+            .read_until_response_with_idle_timeout(
+                "sess",
+                999,
+                std::time::Duration::from_secs(5),
+                tokio::time::Instant::now() + max_duration,
+                max_duration,
+            )
+            .await
+            .expect("preflight cancellation must let the prompt finish");
+
+        let wire_response = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.payload["method"] == "_test/capture")
+            .map(|event| event.payload["params"]["response"].clone())
+            .expect("child must reflect the response it read from stdin");
+        assert_eq!(wire_response["id"], 43);
+        assert_eq!(wire_response["result"]["outcome"]["outcome"], "cancelled");
+        assert!(wire_response["result"]["outcome"].get("optionId").is_none());
+    }
+
+    #[tokio::test]
+    async fn owner_can_cancel_an_allow_once_only_request_on_the_production_wire() {
+        let permission = r#"{"jsonrpc":"2.0","id":44,"method":"session/request_permission","params":{"sessionId":"sess","options":[{"optionId":"allow","kind":"allow_once","name":"Allow once"}]}}"#;
+        let terminal = r#"{"jsonrpc":"2.0","id":999,"result":{"stopReason":"end_turn"}}"#;
+        let script = format!(
+            r#"printf '{permission}\n'; read -r response; printf '{{"jsonrpc":"2.0","method":"_test/capture","params":{{"response":%s}}}}\n' "$response"; printf '{terminal}\n'"#,
+        );
+
+        let mut client = spawn_script(&script).await;
+        client.set_permission_config(
+            ResolvedPermissionConfig::resolve(PermissionPolicy::Ask, None).unwrap(),
+        );
+        client.set_owner_pubkey_known(true);
+        let observer = crate::observer::ObserverHandle::in_process();
+        let mut observer_rx = observer.subscribe();
+        client.set_observer(Some(observer.clone()), 0);
+        let (decision_tx, decision_rx) = tokio::sync::mpsc::channel::<PermissionDecision>(1);
+        client.install_permission_decision_rx(decision_rx);
+
+        let decision_task = tokio::spawn(async move {
+            loop {
+                let event =
+                    tokio::time::timeout(std::time::Duration::from_secs(5), observer_rx.recv())
+                        .await
+                        .expect("permission event timed out")
+                        .expect("observer channel closed");
+                let Some(authorization) = event.authorization else {
+                    continue;
+                };
+                if authorization.actionable {
+                    decision_tx
+                        .send(PermissionDecision {
+                            request_nonce: authorization.request_nonce,
+                            outcome: PermissionDecisionOutcome::Cancelled,
+                        })
+                        .await
+                        .expect("decision route must accept cancellation");
+                    break;
+                }
+            }
+        });
+
+        let max_duration = std::time::Duration::from_secs(15);
+        client
+            .read_until_response_with_idle_timeout(
+                "sess",
+                999,
+                std::time::Duration::from_secs(5),
+                tokio::time::Instant::now() + max_duration,
+                max_duration,
+            )
+            .await
+            .expect("owner cancellation must let the prompt finish");
+        decision_task.await.expect("decision task failed");
+
+        let wire_response = observer
+            .snapshot()
+            .into_iter()
+            .find(|event| event.payload["method"] == "_test/capture")
+            .map(|event| event.payload["params"]["response"].clone())
+            .expect("child must reflect the response it read from stdin");
+        assert_eq!(wire_response["id"], 44);
+        assert_eq!(wire_response["result"]["outcome"]["outcome"], "cancelled");
+        assert!(wire_response["result"]["outcome"].get("optionId").is_none());
+    }
+
+    #[tokio::test]
     async fn ask_decision_route_survives_sequential_prompt_read_loops() {
         let capture_file = std::env::temp_dir().join(format!(
             "buzz-acp-sequential-{}.ndjson",
@@ -6546,7 +6825,9 @@ mod tests {
                 decision_tx
                     .send(PermissionDecision {
                         request_nonce: authorization.request_nonce,
-                        option_id: "opt-allow".to_string(),
+                        outcome: PermissionDecisionOutcome::Selected {
+                            option_id: "opt-allow".to_string(),
+                        },
                     })
                     .await
                     .expect("decision route must remain open");
@@ -7149,7 +7430,9 @@ mod tests {
         perm_tx
             .send(PermissionDecision {
                 request_nonce: nonce,
-                option_id: "opt-allow".to_string(),
+                outcome: PermissionDecisionOutcome::Selected {
+                    option_id: "opt-allow".to_string(),
+                },
             })
             .await
             .expect("decision channel must accept");
@@ -7242,7 +7525,9 @@ mod tests {
             iter_tx
                 .send(PermissionDecision {
                     request_nonce: nonce,
-                    option_id: "opt-allow".to_string(),
+                    outcome: PermissionDecisionOutcome::Selected {
+                        option_id: "opt-allow".to_string(),
+                    },
                 })
                 .await
                 .ok();
@@ -7842,7 +8127,9 @@ mod tests {
         // Deliver a decision with a nonce that matches but an invalid optionId.
         let bad_decision = PermissionDecision {
             request_nonce: nonce,
-            option_id: "nonexistent-option".to_string(),
+            outcome: PermissionDecisionOutcome::Selected {
+                option_id: "nonexistent-option".to_string(),
+            },
         };
 
         let (tx, rx) = tokio::sync::mpsc::channel::<PermissionDecision>(1);

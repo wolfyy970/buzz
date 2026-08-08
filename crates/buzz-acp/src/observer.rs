@@ -44,6 +44,10 @@ pub struct AuthorizationEnvelope {
     /// `true` when the owner can take action (policy=ask, preflight passed,
     /// owner/observer available). `false` for auto-deny / fail-closed paths.
     pub actionable: bool,
+    /// `true` when this harness accepts an owner `cancelled` control outcome.
+    /// Omitted for older/non-actionable envelopes so Desktop never infers it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub can_cancel: Option<bool>,
     /// Human-readable reason when `actionable` is `false`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,

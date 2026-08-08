@@ -1266,7 +1266,8 @@ fn handle_switch_model_control(
 
 /// Handle a `permission_decision` control frame.
 ///
-/// Extracts `channelId`, `requestNonce`, and `optionId` from the payload and
+/// Extracts `channelId`, `requestNonce`, and a selected/cancelled outcome from
+/// the payload and
 /// delivers a [`crate::acp::PermissionDecision`] to the in-flight read loop
 /// via the per-task `permission_decision_tx` mpsc channel.
 ///
@@ -1296,18 +1297,48 @@ fn handle_permission_decision_control(
         return;
     };
 
-    let Some(option_id) = payload
-        .get("optionId")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-    else {
-        tracing::warn!("observer permission_decision control frame missing optionId");
-        return;
+    let selected_outcome = || {
+        payload
+            .get("optionId")
+            .and_then(|value| value.as_str())
+            .filter(|value| !value.is_empty())
+            .map(
+                |option_id| crate::acp::PermissionDecisionOutcome::Selected {
+                    option_id: option_id.to_string(),
+                },
+            )
+    };
+    let outcome = match payload.get("outcome") {
+        Some(serde_json::Value::String(value)) if value == "cancelled" => {
+            crate::acp::PermissionDecisionOutcome::Cancelled
+        }
+        Some(serde_json::Value::String(value)) if value == "selected" => {
+            let Some(outcome) = selected_outcome() else {
+                tracing::warn!("observer permission_decision selected outcome missing optionId");
+                return;
+            };
+            outcome
+        }
+        None => {
+            let Some(outcome) = selected_outcome() else {
+                tracing::warn!("observer permission_decision selected outcome missing optionId");
+                return;
+            };
+            outcome
+        }
+        Some(other) => {
+            tracing::warn!(outcome = %other, "observer permission_decision has unknown outcome");
+            return;
+        }
     };
 
     let decision = crate::acp::PermissionDecision {
         request_nonce: request_nonce.to_string(),
-        option_id: option_id.to_string(),
+        outcome: outcome.clone(),
+    };
+    let outcome_name = match &outcome {
+        crate::acp::PermissionDecisionOutcome::Selected { .. } => "selected",
+        crate::acp::PermissionDecisionOutcome::Cancelled => "cancelled",
     };
 
     // Find the in-flight task for this channel and deliver via its mpsc.
@@ -1323,7 +1354,7 @@ fn handle_permission_decision_control(
                     tracing::info!(
                         channel = %channel_id,
                         nonce = %request_nonce,
-                        option_id = %option_id,
+                        outcome = outcome_name,
                         "permission_decision delivered to read loop"
                     );
                     "sent"
@@ -1372,7 +1403,7 @@ fn handle_permission_decision_control(
                 "type": "permission_decision",
                 "status": status,
                 "requestNonce": request_nonce,
-                "optionId": option_id,
+                "outcome": outcome_name,
             }),
         );
     }
@@ -4884,6 +4915,62 @@ mod owner_control_command_tests {
             ControlSignal::Rotate
         ));
     }
+
+    #[tokio::test]
+    async fn permission_control_delivers_cancel_and_legacy_selection() {
+        let mut pool = AgentPool::from_slots(vec![]);
+        let channel_id = Uuid::new_v4();
+        let (decision_tx, mut decision_rx) = tokio::sync::mpsc::channel(1);
+
+        let task = pool.join_set.spawn(std::future::pending::<()>());
+        pool.task_map_mut().insert(
+            task.id(),
+            pool::TaskMeta {
+                agent_index: 0,
+                channel_id: Some(channel_id),
+                turn_id: "permission-turn".to_string(),
+                recoverable_batch: None,
+                control_tx: None,
+                steer_tx: None,
+                permission_decision_tx: Some(decision_tx),
+            },
+        );
+
+        handle_permission_decision_control(
+            &serde_json::json!({
+                "type": "permission_decision",
+                "channelId": channel_id,
+                "requestNonce": "cancel-nonce",
+                "outcome": "cancelled"
+            }),
+            &mut pool,
+            None,
+        );
+        let cancelled = decision_rx.recv().await.expect("cancel decision");
+        assert_eq!(cancelled.request_nonce, "cancel-nonce");
+        assert!(matches!(
+            cancelled.outcome,
+            crate::acp::PermissionDecisionOutcome::Cancelled
+        ));
+
+        handle_permission_decision_control(
+            &serde_json::json!({
+                "type": "permission_decision",
+                "channelId": channel_id,
+                "requestNonce": "legacy-nonce",
+                "optionId": "allow-once"
+            }),
+            &mut pool,
+            None,
+        );
+        let selected = decision_rx.recv().await.expect("legacy selected decision");
+        assert_eq!(selected.request_nonce, "legacy-nonce");
+        assert!(matches!(
+            selected.outcome,
+            crate::acp::PermissionDecisionOutcome::Selected { option_id }
+                if option_id == "allow-once"
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -8049,6 +8136,7 @@ mod observer_payload_trim_tests {
         event.authorization = Some(crate::observer::AuthorizationEnvelope {
             request_nonce: "test-nonce".to_string(),
             actionable: true,
+            can_cancel: Some(true),
             reason: None,
         });
 

@@ -792,6 +792,54 @@ test("buildTranscript appends Denied outcome when reject_once is selected", () =
   assert.doesNotMatch(item.text ?? "", /Denied/);
 });
 
+test("buildTranscript does not present allow_always as an ordinary approval", () => {
+  const request = makePermissionRequest(1, "req-persistent");
+  request.payload.params.options = [
+    {
+      optionId: "persistent",
+      kind: "allow_always",
+      name: "Always allow",
+    },
+  ];
+  const transcript = buildTranscript([
+    request,
+    makePermissionResponse(2, "req-persistent", "selected", "persistent"),
+  ]);
+
+  assert.equal(transcript[0].outcome, "Selected (allow_always)");
+  assert.doesNotMatch(transcript[0].outcome, /^Approved/);
+});
+
+test("buildTranscript reports an unknown selected kind neutrally", () => {
+  const request = makePermissionRequest(1, "req-unknown");
+  request.payload.params.options = [
+    { optionId: "future", kind: "future_scope", name: "Future choice" },
+  ];
+  const transcript = buildTranscript([
+    request,
+    makePermissionResponse(2, "req-unknown", "selected", "future"),
+  ]);
+
+  assert.equal(transcript[0].outcome, "Selected (future_scope)");
+});
+
+test("buildTranscript reports an unknown reject-prefixed kind neutrally", () => {
+  const request = makePermissionRequest(1, "req-unknown-reject");
+  request.payload.params.options = [
+    {
+      optionId: "future",
+      kind: "reject_future_but_allows",
+      name: "Future choice",
+    },
+  ];
+  const transcript = buildTranscript([
+    request,
+    makePermissionResponse(2, "req-unknown-reject", "selected", "future"),
+  ]);
+
+  assert.equal(transcript[0].outcome, "Selected (reject_future_but_allows)");
+});
+
 test("buildTranscript appends Cancelled outcome on cancelled response", () => {
   const transcript = buildTranscript([
     makePermissionRequest(1, "req-3"),
@@ -2085,7 +2133,17 @@ function makePermissionRequestWithAuth(
   seq,
   requestId,
   nonce,
-  { actionable = true, reason, turnId = "turn-1", channelId = "ch-1" } = {},
+  {
+    actionable = true,
+    reason,
+    turnId = "turn-1",
+    channelId = "ch-1",
+    canCancel,
+    options = [
+      { optionId: "allow_once", kind: "allow_once", name: "Allow" },
+      { optionId: "reject_once", kind: "reject_once", name: "Reject" },
+    ],
+  } = {},
 ) {
   return {
     seq,
@@ -2102,13 +2160,15 @@ function makePermissionRequestWithAuth(
       params: {
         title: "Confirm push",
         toolCallId: "tool-1",
-        options: [
-          { optionId: "allow_once", kind: "allow_once", name: "Allow" },
-          { optionId: "reject_once", kind: "reject_once", name: "Reject" },
-        ],
+        options,
       },
     },
-    authorization: { requestNonce: nonce, actionable, reason },
+    authorization: {
+      requestNonce: nonce,
+      actionable,
+      reason,
+      ...(canCancel === undefined ? {} : { canCancel }),
+    },
   };
 }
 
@@ -2125,6 +2185,7 @@ test("buildTranscript_nonce_keyed_card_is_actionable_with_options", () => {
   assert.equal(item.renderClass, "permission");
   assert.equal(item.requestNonce, "nonce-abc");
   assert.equal(item.actionable, true);
+  assert.equal(item.canCancelPermission, false);
   assert.equal(item.channelId, "ch-1");
   assert.ok(Array.isArray(item.options));
   assert.equal(item.options.length, 2);
@@ -2134,6 +2195,17 @@ test("buildTranscript_nonce_keyed_card_is_actionable_with_options", () => {
     item.id.includes("nonce-abc"),
     `expected nonce in id, got ${item.id}`,
   );
+});
+
+test("buildTranscript_records_explicit_harness_cancel_support", () => {
+  const transcript = buildTranscript([
+    makePermissionRequestWithAuth(1, "req-cancel", "nonce-cancel", {
+      options: [{ optionId: "allow", kind: "allow_once", name: "Allow" }],
+      canCancel: true,
+    }),
+  ]);
+
+  assert.equal(transcript[0].canCancelPermission, true);
 });
 
 test("buildTranscript_actionable_false_envelope_produces_read_only_card", () => {
@@ -2148,6 +2220,55 @@ test("buildTranscript_actionable_false_envelope_produces_read_only_card", () => 
   const item = transcript[0];
   assert.equal(item.actionable, false);
   assert.equal(item.authorizationReason, "auto-rejected: reject policy");
+});
+
+test("buildTranscript exposes only one-time choices from a mixed permission request", () => {
+  const transcript = buildTranscript([
+    makePermissionRequestWithAuth(1, "req-mixed", "nonce-mixed", {
+      options: [
+        { optionId: "allow", kind: "allow_once", name: "Allow once" },
+        { optionId: "reject", kind: "reject_once", name: "Reject once" },
+        {
+          optionId: "persistent",
+          kind: "allow_always",
+          name: "Always allow",
+        },
+        { optionId: "future", kind: "future_scope", name: "Future choice" },
+      ],
+    }),
+  ]);
+
+  const item = transcript[0];
+  assert.equal(item.actionable, true);
+  assert.deepEqual(
+    item.options.map(({ optionId, kind }) => ({ optionId, kind })),
+    [
+      { optionId: "allow", kind: "allow_once" },
+      { optionId: "reject", kind: "reject_once" },
+    ],
+  );
+  assert.match(item.authorizationReason, /one-time choices/);
+  assert.match(item.authorizationReason, /ignored/);
+});
+
+test("buildTranscript fails closed when no one-time choice is offered", () => {
+  const transcript = buildTranscript([
+    makePermissionRequestWithAuth(1, "req-persistent", "nonce-persistent", {
+      options: [
+        {
+          optionId: "persistent",
+          kind: "allow_always",
+          name: "Always allow",
+        },
+        { optionId: "future", kind: "future_scope", name: "Future choice" },
+      ],
+    }),
+  ]);
+
+  const item = transcript[0];
+  assert.equal(item.actionable, false);
+  assert.deepEqual(item.options, []);
+  assert.match(item.authorizationReason, /No supported one-time/);
 });
 
 test("buildTranscript_concurrent_requests_same_turn_produce_separate_cards", () => {

@@ -52,6 +52,21 @@ export async function sendPermissionDecision(
     type: "permission_decision",
     channelId,
     requestNonce: nonce,
+    outcome: "selected",
     optionId,
+  });
+}
+
+/** Decline a live permission request without inventing an adapter option ID. */
+export async function cancelPermissionRequest(
+  pubkey: string,
+  channelId: string,
+  nonce: string,
+): Promise<void> {
+  await sendAgentObserverControl(pubkey, {
+    type: "permission_decision",
+    channelId,
+    requestNonce: nonce,
+    outcome: "cancelled",
   });
 }

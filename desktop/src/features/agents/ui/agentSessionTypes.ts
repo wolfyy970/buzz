@@ -19,6 +19,8 @@ export type ObserverEvent = {
   authorization?: {
     requestNonce: string;
     actionable: boolean;
+    /** Explicit harness support for a protocol-level cancelled outcome. */
+    canCancel?: boolean;
     reason?: string;
   };
 };
@@ -136,6 +138,11 @@ export type TranscriptItem =
        * policy is not `ask`).
        */
       actionable?: boolean;
+      /**
+       * `true` only when the harness explicitly advertises support for a
+       * protocol-level cancelled outcome. Absent on legacy observer frames.
+       */
+      canCancelPermission?: boolean;
       /**
        * Human-readable reason string from the `authorization` envelope.
        * Displayed as context below the request description.

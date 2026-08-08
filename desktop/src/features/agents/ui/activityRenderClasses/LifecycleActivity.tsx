@@ -1,7 +1,10 @@
 import { AlertCircle, CheckCircle2, ShieldCheck, XCircle } from "lucide-react";
 import * as React from "react";
 
-import { sendPermissionDecision } from "@/shared/api/agentControl";
+import {
+  cancelPermissionRequest,
+  sendPermissionDecision,
+} from "@/shared/api/agentControl";
 import { formatTranscriptTimestampTitle } from "../agentSessionUtils";
 import { ActivityRow, ActivityRowLabel } from "./ActivityRow";
 import { ToolActivity } from "./ToolActivity";
@@ -40,9 +43,8 @@ function permissionOutcomeTone(outcome: string): "approve" | "deny" | "cancel" {
 }
 
 /**
- * Allow/Deny buttons for an actionable permission card.
- * Renders the agent's exact options as labeled buttons; a click sends the
- * `permission_decision` control event (fire-and-forget).
+ * One-time Allow/Deny buttons for an actionable permission card. Persistent
+ * and unknown choices are filtered before they reach this component.
  *
  * On send failure (relay reject or non-`sent` delivery status), buttons are
  * re-enabled so the user can retry. The harness's 300 s fail-closed timeout
@@ -53,12 +55,15 @@ function PermissionDecisionButtons({
   channelId,
   options,
   requestNonce,
+  canCancel,
   deliveryFailed,
 }: {
   agentPubkey: string;
   channelId: string;
   options: Array<{ optionId: string; kind: string; label?: string }>;
   requestNonce: string;
+  /** Whether this harness explicitly accepts a protocol-level cancellation. */
+  canCancel: boolean;
   /**
    * Monotonically increasing failure token from the reducer — incremented on
    * every non-`sent` `control_result`. Keying the effect on this number (not a
@@ -66,7 +71,15 @@ function PermissionDecisionButtons({
    */
   deliveryFailed?: number;
 }) {
-  const [pending, setPending] = React.useState<string | null>(null);
+  const [pending, setPending] = React.useState<
+    { kind: "option"; optionId: string } | { kind: "cancel" } | null
+  >(null);
+  const oneTimeOptions = options.filter(
+    ({ kind }) => kind === "allow_once" || kind === "reject_once",
+  );
+  const hasRejectOption = oneTimeOptions.some(
+    ({ kind }) => kind === "reject_once",
+  );
 
   // Re-enable buttons when the reducer signals delivery failure (non-`sent`
   // control_result status). The relay send succeeded but the harness couldn't
@@ -77,14 +90,14 @@ function PermissionDecisionButtons({
     }
   }, [deliveryFailed]);
 
-  if (options.length === 0) {
+  if (oneTimeOptions.length === 0) {
     return null;
   }
 
   return (
     <div className="mt-1.5 flex flex-wrap gap-1.5">
-      {options.map(({ optionId, kind, label }) => {
-        const isDeny = kind.startsWith("reject");
+      {oneTimeOptions.map(({ optionId, kind, label }) => {
+        const isDeny = kind === "reject_once";
         const displayLabel = label ?? (isDeny ? "Deny" : "Allow");
         return (
           <button
@@ -98,7 +111,7 @@ function PermissionDecisionButtons({
             data-testid={`permission-decision-${optionId}`}
             disabled={pending !== null}
             onClick={() => {
-              setPending(optionId);
+              setPending({ kind: "option", optionId });
               void sendPermissionDecision(
                 agentPubkey,
                 channelId,
@@ -111,10 +124,32 @@ function PermissionDecisionButtons({
               });
             }}
           >
-            {pending === optionId ? "…" : displayLabel}
+            {pending?.kind === "option" && pending.optionId === optionId
+              ? "…"
+              : displayLabel}
           </button>
         );
       })}
+      {canCancel && !hasRejectOption ? (
+        <button
+          type="button"
+          className="rounded px-2 py-0.5 text-xs font-medium border border-destructive/40 text-destructive hover:bg-destructive/10 disabled:opacity-50"
+          data-testid="permission-decision-cancel"
+          disabled={pending !== null}
+          onClick={() => {
+            setPending({ kind: "cancel" });
+            void cancelPermissionRequest(
+              agentPubkey,
+              channelId,
+              requestNonce,
+            ).catch(() => {
+              setPending(null);
+            });
+          }}
+        >
+          {pending?.kind === "cancel" ? "…" : "Cancel"}
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -171,6 +206,7 @@ export function LifecycleActivity(props: ActivityRenderClassItemProps) {
             channelId={props.item.channelId ?? ""}
             options={options}
             requestNonce={requestNonce}
+            canCancel={props.item.canCancelPermission ?? false}
             deliveryFailed={deliveryFailed}
           />
         ) : null}

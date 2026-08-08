@@ -87,6 +87,7 @@ export function describePermissionRequest(payload: Record<string, unknown>) {
     kind: string;
     label?: string;
   }> = [];
+  let unsupportedOptionCount = 0;
   const optionDisplayNames: string[] = [];
   if (Array.isArray(params.options)) {
     for (const option of params.options) {
@@ -99,11 +100,15 @@ export function describePermissionRequest(payload: Record<string, unknown>) {
       if (displayName) optionDisplayNames.push(displayName);
       if (optionId && kind) {
         optionNames.set(optionId, kind);
-        structuredOptions.push({
-          optionId,
-          kind,
-          ...(label ? { label } : {}),
-        });
+        if (kind === "allow_once" || kind === "reject_once") {
+          structuredOptions.push({
+            optionId,
+            kind,
+            ...(label ? { label } : {}),
+          });
+        } else {
+          unsupportedOptionCount += 1;
+        }
       }
     }
   }
@@ -119,6 +124,7 @@ export function describePermissionRequest(payload: Record<string, unknown>) {
     text: detail.join("\n"),
     optionNames,
     options: structuredOptions,
+    unsupportedOptionCount,
     descriptor: {
       renderClass: "permission" as const,
       label: "Permission requested",
@@ -135,8 +141,8 @@ export function describePermissionRequest(payload: Record<string, unknown>) {
 
 /**
  * Format a human-readable outcome label from a permission response.
- * kind values from ACP: allow_once, allow_always, reject_once, reject_always.
- * "reject_*" kinds are denials; anything else that is selected is an approval.
+ * Known one-shot choices receive approval/denial language. Persistent or
+ * unknown choices are reported neutrally because Buzz does not grant them.
  */
 export function describePermissionOutcome(
   outcome: string,
@@ -155,9 +161,10 @@ export function describePermissionOutcome(
   }
   if (outcome === "selected" && optionId) {
     const kind = optionNames.get(optionId) ?? optionId;
-    const isDenial = kind.startsWith("reject");
-    const verb = isDenial ? "Denied" : "Approved";
-    return `${verb} (${kind})`;
+    if (kind === "allow_once") return `Approved (${kind})`;
+    if (kind === "reject_once" || kind === "reject_always")
+      return `Denied (${kind})`;
+    return `Selected (${kind})`;
   }
   return outcome;
 }
