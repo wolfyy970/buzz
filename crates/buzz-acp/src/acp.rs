@@ -202,6 +202,19 @@ struct PermissionEntry {
     deadline: tokio::time::Instant,
 }
 
+/// Permission response whose bytes may be partially written to the agent.
+///
+/// This marker is stored on [`AcpClient`] before the first write await and is
+/// cleared only after that write completes. If the enclosing prompt future is
+/// cancelled, the marker survives the dropped future so cleanup can retire the
+/// UI request and replace the process without writing a second response.
+#[derive(Debug, Clone)]
+struct PermissionWriteInProgress {
+    request_id: serde_json::Value,
+    pending_entry_key: Option<String>,
+    nonce: String,
+}
+
 /// ACP client that owns an agent subprocess and communicates over its stdio.
 ///
 /// One `AcpClient` per agent process. Multiple sessions can be created on the
@@ -245,6 +258,11 @@ pub struct AcpClient {
     /// When `true` the process MUST NOT be returned to the pool — it must be
     /// respawned. The cancel path surfaces this via `PermissionPoisoned`.
     permission_poisoned: bool,
+    /// Cancellation-persistent marker for every permission response write.
+    ///
+    /// Unlike a stack guard, this remains set when `select!` drops the prompt
+    /// future in the middle of an awaited stdin write.
+    permission_write_in_progress: Option<PermissionWriteInProgress>,
     /// Resolved permission configuration. Determines how `handle_permission_request`
     /// answers ACP `session/request_permission` frames.
     permission_config: ResolvedPermissionConfig,
@@ -650,6 +668,7 @@ impl AcpClient {
             permission_responded: false,
             pending_permissions: std::collections::HashMap::new(),
             permission_poisoned: false,
+            permission_write_in_progress: None,
             permission_config: ResolvedPermissionConfig {
                 policy: crate::config::PermissionPolicy::Reject,
                 effective_mode: PermissionMode::DontAsk,
@@ -1188,6 +1207,34 @@ impl AcpClient {
             AcpError::Protocol("cancel_with_cleanup called with no in-flight prompt".into())
         })?;
 
+        // The prompt future may have been dropped while a permission response
+        // was partway through its three awaited stdin writes. The adapter may
+        // have received any prefix of that response, so writing a cancellation
+        // response would violate JSON-RPC's one-response rule. Retire the UI
+        // request, poison the process, and let the pool replace it.
+        if let Some(write) = self.permission_write_in_progress.take() {
+            if let Some(entry_key) = write.pending_entry_key.as_ref() {
+                self.pending_permissions.remove(entry_key);
+            }
+            self.pending_permission_id = None;
+            self.permission_responded = false;
+            self.permission_poisoned = true;
+            self.observe_authorized(
+                "permission_terminal",
+                AuthorizationEnvelope {
+                    request_nonce: write.nonce,
+                    actionable: false,
+                    reason: Some("uncertain".to_string()),
+                },
+                serde_json::json!({ "id": write.request_id }),
+            );
+            tracing::error!(
+                target: "acp::cancel",
+                "cancel interrupted a permission response write — poisoning process"
+            );
+            return Err(AcpError::PermissionPoisoned);
+        }
+
         // Check for poisoning first: if a permission write is in progress we
         // must not send any more bytes to this process — return the dedicated
         // error so `classify_control_cancel_failure` triggers respawn.
@@ -1377,6 +1424,21 @@ impl AcpClient {
     ) -> bool {
         let (id_str, id_val) = entry;
         let (nonce, reason, response) = outcome;
+        let Some(pending_entry) = self.pending_permissions.get_mut(id_str) else {
+            tracing::error!(
+                target: "acp::permission",
+                "permission id={id_val} disappeared before response write — poisoning process"
+            );
+            self.permission_poisoned = true;
+            return false;
+        };
+        pending_entry.state = PermissionEntryState::Writing;
+        self.permission_write_in_progress = Some(PermissionWriteInProgress {
+            request_id: id_val.clone(),
+            pending_entry_key: Some(id_str.to_string()),
+            nonce: nonce.to_string(),
+        });
+
         // Write the response. Use a bounded timeout when one is provided.
         let write_result = if let Some(deadline) = write_deadline {
             tokio::time::timeout_at(deadline, self.write_ndjson_no_observe(&response))
@@ -1387,6 +1449,7 @@ impl AcpClient {
         } else {
             self.write_ndjson_no_observe(&response).await
         };
+        self.permission_write_in_progress = None;
 
         match write_result {
             Ok(()) => {
@@ -1464,7 +1527,15 @@ impl AcpClient {
         reason: &str,
         response: serde_json::Value,
     ) -> Result<(), AcpError> {
-        match self.write_ndjson_no_observe(&response).await {
+        self.permission_write_in_progress = Some(PermissionWriteInProgress {
+            request_id: id_val.clone(),
+            pending_entry_key: None,
+            nonce: nonce.to_string(),
+        });
+        let write_result = self.write_ndjson_no_observe(&response).await;
+        self.permission_write_in_progress = None;
+
+        match write_result {
             Ok(()) => {
                 self.observe_authorized(
                     "acp_write",
@@ -7373,6 +7444,94 @@ mod tests {
                 "poisoned flag must be set after cancel-during-write"
             );
         });
+    }
+
+    #[tokio::test]
+    async fn cancel_mid_permission_write_sends_no_second_response_and_poisons_process() {
+        // A child that keeps stdin open without reading eventually backpressures
+        // the real OS pipe. Dropping the permission future at that point mirrors
+        // `run_prompt_task` selecting a control signal over the prompt future.
+        let mut client = spawn_script("sleep 30").await;
+        let observer = crate::observer::ObserverHandle::in_process();
+        client.set_observer(Some(observer.clone()), 0);
+        let attempt_counter = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        client.set_write_attempt_count(attempt_counter.clone());
+
+        let request_id = serde_json::json!(77);
+        let nonce = "cancel-mid-write";
+        client.pending_permission_id = Some(request_id.clone());
+        client.permission_responded = false;
+        client.last_prompt_id = Some(999);
+
+        // Larger than an OS pipe, so the single production write blocks after
+        // some bytes have been accepted by the child stdin.
+        let response = serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": request_id.clone(),
+            "result": {
+                "outcome": {
+                    "outcome": "selected",
+                    "optionId": "x".repeat(2 * 1024 * 1024),
+                }
+            }
+        });
+
+        tokio::select! {
+            biased;
+            result = client.finish_permission_sync(
+                &request_id,
+                nonce,
+                "allowed",
+                response,
+            ) => panic!("backpressured permission write completed unexpectedly: {result:?}"),
+            () = async {
+                while attempt_counter.load(std::sync::atomic::Ordering::Relaxed) == 0 {
+                    tokio::task::yield_now().await;
+                }
+            } => {}
+        }
+
+        assert!(
+            client.permission_write_in_progress.is_some(),
+            "dropping the write future must leave a cancellation-persistent marker"
+        );
+
+        let error = client
+            .cancel_with_cleanup_grace("sess-mid-write", std::time::Duration::from_millis(200))
+            .await
+            .expect_err("uncertain permission write must force process replacement");
+        assert!(matches!(error, AcpError::PermissionPoisoned));
+        assert!(client.permission_poisoned);
+        assert_eq!(
+            attempt_counter.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "cancel must not attempt a second JSON-RPC response"
+        );
+        assert!(client.pending_permission_id.is_none());
+
+        let events = observer.snapshot();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| {
+                    event.kind == "permission_terminal"
+                        && event
+                            .authorization
+                            .as_ref()
+                            .is_some_and(|auth| auth.reason.as_deref() == Some("uncertain"))
+                })
+                .count(),
+            1,
+            "Desktop must receive one uncertain terminal for the interrupted request"
+        );
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "acp_write" && event.authorization.is_some())
+                .count(),
+            0,
+            "an interrupted response must never be reported as delivered"
+        );
     }
 
     #[test]
