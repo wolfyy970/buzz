@@ -621,6 +621,30 @@ fn codex_spawn_does_not_set_a_claude_executable() {
         .any(|(key, _)| key == "CLAUDE_CODE_EXECUTABLE"));
 }
 
+#[test]
+fn desktop_permission_policy_removes_ambient_low_level_mode() {
+    let mut command = std::process::Command::new("buzz-acp");
+    command.env("BUZZ_ACP_PERMISSION_MODE", "acceptEdits");
+
+    super::apply_permission_policy_env(
+        &mut command,
+        crate::managed_agents::permission_policy::PermissionPolicy::Reject,
+    );
+
+    let mode = command
+        .get_envs()
+        .find(|(key, _)| *key == "BUZZ_ACP_PERMISSION_MODE")
+        .map(|(_, value)| value);
+    assert_eq!(
+        mode,
+        Some(None),
+        "Desktop-managed launches must remove an inherited adapter mode"
+    );
+    assert!(command.get_envs().any(|(key, value)| {
+        key == "BUZZ_ACP_PERMISSION_POLICY" && value == Some(std::ffi::OsStr::new("reject"))
+    }));
+}
+
 /// On Windows, `.cmd` and `.bat` batch shims must NOT be assigned to
 /// `CLAUDE_CODE_EXECUTABLE` — `CreateProcess` cannot exec them directly and
 /// returns EINVAL (issue #2397). The adapter must fall back to its own PATH

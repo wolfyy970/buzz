@@ -7650,6 +7650,23 @@ mod tests {
     }
 
     #[test]
+    fn resolved_permission_config_reject_plus_explicit_accept_edits_is_startup_error() {
+        let result = ResolvedPermissionConfig::resolve(
+            PermissionPolicy::Reject,
+            Some(PermissionMode::AcceptEdits),
+        );
+        assert!(
+            result.is_err(),
+            "reject + acceptEdits must be a startup error"
+        );
+        let msg = format!("{}", result.unwrap_err());
+        assert!(
+            msg.contains("acceptEdits"),
+            "error must mention acceptEdits, got: {msg}"
+        );
+    }
+
+    #[test]
     fn permission_mode_auto_wire_string_is_correct() {
         assert_eq!(PermissionMode::Auto.as_wire_str(), "auto");
         assert!(!PermissionMode::Auto.is_default());

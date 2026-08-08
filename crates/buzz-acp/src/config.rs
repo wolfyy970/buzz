@@ -267,8 +267,8 @@ impl ResolvedPermissionConfig {
     /// - `ask`  + explicit `dontAsk` — harness would want the agent to
     ///   escalate, but `dontAsk` makes the agent self-deny internally.
     /// - `allow` + explicit `dontAsk` — same contradiction.
-    /// - `reject` + explicit `auto` — inverted-security worst case: policy says
-    ///   "deny" but the adapter auto-approves everything internally.
+    /// - `reject` + explicit `auto` or `acceptEdits` — policy says "deny" but
+    ///   the adapter approves work internally before the harness can reject it.
     ///
     /// Emits a warning (not an error) for `ask + auto`: internally-approved tool
     /// calls bypass the ask flow silently, but residual escalations still surface
@@ -286,18 +286,21 @@ impl ResolvedPermissionConfig {
                  dontAsk makes the agent self-deny internally before Buzz can answer"
             )));
         }
-        // Fail on reject + auto: inverted-security worst case — policy says "deny"
-        // but the adapter auto-approves everything internally.
+        // Fail when reject is paired with any mode that approves work inside
+        // the adapter before a permission request can reach the harness.
         // `ask` + auto is a warning-only case: the adapter MAY still forward residual
         // permission requests to ACP (auto is a model classifier, not bypass mode);
         // warn and transmit rather than fail startup.
         // `allow` + auto is compatible: both policies want unattended approval.
-        if policy == PermissionPolicy::Reject && explicit_mode == Some(PermissionMode::Auto) {
-            return Err(ConfigError::ConfigFile(format!(
-                "permission_policy={policy} conflicts with permission_mode=auto: \
-                 auto makes the adapter self-approve internally, which bypasses the \
-                 reject policy — inverted-security worst case"
-            )));
+        if policy == PermissionPolicy::Reject {
+            if let Some(mode @ (PermissionMode::Auto | PermissionMode::AcceptEdits)) = explicit_mode
+            {
+                return Err(ConfigError::ConfigFile(format!(
+                    "permission_policy={policy} conflicts with permission_mode={mode}: \
+                     {mode} makes the adapter approve work internally, which bypasses the \
+                     reject policy"
+                )));
+            }
         }
         // Warn on ask + auto: residual permission requests may still reach ACP
         // (auto is a model classifier, not bypass mode) so ask can still surface

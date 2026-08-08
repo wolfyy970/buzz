@@ -767,13 +767,12 @@ pub fn spawn_agent_child(
         command.env_remove(key);
     }
 
-    // Inject BUZZ_ACP_PERMISSION_POLICY — resolved here so the running process
-    // and the UI-visible setting are always in sync.
+    // Desktop-managed launches derive the adapter mode from the selected
+    // high-level policy. Remove any ambient mode inherited by Command before
+    // setting the policy; descriptor.env cannot restore it because the same
+    // key is reserved at every saved/definition env boundary.
     let (effective_permission_policy, _) = resolve_effective_permission_policy(record, &global);
-    command.env(
-        "BUZZ_ACP_PERMISSION_POLICY",
-        effective_permission_policy.as_str(),
-    );
+    apply_permission_policy_env(&mut command, effective_permission_policy);
 
     command.env("BUZZ_ACP_RELAY_OBSERVER", "true");
 
@@ -924,6 +923,14 @@ pub fn spawn_agent_child(
         adapter_availability: spawned_adapter_availability,
         start_nonce,
     })
+}
+
+fn apply_permission_policy_env(
+    command: &mut std::process::Command,
+    policy: super::permission_policy::PermissionPolicy,
+) {
+    command.env_remove("BUZZ_ACP_PERMISSION_MODE");
+    command.env("BUZZ_ACP_PERMISSION_POLICY", policy.as_str());
 }
 
 fn child_rust_log_filter() -> String {

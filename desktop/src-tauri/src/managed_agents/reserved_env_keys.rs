@@ -71,10 +71,13 @@ pub(crate) const RESERVED_ENV_KEYS: &[&str] = &[
     "BUZZ_MANAGED_AGENT",
     "BUZZ_MANAGED_AGENT_START_NONCE",
     // Permission policy gate: Desktop resolves the effective policy
-    // (per-agent > global > built-in) and injects it here. A user-supplied
-    // override would make the running harness use a different policy than the
-    // saved/UI-visible setting — exactly the truthfulness failure #4938 fixes.
+    // (per-agent > global > built-in) and injects it here. The low-level mode
+    // must be reserved as well: an explicit `acceptEdits` or `auto` mode can
+    // approve work inside the adapter before the harness sees a request. A
+    // user-supplied override would therefore make the running process less
+    // restrictive than the saved/UI-visible policy.
     "BUZZ_ACP_PERMISSION_POLICY",
+    "BUZZ_ACP_PERMISSION_MODE",
 ];
 
 pub(crate) fn is_reserved_env_key(key: &str) -> bool {

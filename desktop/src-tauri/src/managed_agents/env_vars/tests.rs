@@ -172,6 +172,18 @@ fn reserved_keys_include_remote_lifetime_policy() {
 }
 
 #[test]
+fn reserved_keys_include_permission_authority() {
+    for key in ["BUZZ_ACP_PERMISSION_POLICY", "BUZZ_ACP_PERMISSION_MODE"] {
+        assert!(is_reserved_env_key(key), "{key} should be reserved");
+        let agent = map(&[(key, "acceptEdits")]);
+        assert!(
+            merged_user_env(&BTreeMap::new(), &agent).is_empty(),
+            "{key} should be stripped before spawn"
+        );
+    }
+}
+
+#[test]
 fn reserved_keys_include_code_execution_surface() {
     // The agent/MCP command + args are what Buzz actually exec's.
     // Overriding lets the user run arbitrary code as the agent.
