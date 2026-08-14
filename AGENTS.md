@@ -4,6 +4,15 @@ This guide is for AI agents contributing to the Buzz codebase. It covers
 agent-specific context and conventions. For general contributor info (setup,
 code style, PR process, architecture), see [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Active agent portability work
+
+Before working on agent portability, templates, Skills, Tool requirements,
+Project Connections, Agent Snapshot, or template rollout, read
+[`docs/agent-portability-handoff.md`](docs/agent-portability-handoff.md). It is
+a local coordination document, not an upstream product specification. Refresh
+its dated GitHub state before acting and do not infer main from the current
+conflicted experimental checkout.
+
 ---
 
 ## Ecosystem
