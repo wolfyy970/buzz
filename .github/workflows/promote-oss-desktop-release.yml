@@ -19,7 +19,7 @@ permissions:
 jobs:
   promote:
     if: github.repository == 'block/buzz'
-    runs-on: ubuntu-latest
+    runs-on: buzz-linux-x64
     timeout-minutes: 10
     permissions:
       contents: write
